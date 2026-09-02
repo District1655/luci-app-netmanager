@@ -1,0 +1,24 @@
+#!/bin/sh
+# ============================================================
+# 网络管理插件 - 中国IPv4访问限制 WAN接口事件
+# 
+# 作用: WAN 接口 up 时重新应用过滤规则，刷新 WAN 设备名
+#       (解决 PPPoE 重连 / DHCP 续约导致设备名漂移后规则失效)
+# ============================================================
+
+# 仅处理 ifup 事件
+[ "$ACTION" = "ifup" ] || exit 0
+
+# 仅对 wan 类接口生效（INTERFACE 形如 wan / wan6 / wan-xxx）
+case "$INTERFACE" in
+    wan|wan6|wan-*|wan6-*) ;;
+    *) exit 0 ;;
+esac
+
+# 仅在功能已启用时重应用（避免无谓执行）
+[ "$(uci -q get netmanager.settings.china_filter_enable 2>/dev/null)" = "1" ] || exit 0
+
+# 后台重应用，不阻塞 hotplug
+( sleep 2; /usr/sbin/netmanager china_filter boot ) >/dev/null 2>&1 &
+
+exit 0

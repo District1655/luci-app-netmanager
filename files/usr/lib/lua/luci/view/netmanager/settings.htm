@@ -1,0 +1,562 @@
+<%+header%>
+<%+netmanager/common_head%>
+<div class="netmanager-container">
+    <div class="netmanager-header">
+        <h1>网络管理</h1>
+        <span class="netmanager-author">Network Manager</span>
+    </div>
+    <%+netmanager/nav%>
+    <div class="netmanager-content">
+        <h2>插件设置</h2>
+        <h3>默认转发目标</h3>
+        <table class="netmanager-table">
+            <tr>
+                <td width="35%">默认目标IP</td>
+                <td>
+                    <input type="text" id="default_target" style="width:170px;" placeholder="如 192.168.31.196">
+                    <button class="btn btn-primary btn-sm" onclick="saveDefaultTarget()">保存</button>
+                    <span class="text-muted" style="margin-left:8px;">添加端口转发时留空目标IP将使用此地址</span>
+                </td>
+            </tr>
+        </table>
+        <h3>系统工具</h3>
+        <div class="netmanager-toolbar">
+            <button class="btn btn-primary btn-sm" onclick="runAction('reload')">重载防火墙</button>
+            <button class="btn btn-warning btn-sm" onclick="runAction('restart')">重启防火墙</button>
+            <button class="btn btn-success btn-sm" onclick="doBackup()">备份配置</button>
+            <button class="btn btn-secondary btn-sm" onclick="loadSettings()">刷新</button>
+        </div>
+
+        <!-- 中国IPv4访问限制 -->
+        <h3>中国IPv4访问限制</h3>
+        <div class="netmanager-form" style="border-left:3px solid #f97316;">
+            <div style="margin-bottom:10px;">
+                <b>仅允许中国大陆 IPv4 访问已开放端口</b>
+                <span class="text-muted" style="margin-left:8px;">境外IPv4新建连接将被丢弃；已建立连接/出站/局域网间转发不受影响；IPv6不在范围内</span>
+            </div>
+            <table class="netmanager-table" style="margin-bottom:10px;">
+                <tr>
+                    <td width="35%">当前状态</td>
+                    <td id="china_status_cell"><span class="text-muted">加载中...</span></td>
+                </tr>
+                <tr>
+                    <td>IP库订阅链接</td>
+                    <td>
+                        <input type="text" id="china_url" style="width:70%;" placeholder="以 http:// 或 https:// 开头，每行一个 CIDR 的纯文本订阅">
+                        <button class="btn btn-secondary btn-sm" onclick="saveChinaUrl()">保存链接</button>
+                    </td>
+                </tr>
+                <tr>
+                    <td>更新计划</td>
+                    <td>
+                        <select id="china_cron_preset" onchange="onCronPresetChange()" style="padding:2px 5px;">
+                            <option value="0 3 * * *">每天凌晨3点</option>
+                            <option value="0 3 * * 0">每周日凌晨3点(默认)</option>
+                            <option value="0 3 1 * *">每月1日凌晨3点</option>
+                            <option value="0 */12 * * *">每12小时</option>
+                            <option value="__custom__">自定义...</option>
+                        </select>
+                        <input type="text" id="china_cron_custom" placeholder="5段cron: 分 时 日 月 周" style="width:200px; display:none; margin-left:8px;">
+                        <button class="btn btn-secondary btn-sm" onclick="saveChinaCron()">保存计划</button>
+                        <span class="text-muted" style="margin-left:8px; font-size:12px;">仅允许 0-9 * / , - 字符</span>
+                    </td>
+                </tr>
+                <tr>
+                    <td>上次更新 / 条数</td>
+                    <td id="china_update_cell"><span class="text-muted">—</span></td>
+                </tr>
+                <tr>
+                    <td>生效WAN口 / 规则</td>
+                    <td id="china_wan_cell"><span class="text-muted">—</span></td>
+                </tr>
+            </table>
+            <div class="netmanager-toolbar">
+                <button class="btn btn-success btn-sm" id="btn_china_enable" onclick="enableChinaFilter()">立即启用</button>
+                <button class="btn btn-warning btn-sm" id="btn_china_disable" onclick="disableChinaFilter()">关闭</button>
+                <button class="btn btn-primary btn-sm" id="btn_china_update" onclick="updateChinaFilter()">更新IP库</button>
+                <button class="btn btn-secondary btn-sm" onclick="loadChinaStatus()">刷新状态</button>
+            </div>
+        </div>
+
+        <!-- 备份管理 -->
+        <h3>备份管理</h3>
+        <div class="netmanager-form" style="border-left:3px solid #10b981;">
+            <div style="margin-bottom:10px;">
+                <b>配置备份</b>
+                <span class="text-muted" style="margin-left:8px;">支持查看、恢复、删除历史备份</span>
+            </div>
+            <div class="netmanager-toolbar">
+                <button class="btn btn-success btn-sm" onclick="listBackups()">刷新备份列表</button>
+                <button class="btn btn-secondary btn-sm" onclick="runAction('cleanup_uploads')">清理临时文件</button>
+            </div>
+            <div id="backup_list" style="margin-top:10px;"></div>
+        </div>
+
+        <!-- 插件更新 -->
+        <h3>插件更新</h3>
+        <div class="netmanager-form" style="border-left:3px solid #2563eb;">
+            <div style="margin-bottom:10px;">
+                <b>上传插件包 (.tar.gz)</b>
+                <span class="text-muted" style="margin-left:8px;">从本地上传新版本插件包进行更新</span>
+            </div>
+            <div>
+                <form id="upload_form" enctype="multipart/form-data" style="display:flex; gap:10px; align-items:center;">
+                    <input type="file" id="plugin_file" accept=".tar.gz,.tgz" style="padding:5px;">
+                    <button type="button" class="btn btn-primary btn-sm" onclick="uploadPlugin()">上传并更新</button>
+                </form>
+            </div>
+            <div id="upload_status" style="margin-top:10px;"></div>
+            <div class="text-muted" style="margin-top:8px; font-size:12px;">
+                <b>更新说明：</b><br>
+                1. 下载最新版 luci-app-netmanager-install_*.tar.gz<br>
+                2. 点击"选择文件"选择下载的压缩包<br>
+                3. 点击"上传并更新"按钮<br>
+                4. 更新过程中会自动备份当前版本<br>
+                5. 更新完成后需要刷新页面 (Ctrl+Shift+R)
+            </div>
+        </div>
+
+        <div id="action_result" class="netmanager-result"></div>
+
+        <h3>安全建议</h3>
+        <div style="background:#fef3c7; padding:14px; border-radius:8px; border-left:3px solid #f59e0b; font-size:13px; line-height:2;">
+            <b>基础安全检查清单：</b><br>
+            1. 管理页面仅内网访问（uhttpd绑定LAN口IP）<br>
+            2. SSH修改默认端口 + 仅内网或密钥登录<br>
+            3. 关闭不必要的服务（rpcbind/NFS/ttyd/wsdd2）<br>
+            4. 防火墙默认拒绝WAN口入站<br>
+            5. 端口转发只开放必要端口<br>
+            6. 定期查看SSH登录日志，发现异常IP及时封禁<br>
+            7. 建议安装fail2ban自动封禁爆破IP<br>
+            8. 建议开启SSH密钥登录，禁用密码登录
+        </div>
+
+        <!-- 运行日志 -->
+        <h3>运行日志</h3>
+        <div class="card" style="padding:15px;">
+            <table class="netmanager-table" style="margin-bottom:10px;">
+                <tr>
+                    <td width="30%">启用日志记录</td>
+                    <td>
+                        <label><input type="checkbox" id="log_enable"> 将运行日志写入 /tmp/netmanager/run.log</label>
+                        <span class="text-muted" style="margin-left:10px;">重启路由器后/tmp内容自动清空</span>
+                    </td>
+                    <td width="280px">
+                        <button class="btn btn-primary btn-sm" onclick="saveLogSetting()">保存</button>
+                        <button class="btn btn-secondary btn-sm" onclick="loadRunLog()">刷新日志</button>
+                        <button class="btn btn-warning btn-sm" onclick="clearRunLog()">清空</button>
+                    </td>
+                </tr>
+                <tr>
+                    <td>日志路径</td>
+                    <td id="log_path" colspan="2"><span class="text-muted">加载中...</span></td>
+                </tr>
+            </table>
+            <div>
+                <label style="font-size:12px;color:#666;">显示最后
+                    <select id="log_lines" onchange="loadRunLog()" style="padding:2px 5px;">
+                        <option value="100">100</option>
+                        <option value="200" selected>200</option>
+                        <option value="500">500</option>
+                        <option value="1000">1000</option>
+                    </select>
+                    行
+                </label>
+            </div>
+            <textarea id="run_log_box" readonly style="width:100%;height:260px;margin-top:8px;font-family:Consolas,'Courier New',monospace;font-size:12px;line-height:1.5;background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:4px;padding:8px;resize:vertical;"></textarea>
+        </div>
+
+        <h3>关于插件</h3>
+        <table class="netmanager-table">
+            <tr><td width="30%">插件名称</td><td>网络管理 (luci-app-netmanager)</td></tr>
+            <tr><td>版本</td><td id="plugin_version">v1.4.0</td></tr>
+            <tr><td>作者</td><td><b>Network Manager</b></td></tr>
+            <tr><td>适配系统</td><td>iStoreOS / OpenWrt (fw4/nftables)</td></tr>
+            <tr><td>功能模块</td><td>系统概览 / 端口转发 / 规则管理 / SSH日志 / 访问日志</td></tr>
+            <tr><td>后端脚本</td><td>/usr/sbin/netmanager</td></tr>
+            <tr><td>配置文件</td><td>/etc/config/netmanager</td></tr>
+        </table>
+
+        <h3>卸载插件</h3>
+        <div class="netmanager-form" style="border-left:3px solid #dc2626;">
+            <div style="margin-bottom:10px;">
+                <b style="color:#dc2626;">⚠ 危险操作（不可撤销）</b>
+                <span class="text-muted" style="margin-left:8px;">将删除后端脚本、LuCI页面、init/hotplug脚本、nft规则、cron任务与缓存；2秒后自动重启uhttpd。用户在 /etc/config/firewall 中的端口转发与防火墙规则不受影响。</span>
+            </div>
+            <table class="netmanager-table" style="margin-bottom:10px;">
+                <tr>
+                    <td width="35%">卸载范围</td>
+                    <td>
+                        <label style="font-size:13px;cursor:pointer;">
+                            <input type="checkbox" id="uninstall_keep_config" style="vertical-align:middle;margin-right:4px;">
+                            保留配置与CIDR列表（/etc/config/netmanager 与 /etc/netmanager/）
+                        </label>
+                        <span class="text-muted" style="display:block;margin-top:4px;">不勾选则全删；勾选后下次重装可继承原配置</span>
+                    </td>
+                </tr>
+            </table>
+            <div class="netmanager-toolbar">
+                <button class="btn btn-danger btn-sm" onclick="uninstallPlugin()">一键卸载插件</button>
+                <span class="text-muted" style="margin-left:8px;">卸载后浏览器将自动跳转到首页，左侧菜单不再显示「网络管理」</span>
+            </div>
+        </div>
+    </div>
+    <div class="footer-sign">网络管理插件 v1.4.0<br><span style="font-size:10px;">适配 iStoreOS / OpenWrt | 基于 fw4/nftables</span></div>
+</div>
+<script>
+const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
+
+function loadSettings() {
+    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=settings'})
+    .then(r => r.text()).then(data => {
+        data.split('\n').forEach(line => {
+            if (line.includes('=')) {
+                const idx = line.indexOf('=');
+                const k = line.substring(0, idx), v = line.substring(idx + 1);
+                if (k === 'DEFAULT_TARGET') document.getElementById('default_target').value = v;
+                if (k === 'LOG_ENABLE') document.getElementById('log_enable').checked = (v === '1');
+                if (k === 'LOG_FILE') document.getElementById('log_path').innerHTML = `<code style="background:#f1f5f9;padding:2px 6px;border-radius:3px;">${v}</code> <span class="text-muted">(路由器重启后自动清空)</span>`;
+            }
+        });
+    });
+    setTimeout(loadRunLog, 300);
+    setTimeout(loadChinaStatus, 300);
+}
+
+// ========== 运行日志功能 ==========
+function saveLogSetting() {
+    const en = document.getElementById('log_enable').checked ? '1' : '0';
+    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=log_set&enable=' + en})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + data + '</pre>';
+        loadSettings();
+    });
+}
+
+function loadRunLog() {
+    const lines = document.getElementById('log_lines').value;
+    const box = document.getElementById('run_log_box');
+    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=log_get&lines=' + lines})
+    .then(r => r.text()).then(data => {
+        let content = '';
+        let inContent = false;
+        data.split('\n').forEach(line => {
+            if (line === '---CONTENT---') { inContent = true; return; }
+            if (line === '===END===') return;
+            if (inContent) content += line + '\n';
+            else if (line.startsWith('LOG_LINES=')) {
+                const n = parseInt(line.split('=')[1]) || 0;
+                if (n === 0) content = '（暂无日志记录，请先在上方勾选"启用日志记录"并保存，然后操作页面功能以产生日志）\n';
+            }
+        });
+        box.value = content.trim();
+        // 自动滚动到底部
+        setTimeout(() => { box.scrollTop = box.scrollHeight; }, 50);
+    }).catch(e => {
+        box.value = '加载日志失败: ' + e.message;
+    });
+}
+
+function clearRunLog() {
+    if (!confirm('确定要清空运行日志吗？')) return;
+    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=log_clear'})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + data + '</pre>';
+        setTimeout(loadRunLog, 500);
+    });
+}
+
+function saveDefaultTarget() {
+    const ip = document.getElementById('default_target').value.trim();
+    if (!ip) { alert('请输入IP地址'); return; }
+    if (!/^(\d{1,3}\.){3}\d{1,3}$/.test(ip)) { alert('IP格式不正确'); return; }
+    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=set_default_target&ip=' + ip})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + data + '</pre>';
+    });
+}
+
+function runAction(action) {
+    document.getElementById('action_result').innerHTML = '<span class="text-info">执行中...</span>';
+    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=' + action})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + data + '</pre>';
+    });
+}
+
+// 备份功能
+function doBackup() {
+    if (!confirm('确定要备份当前防火墙配置吗？')) return;
+    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=backup'})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + data + '</pre>';
+        setTimeout(listBackups, 1500);
+    });
+}
+
+function listBackups() {
+    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=backup_list'})
+    .then(r => r.text()).then(data => {
+        let html = '';
+        const lines = data.split('\n');
+        let backups = [];
+        let backupCount = 0;
+        
+        lines.forEach(line => {
+            if (line.includes('|') && !line.startsWith('=')) {
+                const parts = line.split('|');
+                if (parts.length >= 2 && parts[0].startsWith('firewall-')) {
+                    backups.push(parts);
+                }
+            }
+            if (line.startsWith('BACKUP_COUNT=')) {
+                backupCount = parseInt(line.split('=')[1]) || 0;
+            }
+        });
+        
+        if (backups.length === 0) {
+            html = '<div class="text-muted" style="padding:10px;">暂无备份文件</div>';
+        } else {
+            html = `<table class="netmanager-table"><thead><tr><th>备份文件名</th><th>大小</th><th>操作</th></tr></thead><tbody>`;
+            backups.forEach(b => {
+                html += `<tr>
+                    <td><code>${b[0]}</code></td>
+                    <td>${formatSize(parseInt(b[1]) || 0)}</td>
+                    <td>
+                        <button class="btn btn-primary btn-sm" onclick="restoreBackup('${b[0]}')">恢复</button>
+                        <button class="btn btn-danger btn-sm" onclick="deleteBackup('${b[0]}')">删除</button>
+                    </td>
+                </tr>`;
+            });
+            html += '</tbody></table>';
+        }
+        
+        document.getElementById('backup_list').innerHTML = html;
+    });
+}
+
+function formatSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / 1048576).toFixed(1) + ' MB';
+}
+
+function restoreBackup(filename) {
+    if (!confirm(`确定要从备份 ${filename} 恢复配置吗？\n\n⚠️ 恢复前会自动备份当前配置！`)) return;
+    fetch(API_URL, {
+        method:'POST',
+        headers:{'Content-Type':'application/x-www-form-urlencoded'},
+        body:'action=backup_restore&filename=' + encodeURIComponent(filename)
+    })
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + data + '</pre>';
+        setTimeout(listBackups, 1500);
+    });
+}
+
+function deleteBackup(filename) {
+    if (!confirm(`确定要删除备份 ${filename} 吗？此操作不可恢复！`)) return;
+    fetch(API_URL, {
+        method:'POST',
+        headers:{'Content-Type':'application/x-www-form-urlencoded'},
+        body:'action=backup_delete&filename=' + encodeURIComponent(filename)
+    })
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + data + '</pre>';
+        setTimeout(listBackups, 1500);
+    });
+}
+
+// 插件更新功能 - 使用 multipart/form-data 原生文件上传
+function uploadPlugin() {
+    const fileInput = document.getElementById('plugin_file');
+    const file = fileInput.files[0];
+    
+    if (!file) {
+        alert('请先选择一个 .tar.gz 插件包');
+        return;
+    }
+    
+    if (!file.name.endsWith('.tar.gz') && !file.name.endsWith('.tgz')) {
+        alert('只支持 .tar.gz 格式的插件包');
+        return;
+    }
+    
+    const statusEl = document.getElementById('upload_status');
+    statusEl.innerHTML = '<span class="text-info">正在上传并更新插件...</span>';
+    
+    // 使用 FormData 实现 multipart/form-data 原生文件上传
+    // LuCI natively supports multipart file uploads via formvalue()
+    const formData = new FormData();
+    formData.append('action', 'plugin_upload_update');
+    formData.append('plugin_file', file);
+    
+    fetch(API_URL, {
+        method: 'POST',
+        body: formData
+    })
+    .then(r => r.text())
+    .then(data => {
+        statusEl.innerHTML = '';
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + data + '</pre>';
+        if (data.includes('完成') || data.includes('成功')) {
+            statusEl.innerHTML = '<div class="text-success" style="margin-top:10px;">✅ 插件更新完成！请刷新页面 (Ctrl+Shift+R)</div>';
+            fileInput.value = '';
+        }
+    })
+    .catch(err => {
+        statusEl.innerHTML = '<div class="text-danger">❌ 更新失败: ' + err.message + '</div>';
+    });
+}
+
+// ========== 中国IPv4访问限制 ==========
+function loadChinaStatus() {
+    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_status'})
+    .then(r => r.text()).then(data => {
+        let en='0', url='', cron='', lu='', cnt='0', devs='', active='0';
+        data.split('\n').forEach(line => {
+            const idx = line.indexOf('=');
+            if (idx > 0) {
+                const k = line.substring(0, idx), v = line.substring(idx + 1);
+                if (k === 'CHINA_FILTER_ENABLED') en = v;
+                else if (k === 'URL') url = v;
+                else if (k === 'CRON') cron = v;
+                else if (k === 'LAST_UPDATE') lu = v;
+                else if (k === 'COUNT') cnt = v;
+                else if (k === 'WAN_DEVS') devs = v;
+                else if (k === 'RULE_ACTIVE') active = v;
+            }
+        });
+        const ruleBadge = active === '1'
+            ? ' <span class="badge badge-blue">规则已加载</span>'
+            : (en === '1' ? ' <span class="badge badge-gray" style="background:#94a3b8;color:#fff;">规则未加载</span>' : '');
+        const statusBadge = en === '1' ? '<span class="badge badge-green">已启用</span>' + ruleBadge : '<span class="badge badge-gray">已关闭</span>';
+        document.getElementById('china_status_cell').innerHTML = statusBadge;
+        document.getElementById('china_url').value = url;
+        document.getElementById('china_update_cell').innerHTML = '上次更新: ' + (lu || '未更新') + ' | CIDR条数: <b>' + cnt + '</b>';
+        document.getElementById('china_wan_cell').innerHTML = 'WAN设备: <code>' + (devs || '(未探测到)') + '</code> | 规则: ' + (active === '1' ? '<span class="text-success">生效中</span>' : '<span class="text-muted">未生效</span>');
+        // cron 预设回填
+        const sel = document.getElementById('china_cron_preset');
+        const customInput = document.getElementById('china_cron_custom');
+        let matched = false;
+        for (let i = 0; i < sel.options.length; i++) {
+            if (sel.options[i].value === cron && sel.options[i].value !== '__custom__') { sel.selectedIndex = i; matched = true; break; }
+        }
+        if (!matched) {
+            sel.value = '__custom__';
+            customInput.value = cron;
+            customInput.style.display = '';
+        } else {
+            customInput.value = '';
+            customInput.style.display = 'none';
+        }
+    }).catch(e => {
+        document.getElementById('china_status_cell').innerHTML = '<span class="text-danger">加载失败: ' + e.message + '</span>';
+    });
+}
+
+function onCronPresetChange() {
+    const sel = document.getElementById('china_cron_preset');
+    const customInput = document.getElementById('china_cron_custom');
+    if (sel.value === '__custom__') { customInput.style.display = ''; }
+    else { customInput.style.display = 'none'; customInput.value = ''; }
+}
+
+function saveChinaUrl() {
+    const url = document.getElementById('china_url').value.trim();
+    if (!url) { alert('请输入订阅链接'); return; }
+    if (!/^https?:\/\//.test(url)) { alert('链接必须以 http:// 或 https:// 开头'); return; }
+    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_set_url&url=' + encodeURIComponent(url)})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + data + '</pre>';
+    });
+}
+
+function saveChinaCron() {
+    const sel = document.getElementById('china_cron_preset');
+    let cron = sel.value;
+    if (cron === '__custom__') {
+        cron = document.getElementById('china_cron_custom').value.trim();
+        if (!cron) { alert('请输入自定义cron表达式(5段: 分 时 日 月 周)'); return; }
+    }
+    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_set_cron&cron=' + encodeURIComponent(cron)})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + data + '</pre>';
+        setTimeout(loadChinaStatus, 300);
+    });
+}
+
+function setChinaBtns(enabled) {
+    ['btn_china_enable','btn_china_disable','btn_china_update'].forEach(id => {
+        const b = document.getElementById(id);
+        if (b) b.disabled = !enabled;
+    });
+}
+
+function enableChinaFilter() {
+    if (!confirm('确定开启中国IPv4访问限制吗？\n\n开启后仅中国大陆IPv4可访问已开放端口（端口转发与路由器本地放行端口），境外IPv4新建连接将被丢弃。')) return;
+    setChinaBtns(false);
+    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_enable'})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + data + '</pre>';
+        setTimeout(() => { loadChinaStatus(); setChinaBtns(true); }, 600);
+    }).catch(e => { setChinaBtns(true); alert('启用失败: ' + e.message); });
+}
+
+function disableChinaFilter() {
+    if (!confirm('确定关闭中国IPv4访问限制吗？\n\n关闭后境外IPv4可恢复访问已开放端口。')) return;
+    setChinaBtns(false);
+    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_disable'})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + data + '</pre>';
+        setTimeout(() => { loadChinaStatus(); setChinaBtns(true); }, 400);
+    }).catch(e => { setChinaBtns(true); alert('关闭失败: ' + e.message); });
+}
+
+function updateChinaFilter() {
+    setChinaBtns(false);
+    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_update'})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + data + '</pre>';
+        setTimeout(() => { loadChinaStatus(); setChinaBtns(true); }, 600);
+    }).catch(e => { setChinaBtns(true); alert('更新失败: ' + e.message); });
+}
+
+// ========== 卸载插件 ==========
+function uninstallPlugin() {
+    const keep = document.getElementById('uninstall_keep_config').checked ? '1' : '0';
+    const keepTxt = keep === '1' ? '• 保留 /etc/config/netmanager、/etc/netmanager/ 与 /etc/config/dnssettings\n' : '• 删除 /etc/config/netmanager、/etc/netmanager/ 与 /etc/config/dnssettings\n';
+    const msg = '⚠ 确定卸载「网络管理插件」吗？\n\n此操作将：\n'
+        + '• 关闭中国IPv4过滤并清理 nft 规则、cron 任务\n'
+        + '• 删除后端脚本 /usr/sbin/netmanager\n'
+        + '• 删除 LuCI 控制器、DNS CBI 模型与全部视图页面\n'
+        + '• 删除 DNS 应用/备份脚本 (dnssettings-apply.sh / dnssettings-backup.sh)\n'
+        + '• 删除 init / hotplug 自启脚本\n'
+        + keepTxt
+        + '• 清理 /tmp 临时文件与 LuCI 缓存\n'
+        + '• 2秒后自动重启 uhttpd\n\n'
+        + '用户在 /etc/config/firewall 中的端口转发与防火墙规则不受影响，保留不动。\n\n'
+        + '卸载后浏览器将自动跳转到首页，左侧菜单不再显示「网络管理」。';
+    if (!confirm(msg)) return;
+    if (!confirm('⚠ 二次确认：这是最终确认，卸载后无法撤销，确定继续？')) return;
+    document.getElementById('action_result').innerHTML = '<pre class="result-pre" style="color:#dc2626;">卸载进行中，请勿关闭页面...（uhttpd 重启会导致连接断开，属正常现象）</pre>';
+    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=uninstall&keep=' + keep})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + data + '</pre>';
+        // 3秒后uhttpd已重启，跳转首页
+        setTimeout(() => {
+            alert('卸载已完成，uhttpd 正在重启。\n点击确定后浏览器将跳转到首页。');
+            window.location.href = '/';
+        }, 3000);
+    }).catch(e => {
+        // uhttpd重启会断开连接，属正常
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">卸载请求已发出（uhttpd重启导致连接断开属正常现象）。\n请等待3秒后刷新浏览器或访问路由器首页。</pre>';
+        setTimeout(() => { window.location.href = '/'; }, 3000);
+    });
+}
+
+// 初始化
+loadSettings();
+listBackups();
+</script>
+<%+footer%>

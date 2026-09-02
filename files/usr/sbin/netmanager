@@ -1,0 +1,1880 @@
+#!/bin/ash
+# ============================================================
+# 网络管理插件 - 后端核心脚本 v1.1
+# 
+# 适配: iStoreOS / OpenWrt (fw4/nftables, BusyBox)
+# ============================================================
+
+DEFAULT_TARGET="192.168.31.196"
+CONFIG_FILE="/etc/config/netmanager"
+LOG_DIR="/tmp/netmanager"
+LOG_FILE="$LOG_DIR/run.log"
+LOG_ENABLED=0
+
+# 确保日志目录存在（tmp每次重启会清，需要每次重建）
+mkdir -p "$LOG_DIR" 2>/dev/null
+
+# 检查并加载日志开关（调用 load_config 后 LOG_ENABLED 才有效）
+reload_log_setting() {
+    local val=$(uci get netmanager.settings.log_enable 2>/dev/null)
+    [ "$val" = "1" ] && LOG_ENABLED=1 || LOG_ENABLED=0
+}
+
+# 写运行日志：[时间戳] [级别] 内容
+write_log() {
+    [ "$LOG_ENABLED" = "1" ] || return 0
+    local level="$1"; shift
+    local msg="$*"
+    local ts=$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date '+%s')
+    mkdir -p "$LOG_DIR" 2>/dev/null
+    # 日志文件超过 2MB 自动截断保留最后 500 行
+    if [ -f "$LOG_FILE" ]; then
+        local sz=$(wc -c < "$LOG_FILE" 2>/dev/null || echo 0)
+        if [ "$sz" -gt 2097152 ] 2>/dev/null; then
+            tail -n 500 "$LOG_FILE" > "$LOG_FILE.tmp" 2>/dev/null
+            mv "$LOG_FILE.tmp" "$LOG_FILE" 2>/dev/null
+        fi
+    fi
+    echo "[$ts] [$level] $msg" >> "$LOG_FILE" 2>/dev/null
+    return 0
+}
+
+# 公开的日志快捷函数（同时写标准输出 + 日志文件）
+info() { echo "[INFO] $*"; write_log "INFO" "$*"; }
+warn() { echo "[WARN] $*"; write_log "WARN" "$*"; }
+error() { echo "[ERROR] $*"; write_log "ERROR" "$*"; }
+
+load_config() {
+    [ -f "$CONFIG_FILE" ] || {
+        uci set netmanager.settings=netmanager
+        uci set netmanager.settings.default_target="$DEFAULT_TARGET"
+        uci set netmanager.settings.log_days='7'
+        uci set netmanager.settings.log_enable='0'
+        uci commit netmanager
+    }
+    DEFAULT_TARGET=$(uci get netmanager.settings.default_target 2>/dev/null || echo "$DEFAULT_TARGET")
+    reload_log_setting
+    # 补齐中国IPv4过滤相关默认值（仅在选项缺失时写入，不覆盖用户已自定义值）
+    if [ -z "$(uci get netmanager.settings.china_filter_enable 2>/dev/null)" ]; then
+        uci set netmanager.settings.china_filter_enable='0'
+        uci set netmanager.settings.china_filter_url='https://metowolf.github.io/iplist/data/special/china.txt'
+        uci set netmanager.settings.china_filter_cron='0 3 * * 0'
+        uci set netmanager.settings.china_filter_last_update=''
+        uci set netmanager.settings.china_filter_count='0'
+        uci commit netmanager 2>/dev/null
+    fi
+}
+
+# ========== 1. 系统概览 ==========
+cmd_overview() {
+    load_config
+    echo "===NETMANAGER_OVERVIEW==="
+
+    # 防火墙状态：检测 fw4 表是否存在
+    # 用 nft list table 替代全量 nft list ruleset（原代码调用两次全量查询，规则多时很慢）
+    if nft list table inet fw4 >/dev/null 2>&1; then
+        echo "FW_STATUS=running"
+    else
+        echo "FW_STATUS=stopped"
+    fi
+
+    # 规则数量
+    redirect_count=0; rule_count=0
+    idx=0
+    while uci get firewall.@redirect[$idx].name >/dev/null 2>&1; do
+        redirect_count=$((redirect_count+1)); idx=$((idx+1))
+    done
+    idx=0
+    while uci get firewall.@rule[$idx].name >/dev/null 2>&1; do
+        rule_count=$((rule_count+1)); idx=$((idx+1))
+    done
+    echo "REDIRECT_COUNT=$redirect_count"
+    echo "RULE_COUNT=$rule_count"
+
+    # WAN口IP（通过路由获取，不写死接口名）
+    wan_ip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}' | head -1)
+    [ -z "$wan_ip" ] && wan_ip=$(ip -4 addr show 2>/dev/null | grep 'inet ' | grep -v '127.0.0.1' | grep -v '172\.' | grep -v '192.168' | awk '{print $2}' | cut -d/ -f1 | head -1)
+    [ -z "$wan_ip" ] && wan_ip="N/A"
+    echo "WAN_IP=$wan_ip"
+
+    # WAN IPv6
+    wan_ipv6=$(ip -6 route get 2001:4860:4860::8888 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}' | head -1)
+    [ -z "$wan_ipv6" ] && wan_ipv6=$(ip -6 addr show 2>/dev/null | grep 'scope global' | grep -v 'fd' | awk '{print $2}' | cut -d/ -f1 | head -1)
+    [ -z "$wan_ipv6" ] && wan_ipv6="N/A"
+    echo "WAN_IPV6=$wan_ipv6"
+
+    # LAN口IP
+    lan_ip=$(uci get network.lan.ipaddr 2>/dev/null || echo "192.168.1.1")
+    echo "LAN_IP=$lan_ip"
+
+    # 运行时间（从/proc/uptime计算）
+    uptime_sec=$(cat /proc/uptime 2>/dev/null | awk '{print int($1)}')
+    up_days=$((uptime_sec / 86400))
+    up_hours=$(( (uptime_sec % 86400) / 3600 ))
+    up_mins=$(( (uptime_sec % 3600) / 60 ))
+    if [ $up_days -gt 0 ]; then
+        uptime_str="${up_days}天${up_hours}小时${up_mins}分"
+    elif [ $up_hours -gt 0 ]; then
+        uptime_str="${up_hours}小时${up_mins}分"
+    else
+        uptime_str="${up_mins}分钟"
+    fi
+    echo "UPTIME=$uptime_str"
+
+    # 负载
+    load=$(cat /proc/loadavg 2>/dev/null | awk '{print $1" "$2" "$3}')
+    echo "LOAD=$load"
+
+    # 内存
+    mem_info=$(free 2>/dev/null | grep Mem)
+    mem_total=$(echo "$mem_info" | awk '{print $2}')
+    mem_used=$(echo "$mem_info" | awk '{print $3}')
+    if [ -n "$mem_total" ] && [ "$mem_total" -gt 0 ]; then
+        mem_percent=$((mem_used * 100 / mem_total))
+    else
+        mem_percent=0
+    fi
+    echo "MEM_PERCENT=$mem_percent"
+
+    echo "DEFAULT_TARGET=$DEFAULT_TARGET"
+
+    # SSH失败次数（适配dropbear + BusyBox，不用grep -P）
+    # dropbear失败: "Bad password attempt" / "Exit before auth" / "auth failed" / "invalid user"
+    ssh_fail=0
+    if command -v logread >/dev/null 2>&1; then
+        ssh_fail=$(logread 2>/dev/null | grep -iE "dropbear|sshd" | grep -ciE "bad password|exit before auth|auth fail|invalid user|password auth fail|connection closed.*auth" 2>/dev/null)
+    fi
+    # 备用：从系统日志文件读取
+    if [ "$ssh_fail" -eq 0 ] 2>/dev/null; then
+        for logf in /var/log/messages /tmp/log/messages /var/log/syslog; do
+            [ -f "$logf" ] && {
+                f=$(grep -iE "dropbear|sshd" "$logf" 2>/dev/null | grep -ciE "bad password|exit before auth|auth fail|invalid user|password auth fail" 2>/dev/null)
+                [ -n "$f" ] && [ "$f" -gt 0 ] 2>/dev/null && ssh_fail=$f && break
+            }
+        done
+    fi
+    [ -z "$ssh_fail" ] && ssh_fail=0
+    echo "SSH_FAIL_24H=$ssh_fail"
+
+    # 当前连接数（优先conntrack，其次/proc）
+    conn_count=0
+    if command -v conntrack >/dev/null 2>&1; then
+        conn_count=$(conntrack -C 2>/dev/null)
+    fi
+    if [ -z "$conn_count" ] || [ "$conn_count" = "0" ]; then
+        conn_count=$(wc -l < /proc/net/nf_conntrack 2>/dev/null || echo 0)
+    fi
+    [ -z "$conn_count" ] && conn_count=0
+    echo "CONN_COUNT=$conn_count"
+
+    echo "===END==="
+}
+
+# ========== 2. 端口转发列表 ==========
+cmd_port_list() {
+    load_config
+    write_log "DEBUG" "port_list: 开始加载端口转发列表"
+    echo "===PORT_FORWARD_LIST==="
+    echo "DEFAULT_TARGET=$DEFAULT_TARGET"
+    
+    # 性能优化：nft list ruleset 全量查询在规则多时需 1~3 秒，
+    # 改为只查 DNAT 链（输出量减少 90%），并加 2 秒文件缓存避免重复调用。
+    # cmd_overview / port_list 共享同一缓存文件，2 秒内复用。
+    NFT_CACHE_FILE="/tmp/.netmanager_nft_dstnat"
+    NFT_TS_FILE="/tmp/.netmanager_nft_dstnat.ts"
+    get_nft_dstnat() {
+        local now mtime age out
+        now=$(date +%s)
+        mtime=0
+        [ -f "$NFT_TS_FILE" ] && mtime=$(cat "$NFT_TS_FILE" 2>/dev/null)
+        age=$((now - mtime))
+        # 2 秒内直接复用文件缓存（毫秒级返回）
+        if [ -f "$NFT_CACHE_FILE" ] && [ -n "$mtime" ] && [ "$age" -lt 2 ]; then
+            cat "$NFT_CACHE_FILE" 2>/dev/null
+            return
+        fi
+        out=$(nft list chain inet fw4 dstnat 2>/dev/null)
+        printf '%s' "$out" > "$NFT_CACHE_FILE" 2>/dev/null
+        echo "$now" > "$NFT_TS_FILE" 2>/dev/null
+        printf '%s' "$out"
+    }
+    nft_cache=$(get_nft_dstnat)
+    
+    # 从nft缓存中提取指定端口的计数器
+    get_port_pkts() {
+        local dport="$1"
+        local result=""
+        result=$(echo "$nft_cache" | grep -E "dport[[:space:]]+${dport}[[:space:]]" | grep -o 'packets [0-9]*' | head -1 | awk '{print $2}')
+        if [ -z "$result" ]; then
+            result=$(echo "$nft_cache" | grep -E "sport[[:space:]]+${dport}[[:space:]]" | grep -o 'packets [0-9]*' | head -1 | awk '{print $2}')
+        fi
+        [ -n "$result" ] && echo "$result" || echo "0"
+    }
+    
+    # 用 uci show 一次性读取所有防火墙配置
+    uci_data=$(uci -q show firewall 2>/dev/null)
+    
+    echo "---IPV4---"
+    
+    # 解析 redirect 条目，输出到临时文件
+    echo "$uci_data" | awk '
+    /^firewall\.@redirect\[/ {
+        idx = $0
+        sub(/^firewall\.@redirect\[/, "", idx)
+        sub(/\].*/, "", idx)
+        idx = idx + 0
+        attr = $0
+        sub(/^firewall\.@redirect\[[0-9]+\]\./, "", attr)
+        eq_pos = index(attr, "=")
+        if (eq_pos > 0) {
+            key = substr(attr, 1, eq_pos - 1)
+            val = substr(attr, eq_pos + 1)
+            # UCI show 输出用单引号，先去掉首尾的单引号，再去掉可能的双引号
+            gsub(/^\047/, "", val)
+            gsub(/\047$/, "", val)
+            gsub(/^"/, "", val)
+            gsub(/"$/, "", val)
+        }
+        if (key == "name") names[idx] = val
+        else if (key == "proto") protos[idx] = val
+        else if (key == "src_dport") sps[idx] = val
+        else if (key == "dest_ip") dips[idx] = val
+        else if (key == "dest_port") dps[idx] = val
+        else if (key == "enabled") enableds[idx] = val
+        if (idx > max_idx) max_idx = idx
+    }
+    END {
+        for (i = 0; i <= max_idx; i++) {
+            if (names[i] != "") {
+                proto = (protos[i] != "") ? protos[i] : "tcp"
+                sp = (sps[i] != "") ? sps[i] : ""
+                dip = (dips[i] != "") ? dips[i] : ""
+                dp = (dps[i] != "") ? dps[i] : sp
+                en = (enableds[i] != "") ? enableds[i] : "1"
+                printf "%d|%s|%s|%s|%s|%s|%s\n", i, names[i], proto, sp, dip, dp, en
+            }
+        }
+    }' > /tmp/fwm_pv4.txt
+    
+    while IFS='|' read -r idx name proto sp dip dp en; do
+        [ -z "$name" ] && continue
+        pkts="0"
+        [ -n "$sp" ] && pkts=$(get_port_pkts "$sp")
+        echo "$idx|$name|$proto|$sp|$dip|$dp|$en|$pkts"
+    done < /tmp/fwm_pv4.txt
+    rm -f /tmp/fwm_pv4.txt
+    
+    echo "---IPV6---"
+    
+    # 解析 rule 条目，筛选 IPv6
+    echo "$uci_data" | awk '
+    /^firewall\.@rule\[/ {
+        idx = $0
+        sub(/^firewall\.@rule\[/, "", idx)
+        sub(/\].*/, "", idx)
+        idx = idx + 0
+        attr = $0
+        sub(/^firewall\.@rule\[[0-9]+\]\./, "", attr)
+        eq_pos = index(attr, "=")
+        if (eq_pos > 0) {
+            key = substr(attr, 1, eq_pos - 1)
+            val = substr(attr, eq_pos + 1)
+            # 去掉单引号和双引号
+            gsub(/^\047/, "", val)
+            gsub(/\047$/, "", val)
+            gsub(/^"/, "", val)
+            gsub(/"$/, "", val)
+        }
+        if (key == "name") names[idx] = val
+        else if (key == "family") fams[idx] = val
+        else if (key == "proto") protos[idx] = val
+        else if (key == "dest_port") dps[idx] = val
+        else if (key == "enabled") enableds[idx] = val
+        if (idx > max_idx) max_idx = idx
+    }
+    END {
+        for (i = 0; i <= max_idx; i++) {
+            if (names[i] != "" && fams[i] == "ipv6" && dps[i] != "") {
+                proto = (protos[i] != "") ? protos[i] : "tcp"
+                en = (enableds[i] != "") ? enableds[i] : "1"
+                printf "%d|%s|%s|%s|%s\n", i, names[i], proto, dps[i], en
+            }
+        }
+    }' > /tmp/fwm_pv6.txt
+    
+    while IFS='|' read -r idx name proto dp en; do
+        [ -z "$name" ] && continue
+        pkts=$(get_port_pkts "$dp")
+        echo "$idx|$name|$proto|$dp|$en|$pkts"
+    done < /tmp/fwm_pv6.txt
+    rm -f /tmp/fwm_pv6.txt
+    
+    echo "===END==="
+    write_log "DEBUG" "port_list: 列表加载完成"
+}
+
+# ========== 3. 添加端口转发 ==========
+cmd_port_add() {
+    port="$1"; proto="$2"; target="$3"; ipver="$4"
+    [ -z "$port" ] && { error "用法: netmanager port_add <端口> <tcp|udp|both> [目标IP] [v4|v6|both]"; exit 1; }
+    write_log "INFO" "port_add: 请求添加 端口=$port 协议=$proto 目标=$target 版本=$ipver"
+    [ -z "$proto" ] && proto="tcp"
+    load_config
+    # 端口格式标准化：冒号转横线（OpenWrt要求 999-1520 而非 999:1520）
+    port=$(echo "$port" | sed 's/:/-/g')
+    if [ -n "$target" ]; then
+        case "$target" in
+            both|v4|v6)
+                # 参数错位：$3 实际是 ipver，target 用默认值
+                ipver="$target"
+                target="$DEFAULT_TARGET"
+                ;;
+            *)
+                # 正常情况，$3 是IP
+                ;;
+        esac
+    else
+        target="$DEFAULT_TARGET"
+    fi
+    [ -z "$ipver" ] && ipver="both"
+
+    if [ "$ipver" = "v4" ] || [ "$ipver" = "both" ]; then
+        for p in $(echo "$proto" | sed 's/both/tcp udp/'); do
+            exists=0; idx=0
+            while true; do
+                name=$(uci get firewall.@redirect[$idx].name 2>/dev/null)
+                [ -z "$name" ] && break
+                sp=$(uci get firewall.@redirect[$idx].src_dport 2>/dev/null)
+                pr=$(uci get firewall.@redirect[$idx].proto 2>/dev/null)
+                [ "$sp" = "$port" ] && [ "$pr" = "$p" ] && exists=1
+                idx=$((idx+1))
+            done
+            if [ $exists -eq 0 ]; then
+                uci add firewall redirect > /dev/null
+                uci set firewall.@redirect[-1].name="Forward-${port}-${p}"
+                uci set firewall.@redirect[-1].src="wan"
+                uci set firewall.@redirect[-1].proto="$p"
+                uci set firewall.@redirect[-1].src_dport="$port"
+                uci set firewall.@redirect[-1].dest="lan"
+                uci set firewall.@redirect[-1].dest_ip="$target"
+                uci set firewall.@redirect[-1].dest_port="$port"
+                uci set firewall.@redirect[-1].target="DNAT"
+                info "IPv4 DNAT: $port/$p -> $target:$port"
+            else
+                warn "IPv4已存在: $port/$p"
+            fi
+        done
+    fi
+
+    if [ "$ipver" = "v6" ] || [ "$ipver" = "both" ]; then
+        for p in $(echo "$proto" | sed 's/both/tcp udp/'); do
+            exists=0; idx=0
+            while true; do
+                name=$(uci get firewall.@rule[$idx].name 2>/dev/null)
+                [ -z "$name" ] && break
+                fam=$(uci get firewall.@rule[$idx].family 2>/dev/null)
+                dp=$(uci get firewall.@rule[$idx].dest_port 2>/dev/null)
+                pr=$(uci get firewall.@rule[$idx].proto 2>/dev/null)
+                [ "$fam" = "ipv6" ] && [ "$dp" = "$port" ] && [ "$pr" = "$p" ] && exists=1
+                idx=$((idx+1))
+            done
+            if [ $exists -eq 0 ]; then
+                uci add firewall rule > /dev/null
+                uci set firewall.@rule[-1].name="Allow-IPv6-${port}-${p}"
+                uci set firewall.@rule[-1].src="wan"
+                uci set firewall.@rule[-1].proto="$p"
+                uci set firewall.@rule[-1].dest="lan"
+                uci set firewall.@rule[-1].dest_port="$port"
+                uci set firewall.@rule[-1].family="ipv6"
+                uci set firewall.@rule[-1].target="ACCEPT"
+                info "IPv6放行: $port/$p"
+            else
+                warn "IPv6已存在: $port/$p"
+            fi
+        done
+    fi
+
+    uci commit firewall
+    rm -f /tmp/.uci/firewall 2>/dev/null
+    /etc/init.d/firewall reload > /dev/null 2>&1
+    # 清除 nft 命中数缓存，确保下次 port_list 拿到最新数据
+    rm -f /tmp/.netmanager_nft_dstnat /tmp/.netmanager_nft_dstnat.ts 2>/dev/null
+    info "完成！"
+}
+
+# ========== 4. 编辑端口转发 ==========
+cmd_port_edit() {
+    old_port="$1"; old_proto="$2"; new_port="$3"; new_proto="$4"; new_target="$5"; new_ipver="$6"
+    [ -z "$old_port" ] && { error "用法: netmanager port_edit <旧端口> <旧协议> <新端口> <新协议> <新目标IP> [v4|v6|both]"; exit 1; }
+    [ -z "$old_proto" ] && old_proto="tcp"
+    [ -z "$new_proto" ] && new_proto="tcp"
+    load_config
+    [ -z "$new_target" ] && new_target="$DEFAULT_TARGET"
+    [ -z "$new_ipver" ] && new_ipver="both"
+    # 端口格式标准化
+    new_port=$(echo "$new_port" | sed 's/:/-/g')
+    old_port=$(echo "$old_port" | sed 's/:/-/g')
+
+    modified=0
+    # 生成要匹配的协议列表（处理 both/tcpudp/空值）
+    match_old_protos=""
+    case "$old_proto" in
+        both|tcpudp)
+            match_old_protos="tcp udp"
+            ;;
+        tcp|udp)
+            match_old_protos="$old_proto"
+            ;;
+        *)
+            match_old_protos="$old_proto"
+            ;;
+    esac
+
+    # 修改IPv4 redirect
+    idx=0
+    while uci get firewall.@redirect[$idx].name >/dev/null 2>&1; do
+        sp=$(uci get firewall.@redirect[$idx].src_dport 2>/dev/null)
+        pr=$(uci get firewall.@redirect[$idx].proto 2>/dev/null)
+        [ -z "$pr" ] && pr="tcp"  # 空proto默认为tcp
+        if [ "$sp" = "$old_port" ]; then
+            for mp in $match_old_protos; do
+                if [ "$pr" = "$mp" ]; then
+                    if [ "$new_ipver" = "v6" ]; then
+                        # 新规则只要IPv6，删除IPv4
+                        uci delete firewall.@redirect[$idx]
+                        info "删除IPv4转发: $old_port/$pr"
+                    else
+                        uci set firewall.@redirect[$idx].src_dport="$new_port"
+                        uci set firewall.@redirect[$idx].dest_port="$new_port"
+                        uci set firewall.@redirect[$idx].proto="$new_proto"
+                        uci set firewall.@redirect[$idx].dest_ip="$new_target"
+                        uci set firewall.@redirect[$idx].name="Forward-${new_port}"
+                        info "更新IPv4转发: $old_port/$pr -> $new_port/$new_proto -> $new_target"
+                    fi
+                    modified=1
+                    break 2
+                fi
+            done
+        fi
+        idx=$((idx+1))
+    done
+
+    # 修改IPv6 rule（放宽条件，支持系统自带规则）
+    idx=0
+    while uci get firewall.@rule[$idx].name >/dev/null 2>&1; do
+        fam=$(uci get firewall.@rule[$idx].family 2>/dev/null)
+        dp=$(uci get firewall.@rule[$idx].dest_port 2>/dev/null)
+        pr=$(uci get firewall.@rule[$idx].proto 2>/dev/null)
+        [ -z "$pr" ] && pr="tcp"  # 空proto默认为tcp
+        if [ "$fam" = "ipv6" ] && [ "$dp" = "$old_port" ]; then
+            for mp in $match_old_protos; do
+                if [ "$pr" = "$mp" ]; then
+                    if [ "$new_ipver" = "v4" ]; then
+                        uci delete firewall.@rule[$idx]
+                        info "删除IPv6放行: $old_port/$pr"
+                    else
+                        uci set firewall.@rule[$idx].dest_port="$new_port"
+                        uci set firewall.@rule[$idx].proto="$new_proto"
+                        uci set firewall.@rule[$idx].name="Allow-IPv6-${new_port}-${new_proto}"
+                        info "更新IPv6放行: $old_port/$pr -> $new_port/$new_proto"
+                    fi
+                    modified=1
+                    break 2
+                fi
+            done
+        fi
+        idx=$((idx+1))
+    done
+
+    if [ "$modified" -eq 0 ]; then
+        error "未找到旧规则: $old_port/$old_proto"
+        exit 1
+    fi
+
+    uci commit firewall
+    rm -f /tmp/.uci/firewall 2>/dev/null
+    /etc/init.d/firewall reload > /dev/null 2>&1
+    # 清除 nft 命中数缓存，确保下次 port_list 拿到最新数据
+    rm -f /tmp/.netmanager_nft_dstnat /tmp/.netmanager_nft_dstnat.ts 2>/dev/null
+    info "端口转发已更新"
+}
+
+# ========== 5. 删除端口转发 ==========
+cmd_port_del() {
+    port="$1"; proto="${2:-tcp}"
+    [ -z "$port" ] && { error "用法: netmanager port_del <端口> [tcp|udp|both]"; exit 1; }
+    load_config
+    write_log "INFO" "port_del: 请求删除 端口=$port 协议=$proto"
+
+    # 端口格式标准化：冒号转横线
+    port=$(echo "$port" | sed 's/:/-/g')
+
+    # 扩展proto匹配：处理 both/tcpudp/空值
+    # 生成要匹配的协议列表
+    match_protos=""
+    case "$proto" in
+        both|tcpudp)
+            match_protos="tcp udp"
+            ;;
+        tcp|udp)
+            match_protos="$proto"
+            ;;
+        *)
+            match_protos="$proto"
+            ;;
+    esac
+
+    # 收集所有需要删除的 redirect 索引（从后往前，避免索引移位）
+    del_indices=""
+    idx=0
+    while true; do
+        name=$(uci get firewall.@redirect[$idx].name 2>/dev/null)
+        [ -z "$name" ] && break
+        sp=$(uci get firewall.@redirect[$idx].src_dport 2>/dev/null)
+        pr=$(uci get firewall.@redirect[$idx].proto 2>/dev/null)
+        [ -z "$pr" ] && pr="tcp"  # 空proto默认为tcp
+        if [ "$sp" = "$port" ]; then
+            for mp in $match_protos; do
+                if [ "$pr" = "$mp" ]; then
+                    del_indices="$idx $del_indices"
+                    break
+                fi
+            done
+        fi
+        idx=$((idx+1))
+    done
+
+    # 删除收集到的 redirect 规则
+    for didx in $del_indices; do
+        name=$(uci get firewall.@redirect[$didx].name 2>/dev/null)
+        uci delete firewall.@redirect[$didx]
+        info "删除IPv4: $name"
+    done
+
+    # 收集所有需要删除的 rule 索引（从后往前，避免索引移位）
+    del_rule_indices=""
+    idx=0
+    while true; do
+        name=$(uci get firewall.@rule[$idx].name 2>/dev/null)
+        [ -z "$name" ] && break
+        fam=$(uci get firewall.@rule[$idx].family 2>/dev/null)
+        dp=$(uci get firewall.@rule[$idx].dest_port 2>/dev/null)
+        pr=$(uci get firewall.@rule[$idx].proto 2>/dev/null)
+        [ -z "$pr" ] && pr="tcp"  # 空proto默认为tcp
+        if [ "$fam" = "ipv6" ] && [ "$dp" = "$port" ]; then
+            for mp in $match_protos; do
+                if [ "$pr" = "$mp" ]; then
+                    del_rule_indices="$idx $del_rule_indices"
+                    break
+                fi
+            done
+        fi
+        idx=$((idx+1))
+    done
+
+    # 删除收集到的 rule 规则
+    for didx in $del_rule_indices; do
+        name=$(uci get firewall.@rule[$didx].name 2>/dev/null)
+        uci delete firewall.@rule[$didx]
+        info "删除IPv6: $name"
+    done
+
+    uci commit firewall
+    rm -f /tmp/.uci/firewall 2>/dev/null
+    /etc/init.d/firewall reload > /dev/null 2>&1
+    # 清除 nft 命中数缓存，确保下次 port_list 拿到最新数据
+    rm -f /tmp/.netmanager_nft_dstnat /tmp/.netmanager_nft_dstnat.ts 2>/dev/null
+    info "完成！"
+}
+
+# ========== 5. 防火墙规则列表 ==========
+cmd_rule_list() {
+    echo "===FIREWALL_RULE_LIST==="
+    idx=0
+    while true; do
+        name=$(uci get firewall.@rule[$idx].name 2>/dev/null)
+        [ -z "$name" ] && break
+        src=$(uci get firewall.@rule[$idx].src 2>/dev/null)
+        dst=$(uci get firewall.@rule[$idx].dest 2>/dev/null)
+        proto=$(uci get firewall.@rule[$idx].proto 2>/dev/null)
+        dp=$(uci get firewall.@rule[$idx].dest_port 2>/dev/null)
+        target=$(uci get firewall.@rule[$idx].target 2>/dev/null)
+        fam=$(uci get firewall.@rule[$idx].family 2>/dev/null)
+        enabled=$(uci get firewall.@rule[$idx].enabled 2>/dev/null)
+        [ -z "$enabled" ] && enabled="1"
+        [ -z "$fam" ] && fam="any"
+        echo "$idx|$name|$src|$dst|$proto|$dp|$target|$fam|$enabled"
+        idx=$((idx+1))
+    done
+    echo "===END==="
+}
+
+# ========== 6. 添加防火墙规则 ==========
+cmd_rule_add() {
+    name="$1"; src="$2"; dst="$3"; proto="$4"; port="$5"; target="$6"; fam="${7:-any}"
+    [ -z "$name" ] && { error "用法: netmanager rule_add <名称> <源zone> <目标zone> <协议> <端口> <ACCEPT|DROP|REJECT> [ipv4|ipv6|any]"; exit 1; }
+    # 健壮性：检测参数错位。如果 $6 不是合法动作而是 any/ipv4/ipv6，说明 dst 为空被吞了
+    case "$target" in
+        any|ipv4|ipv6)
+            # 参数错位：$3=proto $4=port $5=target $6=fam，dst 为空
+            fam="$target"
+            target="$port"
+            port="$proto"
+            proto="$dst"
+            dst=""
+            ;;
+    esac
+    [ -z "$proto" ] && proto="tcp"
+    [ -z "$target" ] && target="ACCEPT"
+    # 端口格式标准化：冒号转横线
+    port=$(echo "$port" | sed 's/:/-/g')
+    uci set firewall.@rule[-1].name="$name"
+    [ -n "$src" ] && uci set firewall.@rule[-1].src="$src"
+    [ -n "$dst" ] && uci set firewall.@rule[-1].dest="$dst"
+    uci set firewall.@rule[-1].proto="$proto"
+    [ -n "$port" ] && uci set firewall.@rule[-1].dest_port="$port"
+    uci set firewall.@rule[-1].target="$target"
+    [ "$fam" != "any" ] && uci set firewall.@rule[-1].family="$fam"
+
+    uci commit firewall
+    rm -f /tmp/.uci/firewall 2>/dev/null
+    /etc/init.d/firewall reload > /dev/null 2>&1
+    info "规则已添加: $name ($target)"
+}
+
+# ========== 7. 编辑防火墙规则 ==========
+cmd_rule_edit() {
+    idx="$1"; name="$2"; src="$3"; dst="$4"; proto="$5"; port="$6"; target="$7"; fam="${8:-any}"
+    [ -z "$idx" ] && { error "用法: netmanager rule_edit <索引> <名称> <源> <目标> <协议> <端口> <动作> [IP版本]"; exit 1; }
+    old_name=$(uci get firewall.@rule[$idx].name 2>/dev/null)
+    [ -z "$old_name" ] && { error "规则索引 $idx 不存在"; exit 1; }
+    # 端口格式标准化
+    port=$(echo "$port" | sed 's/:/-/g')
+    # 修改字段（空值保留原值）
+    [ -n "$name" ] && uci set firewall.@rule[$idx].name="$name"
+    if [ -n "$src" ]; then uci set firewall.@rule[$idx].src="$src"; else uci delete firewall.@rule[$idx].src 2>/dev/null; fi
+    if [ -n "$dst" ]; then uci set firewall.@rule[$idx].dest="$dst"; else uci delete firewall.@rule[$idx].dest 2>/dev/null; fi
+    [ -n "$proto" ] && uci set firewall.@rule[$idx].proto="$proto"
+    if [ -n "$port" ]; then uci set firewall.@rule[$idx].dest_port="$port"; else uci delete firewall.@rule[$idx].dest_port 2>/dev/null; fi
+    [ -n "$target" ] && uci set firewall.@rule[$idx].target="$target"
+    if [ "$fam" = "any" ] || [ -z "$fam" ]; then
+        uci delete firewall.@rule[$idx].family 2>/dev/null
+    else
+        uci set firewall.@rule[$idx].family="$fam"
+    fi
+    uci commit firewall
+    rm -f /tmp/.uci/firewall 2>/dev/null
+    /etc/init.d/firewall reload > /dev/null 2>&1
+    info "规则已更新: ${name:-$old_name} ($target)"
+}
+
+# ========== 8. 删除防火墙规则 ==========
+cmd_rule_del() {
+    idx="$1"
+    [ -z "$idx" ] && { error "用法: netmanager rule_del <规则索引>"; exit 1; }
+    name=$(uci get firewall.@rule[$idx].name 2>/dev/null)
+    if [ -n "$name" ]; then
+        uci delete firewall.@rule[$idx]
+        uci commit firewall
+        rm -f /tmp/.uci/firewall 2>/dev/null
+        /etc/init.d/firewall reload > /dev/null 2>&1
+        info "已删除规则: $name"
+    else
+        error "规则索引 $idx 不存在"
+    fi
+}
+
+# ========== 8. SSH登录日志（适配dropbear + BusyBox） ==========
+cmd_ssh_log() {
+    limit="${1:-50}"
+    echo "===SSH_LOG==="
+
+    # dropbear日志格式示例:
+    # Mon Aug 25 19:12:34 2026 authpriv.info dropbear[12345]: Password auth succeeded for 'root' from 192.168.31.100:52341
+    # Mon Aug 25 19:13:00 2026 authpriv.warn dropbear[12346]: Bad password attempt for 'root' from 192.168.31.100:52342
+    # Mon Aug 25 19:13:10 2026 authpriv.info dropbear[12347]: Exit before auth from <192.168.31.100:52343>
+
+    # 成功登录
+    echo "---SUCCESS---"
+    logread 2>/dev/null | grep -i "dropbear" | grep -i "succeeded\|session opened" | tail -$limit | while read -r line; do
+        # 时间：兼容 "Mon Aug 25 19:12:34 2026" 和 "Mon Aug 25 19:12:34" 两种格式
+        log_time=$(echo "$line" | sed -n 's/^\([A-Z][a-z][a-z] [A-Z][a-z][a-z] [0-9]* [0-9:]*\).*/\1/p')
+        [ -z "$log_time" ] && log_time=$(echo "$line" | awk '{print $1" "$2" "$3" "$4}')
+        # 用户名: for 'root' -> 提取引号内
+        user=$(echo "$line" | sed -n "s/.*for '\([^']*\)'.*/\1/p")
+        [ -z "$user" ] && user="root"
+        # IP: from 192.168.31.100:52341 -> 提取from后面的IP
+        ip=$(echo "$line" | sed -n 's/.*from \([0-9.]*\):.*/\1/p')
+        [ -z "$ip" ] && ip=$(echo "$line" | sed -n 's/.*from <\([0-9.]*\):.*/\1/p')
+        [ -z "$ip" ] && ip="unknown"
+        echo "$log_time|$user|$ip|success"
+    done
+
+    # 失败登录
+    echo "---FAILED---"
+    logread 2>/dev/null | grep -i "dropbear" | grep -i "bad password\|invalid user\|exit before auth\|auth fail" | tail -$limit | while read -r line; do
+        log_time=$(echo "$line" | sed -n 's/^\([A-Z][a-z][a-z] [A-Z][a-z][a-z] [0-9]* [0-9:]*\).*/\1/p')
+        [ -z "$log_time" ] && log_time=$(echo "$line" | awk '{print $1" "$2" "$3" "$4}')
+        user=$(echo "$line" | sed -n "s/.*for '\([^']*\)'.*/\1/p")
+        [ -z "$user" ] && user="unknown"
+        ip=$(echo "$line" | sed -n 's/.*from \([0-9.]*\):.*/\1/p')
+        [ -z "$ip" ] && ip=$(echo "$line" | sed -n 's/.*from <\([0-9.]*\):.*/\1/p')
+        [ -z "$ip" ] && ip="unknown"
+        if echo "$line" | grep -qi "bad password"; then
+            reason="密码错误"
+        elif echo "$line" | grep -qi "invalid user"; then
+            reason="无效用户"
+        elif echo "$line" | grep -qi "exit before auth"; then
+            reason="未认证断开"
+        else
+            reason="认证失败"
+        fi
+        echo "$log_time|$user|$ip|$reason"
+    done
+
+    # 失败IP统计
+    echo "---STATS---"
+    logread 2>/dev/null | grep -i "dropbear" | grep -i "bad password\|invalid user\|exit before auth" | sed -n 's/.*from \([0-9.]*\):.*/\1/p' | sort | uniq -c | sort -rn | head -10 | while read -r count ip; do
+        echo "$ip|$count"
+    done
+
+    echo "===END==="
+}
+
+# ========== 9. 端口访问日志 ==========
+cmd_access_log() {
+    port_filter="$1"
+    limit="${2:-100}"
+    load_config
+    write_log "DEBUG" "access_log: 开始获取, 端口过滤=$port_filter 限制=$limit"
+    echo "===ACCESS_LOG==="
+
+    # 当前活跃连接（用awk提取第一个src/dst=原始方向，支持IPv4和IPv6）
+    echo "---ACTIVE---"
+    active_count=0
+    if [ -f /proc/net/nf_conntrack ]; then
+        cat /proc/net/nf_conntrack 2>/dev/null | grep "ESTABLISHED" | while read -r line; do
+            proto=$(echo "$line" | awk '{print $3}')
+            src=$(echo "$line" | awk '{for(i=1;i<=NF;i++) if($i ~ /^src=/) {print substr($i,5); exit}}')
+            dst=$(echo "$line" | awk '{for(i=1;i<=NF;i++) if($i ~ /^dst=/) {print substr($i,5); exit}}')
+            sport=$(echo "$line" | awk '{for(i=1;i<=NF;i++) if($i ~ /^sport=/) {print substr($i,7); exit}}')
+            dport=$(echo "$line" | awk '{for(i=1;i<=NF;i++) if($i ~ /^dport=/) {print substr($i,7); exit}}')
+            [ -z "$src" ] && src="?"
+            [ -z "$dst" ] && dst="?"
+            [ -z "$sport" ] && sport="?"
+            [ -z "$dport" ] && dport="?"
+            if [ -n "$port_filter" ] && [ "$dport" != "$port_filter" ] && [ "$sport" != "$port_filter" ]; then
+                continue
+            fi
+            echo "$proto|$src:$sport|$dst:$dport|已建立"
+        done | head -$limit
+        active_count=$(cat /proc/net/nf_conntrack 2>/dev/null | grep -c "ESTABLISHED" || echo 0)
+    fi
+    echo "ACTIVE_COUNT=$active_count"
+
+    # 入站连接统计（原始方向第一个dst是内网前缀 = 外部主动访问内网）
+    in_count=0
+    if [ -f /proc/net/nf_conntrack ]; then
+        lan_prefix=$(uci get network.lan.ipaddr 2>/dev/null | cut -d. -f1-3)
+        in_count=$(cat /proc/net/nf_conntrack 2>/dev/null | grep "ESTABLISHED" | awk -v lp="$lan_prefix" '{for(i=1;i<=NF;i++) if($i ~ /^dst=/) {if(index(substr($i,5),lp)==1) c++; break}} END{print c+0}')
+    fi
+    echo "IN_COUNT=$in_count"
+
+    # 出站连接统计
+    out_count=$((active_count - in_count))
+    [ $out_count -lt 0 ] && out_count=0
+    echo "OUT_COUNT=$out_count"
+
+    # 防火墙拦截统计
+    echo "---BLOCKED---"
+    block_total=0
+    block_output=""
+
+    # 使用nftables列出所有规则
+    nft_output=$(nft list ruleset 2>/dev/null)
+    
+    if [ -n "$nft_output" ]; then
+        # 更健壮的解析：处理多种counter格式、行内/分离行、tab空格、policy counter等
+        block_output=$(echo "$nft_output" | awk '
+        BEGIN { 
+            prev_pkts = 0; prev_dport = ""; prev_proto = "any"; 
+            in_policy = 0; policy_drops = 0;
+            delete port_map; delete port_proto;
+        }
+        {
+            line = $0
+            pkts = 0
+            dport = ""
+            proto = "any"
+            
+            # ========== 1. 提取counter packets数值 ==========
+            # 格式A: counter packets 123 bytes 456
+            if (match(line, /counter packets [0-9]+/)) {
+                tmp = substr(line, RSTART, RLENGTH)
+                gsub(/[^0-9]/, "", tmp)
+                pkts = tmp + 0
+            }
+            # 格式B: packets 123 bytes 456 (行开头)
+            if (pkts == 0 && match(line, /[[:space:]]packets [0-9]+/)) {
+                tmp = substr(line, RSTART, RLENGTH)
+                gsub(/[^0-9]/, "", tmp)
+                pkts = tmp + 0
+            }
+            # 格式C: chain policy counter: "policy drop; counter packets N bytes M"
+            if (match(line, /policy drop;[[:space:]]*counter packets [0-9]+/)) {
+                tmp = substr(line, RSTART, RLENGTH)
+                gsub(/[^0-9]/, "", tmp)
+                policy_drops += tmp + 0
+                next  # policy行不参与规则匹配
+            }
+            if (match(line, /policy drop[[:space:]]*$/)) {
+                # 有些格式counter在下一行，标记一下
+                in_policy = 1
+                next
+            }
+            if (in_policy && pkts > 0) {
+                policy_drops += pkts
+                in_policy = 0
+                next
+            }
+            
+            # ========== 2. 提取dport ==========
+            if (match(line, /dport [\x22\x27]?[0-9]+(-[0-9]+)?[\x22\x27]?/)) {
+                tmp = substr(line, RSTART, RLENGTH)
+                gsub(/dport[[:space:]]+/, "", tmp)
+                gsub(/[\x22\x27]/, "", tmp)
+                dport = tmp
+            }
+            
+            # ========== 3. 提取协议 ==========
+            if (line ~ /meta l4proto tcp/) proto = "tcp"
+            else if (line ~ /meta l4proto udp/) proto = "udp"
+            else if (line ~ /meta l4proto icmp/) proto = "icmp"
+            else if (match(line, /[[:space:]]tcp[[:space:]]/)) proto = "tcp"
+            else if (match(line, /[[:space:]]udp[[:space:]]/)) proto = "udp"
+            else if (match(line, /[[:space:]]icmp[[:space:]]/)) proto = "icmp"
+            
+            # ========== 4. 检查是否为drop/reject动作 ==========
+            is_drop = 0
+            if (match(line, /[[:space:]]drop[[:space:];]/)) is_drop = 1
+            else if (match(line, /[[:space:]]drop$/)) is_drop = 1
+            else if (match(line, /[[:space:]]reject[[:space:];]/)) is_drop = 1
+            else if (match(line, /[[:space:]]reject$/)) is_drop = 1
+            
+            if (is_drop) {
+                use_pkts = (pkts > 0) ? pkts : prev_pkts
+                use_dport = (dport != "") ? dport : prev_dport
+                use_proto = (proto != "any") ? proto : prev_proto
+                
+                if (use_pkts > 0) {
+                    key = use_proto "|" ((use_dport != "") ? use_dport : "默认规则")
+                    port_map[key] += use_pkts
+                    port_proto[key] = use_proto
+                }
+                prev_pkts = 0; prev_dport = ""; prev_proto = "any"
+            } else {
+                # 保存上下文
+                if (pkts > 0) prev_pkts = pkts
+                if (dport != "") prev_dport = dport
+                if (proto != "any") prev_proto = proto
+            }
+        }
+        END {
+            # 输出聚合结果（按端口聚合，pkts从高到低）
+            for (k in port_map) {
+                pkts = port_map[k] + 0
+                proto = port_proto[k]
+                # k的格式是 "proto|dport"
+                dp = k
+                sub(/^[^|]*\|/, "", dp)  # 去掉proto|前缀
+                printf "%s|%s|%d|拦截\n", proto, dp, pkts
+            }
+            # 输出默认policy drop（如果有）
+            if (policy_drops > 0) {
+                printf "%s|%s|%d|拦截\n", "any", "默认策略DROP", policy_drops
+            }
+        }')
+        
+        # 排序并计算总数
+        if [ -n "$block_output" ]; then
+            # 按pkts降序排序（第三列）
+            block_output=$(echo "$block_output" | sort -t'|' -k3,3 -rn)
+            block_total=$(echo "$block_output" | awk -F'|' '{sum+=$3} END{print sum+0}')
+        fi
+    fi
+
+    # 输出结果
+    if [ -n "$block_output" ]; then
+        echo "$block_output"
+    fi
+    echo "BLOCK_TOTAL=${block_total:-0}"
+
+    echo "===END==="
+    write_log "DEBUG" "access_log: 完成, BLOCK_TOTAL=${block_total:-0}"
+}
+
+# ========== 10. 防火墙操作 ==========
+cmd_restart() {
+    /etc/init.d/firewall restart 2>&1
+    info "防火墙已重启"
+}
+cmd_reload() {
+    /etc/init.d/firewall reload 2>&1
+    info "防火墙已重载"
+}
+cmd_backup() {
+    backup_file="/root/firewall-$(date +%Y%m%d-%H%M%S).bak"
+    cp /etc/config/firewall "$backup_file"
+    info "已备份到 $backup_file"
+    echo "$backup_file"
+}
+
+# ========== 备份恢复 ==========
+cmd_backup_list() {
+    echo "===BACKUP_LIST==="
+    echo "---BACKUPS---"
+    backup_dir="/root"
+    count=0
+    for f in "$backup_dir"/firewall-*.bak; do
+        [ -f "$f" ] || continue
+        fname=$(basename "$f")
+        size=$(wc -c < "$f" 2>/dev/null)
+        echo "${fname}|${size}"
+        count=$((count+1))
+    done
+    echo "BACKUP_COUNT=$count"
+    echo "===END==="
+}
+
+cmd_backup_restore() {
+    backup_name="$1"
+    [ -z "$backup_name" ] && { error "用法: netmanager backup_restore <备份文件名>"; exit 1; }
+    
+    backup_file="/root/$backup_name"
+    [ ! -f "$backup_file" ] && { error "备份文件不存在: $backup_file"; exit 1; }
+    
+    # 安全检查：确保文件在 /root/ 目录下
+    case "$backup_file" in
+        /root/firewall-*.bak) ;;
+        *) error "非法的备份文件名"; exit 1 ;;
+    esac
+    
+    # 先备份当前配置
+    pre_backup="/root/firewall-pre-restore-$(date +%Y%m%d-%H%M%S).bak"
+    cp /etc/config/firewall "$pre_backup"
+    
+    # 恢复备份
+    cp "$backup_file" /etc/config/firewall
+    uci commit firewall
+    rm -f /tmp/.uci/firewall 2>/dev/null
+    
+    # 重载防火墙
+    /etc/init.d/firewall reload > /dev/null 2>&1
+    
+    info "已从 $backup_name 恢复配置"
+    info "恢复前的配置已备份到: $pre_backup"
+}
+
+cmd_backup_delete() {
+    backup_name="$1"
+    [ -z "$backup_name" ] && { error "用法: netmanager backup_delete <备份文件名>"; exit 1; }
+    
+    backup_file="/root/$backup_name"
+    [ ! -f "$backup_file" ] && { error "备份文件不存在: $backup_file"; exit 1; }
+    
+    # 安全检查
+    case "$backup_file" in
+        /root/firewall-*.bak) ;;
+        *) error "非法的备份文件名"; exit 1 ;;
+    esac
+    
+    rm -f "$backup_file"
+    info "已删除备份: $backup_name"
+}
+
+# ========== 文件上传与插件更新 ==========
+cmd_upload_file() {
+    local filename="$1"
+    local b64file="$2"
+    [ -z "$filename" ] && { error "用法: netmanager upload_file <文件名> <base64文件>"; exit 1; }
+    
+    local upload_dir="/tmp/netmanager_upload"
+    mkdir -p "$upload_dir"
+    
+    local outfile="$upload_dir/$filename"
+    
+    # 从base64文件解码（避免shell命令行长度限制）
+    if [ -n "$b64file" ] && [ -f "$b64file" ]; then
+        # BusyBox base64解码：base64 -d 从文件读取
+        base64 -d < "$b64file" > "$outfile" 2>/dev/null
+        if [ $? -ne 0 ]; then
+            # 备选：某些BusyBox版本用 -o 指定输出
+            base64 -d -o "$outfile" "$b64file" 2>/dev/null
+            if [ $? -ne 0 ]; then
+                # 最后备选：直接复制（如果上传的就是原始文件而非base64）
+                cp "$b64file" "$outfile"
+            fi
+        fi
+    fi
+    
+    rm -f "$b64file" 2>/dev/null
+    [ -f "$outfile" ] && info "文件已保存: $outfile ($(wc -c < "$outfile" 2>/dev/null)字节)"
+}
+
+cmd_plugin_update() {
+    local filename="${1:-}"
+    [ -z "$filename" ] && { error "用法: netmanager plugin_update <tar.gz文件名>"; exit 1; }
+    load_config
+    write_log "INFO" "plugin_update: 开始更新插件, 文件=$filename"
+    
+    local upload_dir="/tmp/netmanager_upload"
+    local package_file="$upload_dir/$filename"
+    
+    [ ! -f "$package_file" ] && { error "上传的插件包不存在: $package_file"; write_log "ERROR" "plugin_update: 插件包不存在 $package_file"; exit 1; }
+    
+    # 验证是tar.gz文件
+    case "$filename" in
+        *.tar.gz|*.tgz) ;;
+        *) error "只支持 .tar.gz 格式的插件包"; exit 1 ;;
+    esac
+    
+    # 获取文件大小，写入日志
+    local pkg_size=$(wc -c < "$package_file" 2>/dev/null || echo 0)
+    write_log "INFO" "plugin_update: 包大小=$pkg_size 字节"
+    info "插件包大小: $pkg_size 字节"
+    
+    # 创建解压工作目录
+    local work_dir="/tmp/netmanager_update_$(date +%s)"
+    mkdir -p "$work_dir"
+    
+    # ========== 关键：按用户手动安装的方式 ==========
+    # 复制一份到工作目录，避免文件名混乱
+    local work_pkg="$work_dir/update.tar.gz"
+    cp -f "$package_file" "$work_pkg"
+    
+    info "正在解压插件包 (tar xzvf)..."
+    write_log "DEBUG" "plugin_update: 执行 tar xzvf $work_pkg"
+    
+    # 直接 tar xzvf 解压（-v 打印解压内容方便排查）
+    local tar_log="$work_dir/tar.log"
+    cd "$work_dir" && tar xzvf "$work_pkg" > "$tar_log" 2>&1
+    local tar_rc=$?
+    
+    # 打印解压输出到前端
+    if [ -f "$tar_log" ]; then
+        cat "$tar_log"
+    fi
+    
+    if [ $tar_rc -ne 0 ]; then
+        # tar xzvf 失败 -> 尝试 BusyBox 兼容方案：gunzip + tar
+        info "tar xzvf 失败，尝试 gunzip + tar ..."
+        write_log "WARN" "plugin_update: tar xzvf 返回 $tar_rc，尝试 gunzip 方案"
+        local ungz="$work_dir/update.tar"
+        gunzip -c "$work_pkg" > "$ungz" 2> "$tar_log"
+        if [ $? -eq 0 ]; then
+            cd "$work_dir" && tar xvf "$ungz" > "$tar_log" 2>&1
+            tar_rc=$?
+            cat "$tar_log"
+        else
+            cat "$tar_log"
+            tar_rc=99
+        fi
+    fi
+    
+    if [ $tar_rc -ne 0 ]; then
+        local file_type=$(file "$package_file" 2>/dev/null || echo "unknown")
+        error "解压失败 (返回码=$tar_rc, 文件类型=$file_type, 大小=$pkg_size)，请检查插件包"
+        write_log "ERROR" "plugin_update: 解压失败 rc=$tar_rc type=$file_type size=$pkg_size"
+        rm -rf "$work_dir"
+        exit 1
+    fi
+    
+    write_log "DEBUG" "plugin_update: 解压成功, 工作目录=$work_dir"
+    info "解压完成，开始安装..."
+    
+    # 查找 install.sh（可能在根目录，也可能在子目录）
+    local install_script=""
+    for p in "$work_dir/install.sh" "$work_dir"/*/install.sh; do
+        if [ -f "$p" ]; then install_script="$p"; break; fi
+    done
+    if [ -z "$install_script" ]; then
+        install_script=$(find "$work_dir" -name "install.sh" -type f 2>/dev/null | head -1)
+    fi
+    
+    if [ -z "$install_script" ] || [ ! -f "$install_script" ]; then
+        error "插件包错误: 未找到 install.sh（请确保是完整安装包）"
+        write_log "ERROR" "plugin_update: 未找到 install.sh，解压目录内容: $(ls -R "$work_dir" 2>/dev/null | head -30)"
+        rm -rf "$work_dir"
+        exit 1
+    fi
+    
+    # ========== 按用户命令执行：chmod +x install.sh && sh install.sh ==========
+    # 网页更新模式（默认）：SKIP_UHTTPD_RESTART=1，避免 uhttpd restart 打断当前 HTTP 响应导致 UI 显示 Failed
+    info "执行: chmod +x install.sh && SKIP_UHTTPD_RESTART=1 sh install.sh"
+    write_log "INFO" "plugin_update: 执行 SKIP_UHTTPD_RESTART=1 sh $install_script"
+    chmod +x "$install_script"
+    
+    local install_log="$work_dir/install.log"
+    cd "$(dirname "$install_script")" && SKIP_UHTTPD_RESTART=1 sh install.sh > "$install_log" 2>&1
+    local install_rc=$?
+    
+    # 输出安装日志
+    if [ -f "$install_log" ]; then
+        cat "$install_log"
+    fi
+    
+    if [ $install_rc -eq 0 ]; then
+        info "插件更新完成！请刷新页面 (Ctrl+Shift+R)"
+        info "(LuCI 将在 3 秒后自动重启，请勿关闭页面)"
+        write_log "INFO" "plugin_update: 更新成功, install_rc=0"
+        
+        # 关键：先把所有内容刷新到 stdout（HTTP 响应体写完），然后后台延迟 3s 重启 uhttpd
+        # 这样浏览器 fetch 能完整收到响应，不会显示 "Failed to fetch"
+        sleep 1
+        nohup sh -c "sleep 3; /etc/init.d/uhttpd restart >/dev/null 2>&1" >/dev/null 2>&1 &
+    else
+        error "安装脚本执行失败 (返回码=$install_rc)"
+        write_log "ERROR" "plugin_update: 安装失败 install_rc=$install_rc, 日志: $(cat "$install_log" 2>/dev/null | tr '\n' ' ')"
+    fi
+    
+    # 清理临时文件
+    rm -rf "$work_dir" 2>/dev/null
+    rm -f "$package_file" 2>/dev/null
+}
+
+cmd_plugin_version() {
+    local plugin_file="$1"
+    [ -z "$plugin_file" ] && { error "用法: netmanager plugin_version <tar.gz文件名>"; exit 1; }
+    
+    local upload_dir="/tmp/netmanager_upload"
+    local package_file="$upload_dir/$plugin_file"
+    
+    [ ! -f "$package_file" ] && { error "插件包不存在: $package_file"; exit 1; }
+    
+    local extract_dir="/tmp/netmanager_check_$(date +%s)"
+    mkdir -p "$extract_dir"
+    
+    # BusyBox兼容性解压
+    local tar_ok=0
+    tar xzf "$package_file" -C "$extract_dir" 2>/dev/null && tar_ok=1
+    if [ $tar_ok -eq 0 ]; then
+        local tar_file="${package_file%.gz}"
+        if [ "$tar_file" != "$package_file" ]; then
+            gunzip -c "$package_file" > "$tar_file" 2>/dev/null
+            if [ $? -eq 0 ]; then
+                tar xf "$tar_file" -C "$extract_dir" 2>/dev/null && tar_ok=1
+                rm -f "$tar_file"
+            fi
+        fi
+    fi
+    if [ $tar_ok -eq 0 ]; then
+        echo "ERROR:无法解压插件包"
+        rm -rf "$extract_dir"
+        exit 1
+    fi
+    
+    # 尝试读取版本信息
+    local version="未知版本"
+    local readme="$extract_dir/README.md"
+    
+    if [ -f "$readme" ]; then
+        version=$(head -20 "$readme" 2>/dev/null | grep -i "版本" | head -1 | grep -oE '[vV][0-9]+\.[0-9]+\.[0-9]+' | head -1)
+        [ -z "$version" ] && version=$(head -20 "$readme" 2>/dev/null | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+    fi
+    
+    echo "===PLUGIN_VERSION==="
+    echo "FILE=$plugin_file"
+    echo "VERSION=${version:-未知}"
+    echo "SIZE=$(wc -c < "$package_file" 2>/dev/null)"
+    echo "UPLOAD_TIME=$(date '+%Y-%m-%d %H:%M:%S')"
+    echo "===END==="
+    
+    rm -rf "$extract_dir"
+}
+
+cmd_cleanup_uploads() {
+    local upload_dir="/tmp/netmanager_upload"
+    if [ -d "$upload_dir" ]; then
+        rm -rf "$upload_dir"
+        info "已清理上传临时文件"
+    else
+        info "没有需要清理的文件"
+    fi
+}
+
+# ========== 11. 设置管理 ==========
+cmd_set_default_target() {
+    ip="$1"
+    [ -z "$ip" ] && { error "用法: netmanager set_default_target <IP>"; exit 1; }
+    load_config
+    uci set netmanager.settings.default_target="$ip"
+    uci commit netmanager
+    info "默认目标IP已设置为: $ip"
+}
+
+cmd_log_set() {
+    local enable="${1:-0}"
+    load_config
+    if [ "$enable" = "1" ] || [ "$enable" = "on" ] || [ "$enable" = "true" ]; then
+        uci set netmanager.settings.log_enable='1'
+        uci commit netmanager
+        reload_log_setting
+        mkdir -p "$LOG_DIR" 2>/dev/null
+        info "运行日志已开启（输出目录: $LOG_DIR）"
+        write_log "INFO" "===== 日志开启 ====="
+    else
+        write_log "INFO" "===== 日志关闭 ====="
+        uci set netmanager.settings.log_enable='0'
+        uci commit netmanager
+        reload_log_setting
+        info "运行日志已关闭"
+    fi
+}
+
+cmd_log_get() {
+    local lines="${1:-200}"
+    mkdir -p "$LOG_DIR" 2>/dev/null
+    echo "===RUN_LOG==="
+    echo "LOG_ENABLED=$LOG_ENABLED"
+    echo "LOG_FILE=$LOG_FILE"
+    if [ -f "$LOG_FILE" ]; then
+        local total=$(wc -l < "$LOG_FILE" 2>/dev/null || echo 0)
+        local sz=$(wc -c < "$LOG_FILE" 2>/dev/null || echo 0)
+        echo "LOG_LINES=$total"
+        echo "LOG_SIZE=$sz"
+        echo "---CONTENT---"
+        tail -n "$lines" "$LOG_FILE" 2>/dev/null
+    else
+        echo "LOG_LINES=0"
+        echo "LOG_SIZE=0"
+    fi
+    echo "===END==="
+}
+
+cmd_log_clear() {
+    if [ -f "$LOG_FILE" ]; then
+        rm -f "$LOG_FILE" 2>/dev/null
+        info "运行日志已清空"
+    else
+        info "日志文件不存在，无需清理"
+    fi
+}
+
+cmd_settings() {
+    load_config
+    echo "===SETTINGS==="
+    echo "DEFAULT_TARGET=$DEFAULT_TARGET"
+    echo "LOG_DAYS=$(uci get netmanager.settings.log_days 2>/dev/null || echo 7)"
+    echo "LOG_ENABLE=$LOG_ENABLED"
+    echo "LOG_FILE=$LOG_FILE"
+    echo "CHINA_FILTER_ENABLED=$(uci get netmanager.settings.china_filter_enable 2>/dev/null || echo 0)"
+    echo "CHINA_FILTER_URL=$(uci get netmanager.settings.china_filter_url 2>/dev/null || echo 'https://metowolf.github.io/iplist/data/special/china.txt')"
+    echo "CHINA_FILTER_CRON=$(uci get netmanager.settings.china_filter_cron 2>/dev/null || echo '0 3 * * 0')"
+    echo "CHINA_FILTER_LAST_UPDATE=$(uci get netmanager.settings.china_filter_last_update 2>/dev/null)"
+    echo "CHINA_FILTER_COUNT=$(uci get netmanager.settings.china_filter_count 2>/dev/null || echo 0)"
+    echo "===END==="
+}
+
+# ========== 12. 版本信息 ==========
+cmd_version() {
+    echo "网络管理插件 v1.4.0"
+    echo ""
+    echo "功能: 系统概览 / 端口转发 / 规则管理 / SSH日志 / 访问日志 / 备份恢复 / 插件更新 / 运行日志 / 中国IPv4访问限制"
+    echo "适配: iStoreOS / OpenWrt (fw4/nftables)"
+}
+
+# ========== 13. 中国IPv4访问限制 ==========
+# 原理：独立 nft 表 inet netmanager（与 fw4 分离，fw4 reload 不影响本表），
+#       内含 china_v4 CIDR 集合 + input/forward 两条 base chain(priority -50)，
+#       规则：iifname {wan_devs} ct state new {tcp,udp} 且 ip saddr 不在中国集合 -> drop。
+#       仅拦截境外 IPv4 新建连接到已开放端口，不影响已建立连接/出站/局域网间转发。
+CHINA_LIST_DIR="/etc/netmanager"
+CHINA_LIST_FILE="$CHINA_LIST_DIR/china_v4.list"
+CHINA_NFT_TABLE="inet netmanager"
+CHINA_DEFAULT_URL="https://metowolf.github.io/iplist/data/special/china.txt"
+CHINA_DEFAULT_CRON="0 3 * * 0"
+
+china_get_url() {
+    local u=$(uci get netmanager.settings.china_filter_url 2>/dev/null)
+    echo "${u:-$CHINA_DEFAULT_URL}"
+}
+
+china_get_cron() {
+    local c=$(uci get netmanager.settings.china_filter_cron 2>/dev/null)
+    echo "${c:-$CHINA_DEFAULT_CRON}"
+}
+
+china_get_enable() {
+    local e=$(uci get netmanager.settings.china_filter_enable 2>/dev/null)
+    [ "$e" = "1" ] && echo 1 || echo 0
+}
+
+# 探测 WAN 设备名（去重、空格分隔），用于 iifname 匹配
+get_wan_devs() {
+    local devs="" d nd val zn net
+    # 1) 默认路由设备
+    d=$(ip -4 route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+    [ -n "$d" ] && devs="$d"
+    # 2) network.wan / wan6 的 device / ifname
+    for n in wan wan6; do
+        nd=$(uci get network.$n.device 2>/dev/null)
+        [ -z "$nd" ] && nd=$(uci get network.$n.ifname 2>/dev/null)
+        [ -n "$nd" ] && devs="$devs $nd"
+    done
+    # 3) firewall wan/wan6 zone 的 device 与 network（network 需解析到 device）
+    idx=0
+    while uci get firewall.@zone[$idx].name >/dev/null 2>&1; do
+        zn=$(uci get firewall.@zone[$idx].name 2>/dev/null)
+        case "$zn" in
+            wan|wan6)
+                val=$(uci get firewall.@zone[$idx].device 2>/dev/null)
+                [ -n "$val" ] && devs="$devs $val"
+                val=$(uci get firewall.@zone[$idx].network 2>/dev/null)
+                [ -n "$val" ] && for net in $val; do
+                    nd=$(uci get network.$net.device 2>/dev/null)
+                    [ -z "$nd" ] && nd=$(uci get network.$net.ifname 2>/dev/null)
+                    [ -n "$nd" ] && devs="$devs $nd"
+                done
+                ;;
+        esac
+        idx=$((idx+1))
+    done
+    # 去重 + 仅保留合法接口名
+    echo "$devs" | tr ' ' '\n' | grep -E '^[a-zA-Z0-9._@-]+$' | sort -u | grep -v '^$' | tr '\n' ' '
+}
+
+# 创建 china_v4 集合（兼容旧版 nft：先尝试 interval,auto-merge；失败则降级仅 interval）
+# 成功后设置全局 CHINA_SET_FLAGS = "modern" 或 "compat"
+china_create_set() {
+    CHINA_SET_FLAGS=""
+    # 先确保表存在
+    nft add table inet netmanager 2>/dev/null
+    local nft_err
+    nft_err=$( ( nft 'add set inet netmanager china_v4 { type ipv4_addr; flags interval, auto-merge; }' ) 2>&1 )
+    if [ -z "$nft_err" ]; then
+        CHINA_SET_FLAGS="modern"
+        return 0
+    fi
+    # 失败且含 "unexpected auto-merge" → 旧版 nft，降级
+    case "$nft_err" in
+        *unexpected\ auto-merge*|*auto-merge*)
+            write_log "INFO" "china_filter: 旧版 nft 不支持 auto-merge，降级为 flags interval + 一次性原子加载"
+            local nft_err2
+            nft_err2=$( ( nft 'add set inet netmanager china_v4 { type ipv4_addr; flags interval; }' ) 2>&1 )
+            if [ -z "$nft_err2" ]; then
+                CHINA_SET_FLAGS="compat"
+                return 0
+            fi
+            write_log "ERROR" "china_filter: 降级 add set interval 也失败: $nft_err2"
+            error "nft 创建 china_v4 集合失败（降级后）: $nft_err2"
+            return 1
+            ;;
+        *)
+            write_log "ERROR" "china_filter: add set china_v4 失败: $nft_err"
+            error "nft 创建 china_v4 集合失败: $nft_err"
+            return 1
+            ;;
+    esac
+}
+
+# 载入 CIDR 到 china_v4 集合
+#   modern(有auto-merge)  → 分片 500 条批量 add element（CIDR 重叠容忍）
+#   compat(仅interval)    → 所有 CIDR 在同一条 add element 中，让内核原子合并重叠区间
+# 返回成功载入条数；失败返回 0
+china_load_set() {
+    [ -f "$CHINA_LIST_FILE" ] || { echo 0; return; }
+    # 若 china_apply_rules 未先调用则 CHINA_SET_FLAGS 为空，自行确保表+集存在
+    if [ -z "$CHINA_SET_FLAGS" ]; then
+        if nft list chain inet netmanager 2>/dev/null; then
+            :
+        else
+            nft add table inet netmanager 2>/dev/null
+        fi
+        # 检测集合是否存在并推断模式
+        if nft list set inet netmanager china_v4 2>/dev/null | grep -q 'auto-merge'; then
+            CHINA_SET_FLAGS="modern"
+        elif nft list set inet netmanager china_v4 >/dev/null 2>&1; then
+            CHINA_SET_FLAGS="compat"
+        else
+            china_create_set || { echo 0; return; }
+        fi
+    fi
+
+    local clean="/tmp/netmanager_china_clean.list"
+    local ef="/tmp/netmanager_china_elem.nft"
+    local total=0 loaded=0
+    local nft_err=""
+    rm -f "$clean" "$ef" /tmp/netmanager_china_nft.err 2>/dev/null
+
+    # 先过滤出纯净的 CIDR 行
+    grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$' "$CHINA_LIST_FILE" > "$clean" 2>/dev/null
+    total=$(wc -l < "$clean" 2>/dev/null | tr -d ' ')
+    [ "${total:-0}" -lt 50 ] && { rm -f "$clean"; echo 0; return; }
+
+    if [ "$CHINA_SET_FLAGS" = "modern" ]; then
+        # ========= 分片加载（auto-merge 允许重叠逐批加） =========
+        local batch=500 buf="" buf_n=0 line
+        while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            if [ "$buf_n" -ge "$batch" ]; then
+                {
+                    printf 'add element inet netmanager china_v4 { %s }\n' "$buf"
+                } > "$ef"
+                if nft -f "$ef" 2>/tmp/netmanager_china_nft.err; then
+                    loaded=$((loaded + buf_n))
+                else
+                    nft_err=$(cat /tmp/netmanager_china_nft.err 2>/dev/null | tr '\n' ' ')
+                    write_log "WARN" "china_filter: (modern) nft batch add element failed (size=$buf_n, head=$(echo "$buf" | cut -c1-80)): $nft_err"
+                fi
+                buf="" buf_n=0
+            fi
+            if [ "$buf_n" -eq 0 ]; then
+                buf="$line"
+            else
+                buf="$buf, $line"
+            fi
+            buf_n=$((buf_n + 1))
+        done < "$clean"
+        # 尾批
+        if [ "$buf_n" -gt 0 ]; then
+            {
+                printf 'add element inet netmanager china_v4 { %s }\n' "$buf"
+            } > "$ef"
+            if nft -f "$ef" 2>/tmp/netmanager_china_nft.err; then
+                loaded=$((loaded + buf_n))
+            else
+                nft_err=$(cat /tmp/netmanager_china_nft.err 2>/dev/null | tr '\n' ' ')
+                write_log "WARN" "china_filter: (modern) nft tail batch add element failed (size=$buf_n, head=$(echo "$buf" | cut -c1-80)): $nft_err"
+            fi
+        fi
+    else
+        # ========= 一次性原子加载（compat：无 auto-merge，全部 CIDR 一条 add element 让内核合并重叠区间） =========
+        # 组装 "add element inet netmanager china_v4 { a, b, c, ... }"
+        {
+            printf 'add element inet netmanager china_v4 { '
+            awk 'BEGIN{ORS=""}{if(NR>1)printf ", ";printf "%s",$0}' "$clean"
+            printf ' }\n'
+        } > "$ef"
+        if nft -f "$ef" 2>/tmp/netmanager_china_nft.err; then
+            loaded="$total"
+        else
+            nft_err=$(cat /tmp/netmanager_china_nft.err 2>/dev/null | tr '\n' ' ')
+            # 部分老 nft 即使 atomic 也对特别长的行敏感；失败后回退单条 add element 逐行（慢但稳）
+            local ok_rows=0 bad_rows=0 l
+            write_log "WARN" "china_filter: (compat) atomic add element 失败，回退逐行加载: $nft_err"
+            while IFS= read -r l; do
+                [ -z "$l" ] && continue
+                if nft "add element inet netmanager china_v4 { $l }" 2>/dev/null; then
+                    ok_rows=$((ok_rows + 1))
+                else
+                    bad_rows=$((bad_rows + 1))
+                fi
+            done < "$clean"
+            loaded="$ok_rows"
+            write_log "INFO" "china_filter: (compat) 逐行回退完成: 成功=$ok_rows 失败=$bad_rows"
+        fi
+    fi
+
+    rm -f "$clean" "$ef" /tmp/netmanager_china_nft.err 2>/dev/null
+    echo "${loaded:-0}"
+}
+
+# 创建表/集合、载入CIDR、安装 input+forward 两条 drop 规则
+china_apply_rules() {
+    [ -f "$CHINA_LIST_FILE" ] || { error "中国IP列表文件不存在: $CHINA_LIST_FILE"; return 1; }
+    # 先强制删除旧表，彻底防止遗留脏结构（旧 flag / 错误 size）
+    nft delete table inet netmanager 2>/dev/null
+    local nft_err
+    if ! nft add table inet netmanager 2>/tmp/netmanager_china_nft.err; then
+        nft_err=$(cat /tmp/netmanager_china_nft.err 2>/dev/null | tr '\n' ' ')
+        write_log "ERROR" "china_filter: add table inet netmanager 失败: $nft_err"
+        rm -f /tmp/netmanager_china_nft.err 2>/dev/null
+        error "nft 创建 inet netmanager 表失败: $nft_err"
+        return 1
+    fi
+    rm -f /tmp/netmanager_china_nft.err 2>/dev/null
+
+    # 根据 nft 版本自动选择 set flag 策略
+    CHINA_SET_FLAGS=""
+    if ! china_create_set; then
+        # china_create_set 内部已经写过诊断+error
+        return 1
+    fi
+    write_log "INFO" "china_filter: 使用 nft china_v4 集合模式: $CHINA_SET_FLAGS"
+
+    local count
+    count=$(china_load_set)
+    if [ "${count:-0}" -lt 50 ]; then
+        error "中国IP列表载入失败或条数过少($count)，已中止应用规则"
+        return 1
+    fi
+
+    local devs
+    devs=$(get_wan_devs)
+    if [ -z "$devs" ]; then
+        error "未探测到WAN设备，无法安装过滤规则（请检查 wan 接口/默认路由）"
+        return 1
+    fi
+    # 构造 iifname { "eth0", "pppoe-wan" }（带双引号）
+    local ifname_set
+    ifname_set=$(echo "$devs" | awk '{for(i=1;i<=NF;i++){if(i>1)printf ", ";printf "\"%s\"",$i}}')
+
+    # 删除旧链（幂等）
+    nft delete chain inet netmanager china_input 2>/dev/null
+    nft delete chain inet netmanager china_forward 2>/dev/null
+
+    local rf="/tmp/netmanager_china_rules.nft"
+    {
+        echo "add chain inet netmanager china_input { type filter hook input priority -50; policy accept; }"
+        echo "add chain inet netmanager china_forward { type filter hook forward priority -50; policy accept; }"
+        printf 'add rule inet netmanager china_forward iifname { %s } ct state new meta l4proto { tcp, udp } ip saddr != @china_v4 counter drop\n' "$ifname_set"
+        printf 'add rule inet netmanager china_input iifname { %s } ct state new meta l4proto { tcp, udp } ip saddr != @china_v4 counter drop\n' "$ifname_set"
+    } > "$rf"
+    if ! nft -f "$rf" 2>/tmp/netmanager_china_rules.err; then
+        write_log "ERROR" "china_filter: 规则链安装失败: $(cat /tmp/netmanager_china_rules.err 2>/dev/null | tr '\n' ' ')"
+        rm -f "$rf" /tmp/netmanager_china_rules.err 2>/dev/null
+        error "nft 规则安装失败（nft -f 返回错误）"
+        return 1
+    fi
+    rm -f "$rf" /tmp/netmanager_china_rules.err 2>/dev/null
+
+    uci set netmanager.settings.china_filter_count="$count"
+    uci commit netmanager 2>/dev/null
+    info "中国IPv4过滤规则已应用: 条数=$count WAN设备=[$(echo $devs)]"
+    write_log "INFO" "china_filter apply: count=$count devs=$devs"
+    return 0
+}
+
+china_clear_kernel() {
+    nft delete table inet netmanager 2>/dev/null
+}
+
+# 下载中国IP列表（URL 取自配置），校验后存到持久化路径
+china_download() {
+    local url=$(china_get_url)
+    local tmp="/tmp/netmanager_china.tmp"
+    info "下载中国IP列表: $url"
+    write_log "INFO" "china_filter: 下载 $url"
+    mkdir -p "$CHINA_LIST_DIR" 2>/dev/null
+    if command -v wget >/dev/null 2>&1; then
+        wget -q -T 30 -O "$tmp" "$url" 2>/dev/null
+    elif command -v uclient-fetch >/dev/null 2>&1; then
+        uclient-fetch -q -T 30 -O "$tmp" "$url" 2>/dev/null
+    elif command -v curl >/dev/null 2>&1; then
+        curl -sS --max-time 30 -o "$tmp" "$url" 2>/dev/null
+    else
+        error "未找到 wget/uclient-fetch/curl，无法下载"
+        return 1
+    fi
+    if [ ! -s "$tmp" ]; then
+        error "下载失败：文件为空或不存在（请检查订阅链接与网络）"
+        rm -f "$tmp" 2>/dev/null
+        return 1
+    fi
+    # 纯化：去 UTF-8 BOM(首字节EFBBBF)、去 CR(\r)、去以#开头注释/空行，仅保留合法 IPv4 CIDR
+    local clean="/tmp/netmanager_china_clean.tmp"
+    rm -f "$clean" 2>/dev/null
+    if command -v sed >/dev/null 2>&1; then
+        sed '1s/^\xef\xbb\xbf//' "$tmp" 2>/dev/null | tr -d '\r' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$' > "$clean" 2>/dev/null
+    else
+        tr -d '\r' < "$tmp" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$' > "$clean" 2>/dev/null
+    fi
+    local n
+    n=$(wc -l < "$clean" 2>/dev/null | tr -d ' ')
+    if [ "${n:-0}" -lt 100 ]; then
+        error "下载内容不像 CIDR 列表（有效行数=$n），已拒绝保存"
+        rm -f "$tmp" "$clean" 2>/dev/null
+        return 1
+    fi
+    mv -f "$clean" "$CHINA_LIST_FILE"
+    rm -f "$tmp" 2>/dev/null
+    uci set netmanager.settings.china_filter_count="$n"
+    uci set netmanager.settings.china_filter_last_update="$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)"
+    uci commit netmanager 2>/dev/null
+    info "下载完成：$n 条CIDR"
+    return 0
+}
+
+china_cron_remove() {
+    local cr="/etc/crontabs/root"
+    [ -f "$cr" ] || return 0
+    grep -v 'netmanager china_filter update' "$cr" > "$cr.tmp" 2>/dev/null
+    mv -f "$cr.tmp" "$cr" 2>/dev/null
+    /etc/init.d/cron reload 2>/dev/null
+    return 0
+}
+
+china_cron_install() {
+    local cr="/etc/crontabs/root"
+    mkdir -p /etc/crontabs 2>/dev/null
+    [ -f "$cr" ] || touch "$cr"
+    china_cron_remove
+    local expr=$(china_get_cron)
+    echo "$expr /usr/sbin/netmanager china_filter update" >> "$cr"
+    /etc/init.d/cron reload 2>/dev/null
+    info "已安装 cron 更新计划: $expr"
+}
+
+cmd_china_status() {
+    load_config
+    local en=$(china_get_enable)
+    local url=$(china_get_url)
+    local cron=$(china_get_cron)
+    local lu=$(uci get netmanager.settings.china_filter_last_update 2>/dev/null)
+    local cnt=$(uci get netmanager.settings.china_filter_count 2>/dev/null)
+    [ -z "$cnt" ] && cnt=0
+    local devs=$(get_wan_devs)
+    [ -z "$devs" ] && devs="(未探测到)"
+    local active=0
+    if nft list table inet netmanager >/dev/null 2>&1; then
+        if nft list chain inet netmanager china_forward 2>/dev/null | grep -q 'china_v4'; then
+            active=1
+        fi
+    fi
+    echo "===CHINA_FILTER==="
+    echo "CHINA_FILTER_ENABLED=$en"
+    echo "URL=$url"
+    echo "CRON=$cron"
+    echo "LAST_UPDATE=${lu:-未更新}"
+    echo "COUNT=$cnt"
+    echo "WAN_DEVS=$devs"
+    echo "RULE_ACTIVE=$active"
+    echo "LIST_FILE=$CHINA_LIST_FILE"
+    echo "===END==="
+}
+
+cmd_china_set_url() {
+    local url="$1"
+    [ -z "$url" ] && { error "用法: netmanager china_filter set_url <url>"; exit 1; }
+    case "$url" in
+        http://*|https://*) ;;
+        *) error "URL 必须以 http:// 或 https:// 开头"; exit 1 ;;
+    esac
+    load_config
+    uci set netmanager.settings.china_filter_url="$url"
+    uci commit netmanager
+    info "订阅链接已保存: $url"
+    info "点击「更新IP库」或重新启用以生效"
+}
+
+cmd_china_set_cron() {
+    local expr="$1"
+    [ -z "$expr" ] && { error "用法: netmanager china_filter set_cron \"<5段cron表达式>\""; exit 1; }
+    local fields=$(echo "$expr" | awk '{print NF}')
+    [ "$fields" != "5" ] && { error "cron表达式必须为5段（分 时 日 月 周），当前 $fields 段"; exit 1; }
+    if echo "$expr" | tr ' ' '\n' | grep -qE '[^0-9*,/\-]'; then
+        error "cron表达式含非法字符（仅允许 0-9 * / , -）"; exit 1
+    fi
+    load_config
+    uci set netmanager.settings.china_filter_cron="$expr"
+    uci commit netmanager
+    info "更新计划已保存: $expr"
+    [ "$(china_get_enable)" = "1" ] && china_cron_install
+}
+
+cmd_china_enable() {
+    load_config
+    if [ ! -f "$CHINA_LIST_FILE" ]; then
+        china_download || { error "启用失败：无法获取中国IP列表"; exit 1; }
+    fi
+    uci set netmanager.settings.china_filter_enable='1'
+    uci commit netmanager
+    if ! china_apply_rules; then
+        uci set netmanager.settings.china_filter_enable='0'
+        uci commit netmanager
+        error "启用失败：规则应用失败，已回滚为关闭状态"
+        exit 1
+    fi
+    china_cron_install
+    /etc/init.d/netmanager-china enable 2>/dev/null
+    info "中国IPv4访问限制已开启（仅中国大陆IPv4可访问已开放端口）"
+}
+
+cmd_china_disable() {
+    load_config
+    china_clear_kernel
+    uci set netmanager.settings.china_filter_enable='0'
+    uci commit netmanager
+    china_cron_remove
+    info "中国IPv4访问限制已关闭（境外IPv4可恢复访问）"
+}
+
+cmd_china_update() {
+    load_config
+    if ! china_download; then
+        error "更新失败：下载未成功，保留旧列表"
+        exit 1
+    fi
+    if [ "$(china_get_enable)" = "1" ]; then
+        china_apply_rules
+    else
+        info "功能未启用，仅更新了本地列表，未应用规则"
+    fi
+}
+
+cmd_china_boot() {
+    load_config
+    [ "$(china_get_enable)" = "1" ] || return 0
+    if [ ! -f "$CHINA_LIST_FILE" ]; then
+        write_log "WARN" "china_filter boot: 已启用但本地列表不存在，跳过重应用"
+        return 0
+    fi
+    china_apply_rules >/dev/null 2>&1
+    write_log "INFO" "china_filter boot: 已重新应用规则"
+}
+
+cmd_china_filter() {
+    local sub="${1:-status}"
+    shift 2>/dev/null
+    case "$sub" in
+        status)   cmd_china_status ;;
+        enable)   cmd_china_enable ;;
+        disable)  cmd_china_disable ;;
+        update)   cmd_china_update ;;
+        set_url)  cmd_china_set_url "$@" ;;
+        set_cron) cmd_china_set_cron "$@" ;;
+        boot)     cmd_china_boot ;;
+        *) echo "用法: netmanager china_filter status|enable|disable|update|set_url <url>|set_cron <expr>"; exit 1 ;;
+    esac
+}
+
+# ========== 14. 卸载插件 ==========
+# 用法: netmanager uninstall [full|keep]
+#   full = 全删（后端/LuCI/CBI模型/配置/CIDR/DNS配置与脚本/init/hotplug/缓存）
+#   keep = 保留 /etc/config/netmanager、/etc/netmanager/ 与 /etc/config/dnssettings，其余全删
+# 卸载后由后台子进程延迟2秒自删 /usr/sbin/netmanager 并重启 uhttpd（让本次响应先完整返回）
+cmd_uninstall() {
+    local mode="${1:-full}"
+    local keep_config=0
+    [ "$mode" = "keep" ] && keep_config=1
+
+    info "开始卸载网络管理插件 (mode=$mode)..."
+    write_log "INFO" "uninstall: 开始卸载 (mode=$mode keep_config=$keep_config)"
+
+    # 1. 先关闭中国IPv4过滤：清nft规则 + 移除cron + 删表
+    echo "[1/8] 关闭中国IPv4过滤（清理nft规则、移除cron）..."
+    cmd_china_disable >/dev/null 2>&1
+    nft delete table inet netmanager 2>/dev/null
+    crontab -l 2>/dev/null | grep -v 'netmanager china_filter' | crontab - 2>/dev/null
+
+    # 2. 停止并禁用开机自启
+    echo "[2/8] 停止并禁用 init 服务..."
+    /etc/init.d/netmanager-china stop 2>/dev/null
+    /etc/init.d/netmanager-china disable 2>/dev/null
+
+    # 3. 删除 init / hotplug 脚本与 DNS 管理脚本
+    echo "[3/8] 删除 init/hotplug 脚本与 DNS 管理脚本..."
+    rm -f /etc/init.d/netmanager-china
+    rm -f /etc/hotplug.d/iface/95-netmanager-china
+    rm -f /usr/sbin/dnssettings-apply.sh
+    rm -f /usr/sbin/dnssettings-backup.sh
+
+    # 4. 删除 LuCI 控制器、CBI 模型与视图页面
+    echo "[4/8] 删除 LuCI 控制器/CBI模型/视图页面..."
+    rm -f /usr/lib/lua/luci/controller/netmanager.lua
+    rm -rf /usr/lib/lua/luci/model/cbi/netmanager
+    rm -rf /usr/lib/lua/luci/view/netmanager
+
+    # 5. 删除配置与CIDR列表（保留模式下跳过）
+    echo "[5/8] 删除配置与CIDR列表..."
+    if [ "$keep_config" = "1" ]; then
+        echo "  (保留模式：保留 /etc/config/netmanager、/etc/netmanager/ 与 /etc/config/dnssettings)"
+    else
+        rm -f /etc/config/netmanager
+        rm -rf /etc/netmanager
+        rm -f /etc/config/dnssettings
+    fi
+
+    # 6. 清理临时文件与缓存
+    echo "[6/8] 清理临时文件与缓存..."
+    rm -f /tmp/.netmanager_nft_dstnat 2>/dev/null
+    rm -rf /tmp/netmanager 2>/dev/null
+    rm -rf /tmp/netmanager_upload 2>/dev/null
+    rm -rf /tmp/luci-indexcache /tmp/luci-modulecache 2>/dev/null
+
+    # 7. 输出卸载完成摘要
+    echo "[7/8] 卸载完成。"
+    echo ""
+    echo "===UNINSTALL_DONE==="
+    echo "已删除："
+    echo "  - /usr/lib/lua/luci/controller/netmanager.lua"
+    echo "  - /usr/lib/lua/luci/model/cbi/netmanager/ (DNS设置与静态IPv6 CBI模型)"
+    echo "  - /usr/lib/lua/luci/view/netmanager/ (全部视图)"
+    echo "  - /etc/init.d/netmanager-china"
+    echo "  - /etc/hotplug.d/iface/95-netmanager-china"
+    echo "  - /usr/sbin/dnssettings-apply.sh /usr/sbin/dnssettings-backup.sh"
+    if [ "$keep_config" = "1" ]; then
+        echo "  - (保留) /etc/config/netmanager"
+        echo "  - (保留) /etc/netmanager/"
+        echo "  - (保留) /etc/config/dnssettings"
+    else
+        echo "  - /etc/config/netmanager"
+        echo "  - /etc/netmanager/"
+        echo "  - /etc/config/dnssettings"
+    fi
+    echo "  - nft 表 inet netmanager（中国IPv4过滤规则）"
+    echo "  - crontab 中国IPv4过滤计划任务"
+    echo "  - /tmp/netmanager* 临时文件与缓存"
+    echo ""
+    echo "用户在 /etc/config/firewall 中的端口转发与防火墙规则不受影响，保留不动。"
+    write_log "INFO" "uninstall: 文件清理完成，2秒后自删后端脚本并重启uhttpd"
+
+    # 8. 后台延迟2秒：删除自身 + 重启uhttpd（确保本次响应能完整返回浏览器）
+    echo "[8/8] 2秒后将自动删除后端脚本 /usr/sbin/netmanager 并重启 uhttpd..."
+    (
+        sleep 2
+        rm -f /usr/sbin/netmanager
+        /etc/init.d/uhttpd restart >/dev/null 2>&1
+        rm -rf /tmp/luci-indexcache /tmp/luci-modulecache /tmp/luci-sessions 2>/dev/null
+    ) >/dev/null 2>&1 &
+}
+
+# ========== 主入口 ==========
+usage() {
+    echo "网络管理插件"
+    echo ""
+    echo "用法: netmanager <命令> [参数]"
+    echo ""
+    echo "系统: overview | version | settings"
+    echo "端口转发: port_list | port_add | port_del | port_edit | set_default_target"
+    echo "防火墙规则: rule_list | rule_add | rule_del | rule_edit"
+    echo "日志: ssh_log [行数] | access_log [端口] [行数] | log_set 0/1 | log_get [行数] | log_clear"
+    echo "操作: restart | reload"
+    echo "备份: backup | backup_list | backup_restore <文件> | backup_delete <文件>"
+    echo "插件: upload_file <文件名> <b64文件> | plugin_update <文件> | plugin_version <文件> | cleanup_uploads"
+    echo "中国IPv4过滤: china_filter status | enable | disable | update | set_url <url> | set_cron <expr>"
+    echo "卸载: uninstall [full|keep]   # full=全删(默认) keep=保留配置与备份"
+}
+
+case "$1" in
+    overview)           cmd_overview ;;
+    version)            cmd_version ;;
+    settings)           cmd_settings ;;
+    port_list)          cmd_port_list ;;
+    port_add)           shift; cmd_port_add "$@" ;;
+    port_del)           shift; cmd_port_del "$@" ;;
+    port_edit)          shift; cmd_port_edit "$@" ;;
+    set_default_target) shift; cmd_set_default_target "$@" ;;
+    rule_list)          cmd_rule_list ;;
+    rule_add)           shift; cmd_rule_add "$@" ;;
+    rule_del)           shift; cmd_rule_del "$@" ;;
+    rule_edit)          shift; cmd_rule_edit "$@" ;;
+    ssh_log)            shift; cmd_ssh_log "$@" ;;
+    access_log)         shift; cmd_access_log "$@" ;;
+    log_set)            shift; cmd_log_set "$@" ;;
+    log_get)            shift; cmd_log_get "$@" ;;
+    log_clear)          cmd_log_clear ;;
+    restart)            cmd_restart ;;
+    reload)             cmd_reload ;;
+    backup)             cmd_backup ;;
+    backup_list)        cmd_backup_list ;;
+    backup_restore)     shift; cmd_backup_restore "$@" ;;
+    backup_delete)      shift; cmd_backup_delete "$@" ;;
+    upload_file)        shift; cmd_upload_file "$@" ;;
+    plugin_update)      shift; cmd_plugin_update "$@" ;;
+    plugin_version)     shift; cmd_plugin_version "$@" ;;
+    cleanup_uploads)    cmd_cleanup_uploads ;;
+    china_filter)       shift; cmd_china_filter "$@" ;;
+    uninstall)          shift; cmd_uninstall "$@" ;;
+    *)                  usage ;;
+esac

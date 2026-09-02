@@ -1,0 +1,99 @@
+<%+header%>
+<%+netmanager/common_head%>
+<div class="netmanager-container">
+    <div class="netmanager-header">
+        <h1>网络管理</h1>
+        <span class="netmanager-author">Network Manager</span>
+    </div>
+    <%+netmanager/nav%>
+    <div class="netmanager-content">
+        <h2>SSH 登录日志</h2>
+        <div class="netmanager-toolbar">
+            <label style="font-size:13px;color:#6b7280;">显示行数:</label>
+            <select id="log_limit">
+                <option value="20">最近20条</option>
+                <option value="50" selected>最近50条</option>
+                <option value="100">最近100条</option>
+                <option value="200">最近200条</option>
+            </select>
+            <button class="btn btn-primary btn-sm" onclick="loadSshLog()">刷新</button>
+            <button class="btn btn-secondary btn-sm" onclick="toggleAuto()">自动刷新</button>
+            <span id="auto_status" class="text-muted"></span>
+        </div>
+        <div class="netmanager-cards" style="grid-template-columns: repeat(3, 1fr);">
+            <div class="netmanager-card">
+                <div class="card-label">成功登录</div>
+                <div class="card-value green" id="success_count">0</div>
+            </div>
+            <div class="netmanager-card">
+                <div class="card-label">失败登录</div>
+                <div class="card-value red" id="failed_count">0</div>
+            </div>
+            <div class="netmanager-card">
+                <div class="card-label">可疑IP数</div>
+                <div class="card-value orange" id="suspicious_count">0</div>
+            </div>
+        </div>
+        <h3>失败登录IP排行 (Top 10)</h3>
+        <table class="netmanager-table" id="stats_table">
+            <thead><tr><th>IP地址</th><th>失败次数</th><th>风险等级</th></tr></thead>
+            <tbody><tr><td colspan="3" class="empty-state">加载中...</td></tr></tbody>
+        </table>
+        <h3>成功登录记录</h3>
+        <div class="netmanager-log" id="success_log"><div class="text-muted">加载中...</div></div>
+        <h3>失败登录记录</h3>
+        <div class="netmanager-log" id="failed_log"><div class="text-muted">加载中...</div></div>
+    </div>
+    <div class="footer-sign">网络管理插件 v1.4.0</div>
+</div>
+<script>
+const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
+let autoTimer = null;
+function loadSshLog() {
+    const limit = document.getElementById('log_limit').value;
+    fetch(API_URL, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: 'action=ssh_log&limit=' + limit
+    }).then(r => r.text()).then(data => {
+        const sections = data.split('---');
+        let successHtml = '', failedHtml = '', statsHtml = '';
+        let successCount = 0, failedCount = 0;
+        let current = '';
+        sections.forEach(section => {
+            if (section.includes('SUCCESS')) current = 'success';
+            else if (section.includes('FAILED')) current = 'failed';
+            else if (section.includes('STATS')) current = 'stats';
+            const lines = section.split('\n').filter(l => l.includes('|'));
+            lines.forEach(line => {
+                const parts = line.split('|');
+                if (current === 'success' && parts.length >= 3) {
+                    successCount++;
+                    successHtml += `<div><span class="log-time">[${parts[0]}]</span> <span class="log-success">成功</span> 用户:<b>${parts[1]}</b> 来自:<span class="log-ip">${parts[2]}</span></div>`;
+                } else if (current === 'failed' && parts.length >= 4) {
+                    failedCount++;
+                    failedHtml += `<div><span class="log-time">[${parts[0]}]</span> <span class="log-fail">失败</span> 用户:<b>${parts[1]}</b> 来自:<span class="log-ip">${parts[2]}</span> 原因:${parts[3]}</div>`;
+                } else if (current === 'stats' && parts.length >= 2) {
+                    const count = parseInt(parts[1]);
+                    let risk = '<span class="badge badge-green">低</span>';
+                    if (count >= 10) risk = '<span class="badge badge-red">高危</span>';
+                    else if (count >= 5) risk = '<span class="badge badge-orange">中危</span>';
+                    statsHtml += `<tr><td><span class="log-ip">${parts[0]}</span></td><td><b>${count}</b></td><td>${risk}</td></tr>`;
+                }
+            });
+        });
+        document.getElementById('success_count').textContent = successCount;
+        document.getElementById('failed_count').textContent = failedCount;
+        document.getElementById('suspicious_count').textContent = statsHtml ? (statsHtml.match(/<tr>/g) || []).length : 0;
+        document.querySelector('#stats_table tbody').innerHTML = statsHtml || '<tr><td colspan="3" class="empty-state">暂无失败记录</td></tr>';
+        document.getElementById('success_log').innerHTML = successHtml || '<div class="text-muted">暂无成功登录记录</div>';
+        document.getElementById('failed_log').innerHTML = failedHtml || '<div class="text-muted">暂无失败登录记录</div>';
+    });
+}
+function toggleAuto() {
+    if (autoTimer) { clearInterval(autoTimer); autoTimer = null; document.getElementById('auto_status').textContent = '自动刷新已关闭'; }
+    else { autoTimer = setInterval(loadSshLog, 10000); document.getElementById('auto_status').textContent = '自动刷新中(10s)'; }
+}
+loadSshLog();
+</script>
+<%+footer%>

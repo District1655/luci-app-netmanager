@@ -1,0 +1,239 @@
+# 网络管理插件 (luci-app-netmanager)
+
+> 版本：v1.4.0
+>
+> 适配：iStoreOS / OpenWrt (fw4/nftables, Lua LuCI)
+>
+> 由 **luci-app-fwmanager**（防火墙管理）与 **luci-app-dnssettings**（DNS设置）合并而成的网络管理一体化 LuCI 插件。
+
+一站式管理路由器网络：端口转发、防火墙规则、SSH/访问日志、中国 IPv4 访问限制、WAN/LAN 双栈 DNS 统一管理、静态 IPv6 分配、配置备份恢复、插件在线更新、一键卸载。
+
+---
+
+## 功能模块
+
+### 防火墙管理（原 luci-app-fwmanager）
+
+1. **系统概览**：防火墙状态 / 端口统计 / 网络信息 / 快捷操作
+2. **端口转发管理**：IPv4 DNAT + IPv6 放行统一管理，支持 TCP/UDP/双协议、单端口与端口范围
+3. **防火墙规则管理**：自定义通信规则增删改 + 常用模板一键应用
+4. **SSH 登录日志**：成功/失败记录 + 失败 IP 排行 Top 10 + 自动刷新
+5. **端口访问日志**：活跃连接 / 入站出站计数 / 拦截统计
+6. **中国 IPv4 访问限制**：仅允许中国大陆 IPv4 访问已开放端口，境外 IPv4 新建连接丢弃；独立 nft 表 `inet netmanager`（fw4 reload 不影响）；订阅链接与 cron 更新计划可自定义；开机 init + WAN hotplug 自愈；旧版 nft 自动降级兼容
+7. **设置**：默认目标 IP / 配置备份 / 插件在线更新 / 运行日志排错 / 一键卸载
+
+### DNS 设置（原 luci-app-dnssettings，CBI 标准表单）
+
+8. **DNS 设置**：
+   - WAN 口上游 DNS：PPPoE/DHCP 拨号自定义 IPv4/IPv6 DNS，或使用运营商下发（peerdns）
+   - LAN 口设备 DNS：通过 DHCP option 6 与 RA 强制下发自定义 DNS，或走路由器缓存
+   - dnsmasq 全局转发：统一配置上游解析服务器
+   - 配置备份：一键备份当前系统 network/dhcp 配置到 `/root/backup/`
+   - 应用配置：一键写入系统并重启 network/dnsmasq/odhcpd
+9. **静态 IPv6 分配**：基于 MAC 绑定 hostid/ip6/DUID，自动合并重复条目、在线状态显示、hostid 冲突检测
+
+### 默认 DNS
+
+| 类型 | 主 DNS | 备 DNS |
+|------|--------|--------|
+| IPv4 | 223.5.5.5 (阿里) | 119.29.29.29 (腾讯) |
+| IPv6 | 2400:3200::1 (阿里) | 2402:4e00:: (腾讯) |
+
+---
+
+## 文件结构
+
+```
+luci-app-netmanager/
+├── files/
+│   ├── usr/sbin/
+│   │   ├── netmanager                        # 后端核心脚本（防火墙管理，含日志/更新/备份/卸载）
+│   │   ├── dnssettings-apply.sh              # DNS 应用配置脚本（独立保留）
+│   │   └── dnssettings-backup.sh             # DNS 备份脚本（独立保留）
+│   ├── usr/lib/lua/luci/
+│   │   ├── controller/netmanager.lua         # LuCI 控制器（菜单+API+multipart上传+DNS动作）
+│   │   ├── model/cbi/netmanager/
+│   │   │   ├── dns_settings.lua              # DNS 设置 CBI 模型（绑定 /etc/config/dnssettings）
+│   │   │   └── dns_staticv6.lua              # 静态 IPv6 分配 CBI 模型（绑定 dhcp.host）
+│   │   └── view/netmanager/
+│   │       ├── overview.htm                  # 系统概览
+│   │       ├── port_forward.htm              # 端口转发
+│   │       ├── firewall_rules.htm            # 规则管理
+│   │       ├── ssh_log.htm                   # SSH 日志
+│   │       ├── access_log.htm                # 访问日志
+│   │       ├── settings.htm                  # 设置（备份/更新/运行日志/中国IPv4过滤/卸载）
+│   │       ├── common_head.htm               # 公共样式
+│   │       └── nav.htm                       # 公共导航（含 DNS 两个入口）
+│   ├── etc/config/
+│   │   ├── netmanager                        # 防火墙模块配置
+│   │   └── dnssettings                       # DNS 模块配置（独立保留）
+│   ├── etc/init.d/netmanager-china           # 中国IPv4过滤开机自启
+│   └── etc/hotplug.d/iface/95-netmanager-china # WAN上线重应用
+├── .github/workflows/build.yml               # GitHub Actions 自动打包
+├── install.sh                                # 一键安装脚本（支持 SKIP_UHTTPD_RESTART）
+└── README.md
+```
+
+---
+
+## 安装方法
+
+### 一键脚本安装（推荐）
+
+iStoreOS 的 `/usr/bin/` 是只读 squashfs 分区，标准 IPK 包无法正常安装，本插件采用 `tar.gz + install.sh` 脚本方式安装。
+
+1. 下载 `luci-app-netmanager-install_*.tar.gz`，上传到路由器 `/tmp` 目录
+2. SSH 登录路由器，执行：
+
+```bash
+cd /tmp
+tar xzvf luci-app-netmanager-install_*.tar.gz
+chmod +x install.sh
+sh install.sh
+```
+
+3. 安装完成后，左侧菜单出现「网络管理」
+4. 浏览器按 `Ctrl+Shift+R` 强制刷新页面
+
+### 在线更新
+
+在「设置」页面的「插件更新」区域，上传新的 tar.gz 包进行在线更新（安装成功后延迟 3 秒自动重启 LuCI）。
+
+---
+
+## 命令行用法
+
+安装后可直接使用 `netmanager` 命令：
+
+```bash
+# 系统概览
+netmanager overview
+
+# 端口转发
+netmanager port_list
+netmanager port_add <外部端口> <tcp|udp|both> <目标IP> <ipv4|ipv6|both>
+netmanager port_del <外部端口> <协议>
+netmanager port_edit <旧端口> <旧协议> <新端口> <新协议> <目标IP> <类型>
+
+# 防火墙规则
+netmanager rule_list
+netmanager rule_add <名称> <源> <目标> <协议> <端口> <动作> <ipv4|ipv6|any>
+netmanager rule_del <索引>
+netmanager rule_edit <索引> <名称> <源> <目标> <协议> <端口> <动作> <类型>
+
+# 日志
+netmanager ssh_log [条数]
+netmanager access_log [筛选端口] [条数]
+
+# 运行日志
+netmanager log_set 1|0          # 开启/关闭运行日志（持久化到UCI）
+netmanager log_get [行数]       # 查看最后 N 行运行日志
+netmanager log_clear            # 清空运行日志
+
+# 设置
+netmanager settings
+netmanager set_default_target <IP>
+
+# 操作
+netmanager restart    # 重启防火墙
+netmanager reload     # 重载防火墙
+
+# 备份管理
+netmanager backup                    # 立即备份当前配置
+netmanager backup_list               # 查看所有备份
+netmanager backup_restore <文件名>   # 从备份恢复
+netmanager backup_delete <文件名>    # 删除备份
+
+# 插件管理
+netmanager upload_file <文件名>      # 上传文件（通过stdin）
+netmanager plugin_update <文件名>    # 从上传的包更新插件
+netmanager plugin_version <文件名>   # 查看插件包版本信息
+netmanager cleanup_uploads           # 清理临时上传文件
+
+# 中国IPv4访问限制
+netmanager china_filter status                 # 查看状态
+netmanager china_filter enable                 # 开启（应用规则 + 装cron + 自启）
+netmanager china_filter disable                # 关闭（清规则 + 移cron，保留列表与设置）
+netmanager china_filter update                 # 更新IP库并重应用规则
+netmanager china_filter set_url <url>          # 自定义订阅链接
+netmanager china_filter set_cron "0 4 * * *"   # 自定义更新计划cron
+
+# DNS 设置（命令行方式应用，等价于页面「应用配置」按钮）
+/usr/sbin/dnssettings-apply.sh                 # 应用 /etc/config/dnssettings 到系统
+/usr/sbin/dnssettings-backup.sh                # 备份 network/dhcp 配置到 /root/backup/
+
+# 卸载插件
+netmanager uninstall                # 全删（后端/LuCI/CBI/配置/DNS配置与脚本/CIDR/init/hotplug/nft规则/cron/缓存）
+netmanager uninstall keep           # 保留 /etc/config/netmanager、/etc/netmanager/ 与 /etc/config/dnssettings，其余全删
+```
+
+---
+
+## 配置说明
+
+### 防火墙模块：`/etc/config/netmanager`
+
+```
+config netmanager 'settings'
+    option default_target '192.168.31.196'   # 默认转发目标IP
+    option log_days '7'                       # 日志保留天数（预留）
+    option auto_ban '0'                       # 是否自动封禁 SSH 爆破
+    option auto_ban_threshold '5'             # 自动封禁失败次数阈值
+    option log_enable '0'                     # 运行日志开关：0关闭 / 1开启
+    option china_filter_enable '0'            # 中国IPv4过滤开关：0关闭 / 1开启
+    option china_filter_url 'https://metowolf.github.io/iplist/data/special/china.txt'  # IP库订阅链接
+    option china_filter_cron '0 3 * * 0'      # 更新计划cron表达式：默认每周日3点
+    option china_filter_last_update ''        # 上次成功下载时间
+    option china_filter_count '0'             # 当前列表CIDR条数
+```
+
+### DNS 模块：`/etc/config/dnssettings`
+
+```
+config wan 'wan'          # WAN 口上游 DNS（peerdns / dns1_v4 / dns2_v4 / dns1_v6 / dns2_v6）
+config lan 'lan'          # LAN 口下发 DNS（force_dns / dns1_v4 / dns2_v4 / dns1_v6 / dns2_v6）
+config dnsmasq 'dnsmasq'  # dnsmasq 全局转发（enable / forward_v4 列表 / forward_v6 列表）
+config actions 'actions'  # 操作按钮占位
+```
+
+> **DNS 应用原理**：点击「应用配置」后，`dnssettings-apply.sh` 将上述配置写入 `network.wan/wan6`（peerdns/dns/dns6）、`dhcp.lan`（dhcp_option/dns/ra/dhcpv6）与 `dhcp.@dnsmasq[0].server`，然后重启 network/dnsmasq/odhcpd。局域网设备需断开重连网络才能获取新 DNS。
+
+> **中国IPv4过滤原理**：独立 nft 表 `inet netmanager`（与 fw4 分离，fw4 reload 不影响）含 `china_v4` CIDR 集合 + input/forward 两条 base chain(priority -50)，规则 `iifname {wan} ct state new {tcp,udp} ip saddr != @china_v4 drop`。CIDR 列表存 `/etc/netmanager/china_v4.list`，开机 init + WAN 上线 hotplug 自动重应用。兼容新旧 nft：modern(`flags interval, auto-merge` 分片加载) / compat(`flags interval` 单次原子加载 + 逐行回退)。
+
+---
+
+## 卸载
+
+- Web 界面：「设置」页面 →「卸载插件」区块（支持「保留配置」勾选）
+- 命令行：`netmanager uninstall [full|keep]`
+
+卸载会完整清理：后端脚本、LuCI 控制器/CBI 模型/视图、init/hotplug、DNS 应用与备份脚本、nft 规则、cron 任务、配置文件。用户在 `/etc/config/firewall` 中的端口转发与防火墙规则不受影响。
+
+---
+
+## 注意事项
+
+1. DNS「应用配置」会重启网络服务，期间会短暂断网
+2. 设备端 DNS 有缓存，重连网络后才会拿到新 DNS
+3. 如果 WAN 接口名不是 `wan` 或 `wan6`，请在 `dnssettings-apply.sh` 中修改对应接口名
+4. DNS 备份文件保存在 `/root/backup/`，防火墙配置备份保存在 `/root/`
+5. 更新前建议先备份配置；只支持 `.tar.gz` 或 `.tgz` 格式
+
+## 更新日志
+
+### v1.4.0 (2026-09-02)
+
+- **合并 luci-app-dnssettings (v1.2.1)**：新增「DNS设置」「静态IPv6分配」两个子页面（CBI 标准表单），统一入口到「网络管理」菜单
+- DNS 配置 `/etc/config/dnssettings` 与应用/备份脚本独立保留，老用户已有配置无损保留
+- 原 `fwmanager` 全部命令/配置/路径统一更名为 `netmanager`（命令 `netmanager`、配置 `/etc/config/netmanager`、日志 `/tmp/netmanager/`、nft 表 `inet netmanager`、CIDR 目录 `/etc/netmanager/`）
+- `netmanager uninstall` 卸载流程增加 DNS 模块清理（CBI 模型 / dnssettings 配置 / apply-backup 脚本）
+- install.sh 扩展为 7 步安装（新增 DNS 脚本、CBI 模型、dnssettings 配置）
+
+### 继承自 luci-app-fwmanager v1.3.33
+
+- 中国 IPv4 访问限制（独立 nft 表 / 旧版 nft 自动降级 / 订阅与 cron 自定义 / init + hotplug 自愈）
+- 一键卸载插件、运行日志排错、配置备份恢复、插件在线更新、性能优化（nft dstnat 链缓存）
+
+## 许可证
+
+MIT License

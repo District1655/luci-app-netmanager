@@ -1,0 +1,105 @@
+<%+header%>
+<%+netmanager/common_head%>
+<div class="netmanager-container">
+    <div class="netmanager-header">
+        <h1>网络管理</h1>
+        <span class="netmanager-author">Network Manager</span>
+    </div>
+    <%+netmanager/nav%>
+    <div class="netmanager-content">
+        <h2>系统概览</h2>
+        <div class="netmanager-cards">
+            <div class="netmanager-card">
+                <div class="card-icon">🛡️</div>
+                <div class="card-label">防火墙状态</div>
+                <div class="card-value" id="fw_status">--</div>
+            </div>
+            <div class="netmanager-card">
+                <div class="card-icon">🔄</div>
+                <div class="card-label">端口转发</div>
+                <div class="card-value blue" id="redirect_count">--</div>
+            </div>
+            <div class="netmanager-card">
+                <div class="card-icon">📋</div>
+                <div class="card-label">防火墙规则</div>
+                <div class="card-value blue" id="rule_count">--</div>
+            </div>
+            <div class="netmanager-card">
+                <div class="card-icon">⚠️</div>
+                <div class="card-label">SSH失败(24h)</div>
+                <div class="card-value orange" id="ssh_fail_24h">--</div>
+            </div>
+            <div class="netmanager-card">
+                <div class="card-icon">🔗</div>
+                <div class="card-label">当前连接</div>
+                <div class="card-value blue" id="conn_count">--</div>
+            </div>
+            <div class="netmanager-card">
+                <div class="card-icon">💾</div>
+                <div class="card-label">内存使用</div>
+                <div class="card-value" id="mem_percent">--</div>
+            </div>
+        </div>
+        <h3>网络信息</h3>
+        <table class="netmanager-table">
+            <tr><td width="30%">WAN IP</td><td id="wan_ip">--</td></tr>
+            <tr><td>LAN IP</td><td id="lan_ip">--</td></tr>
+            <tr><td>默认转发目标</td><td id="default_target">--</td></tr>
+            <tr><td>运行时间</td><td id="uptime">--</td></tr>
+            <tr><td>系统负载</td><td id="load">--</td></tr>
+        </table>
+        <h3>快捷操作</h3>
+        <div class="netmanager-toolbar">
+            <button class="btn btn-primary" onclick="fwAction('reload')">重载防火墙</button>
+            <button class="btn btn-warning" onclick="fwAction('restart')">重启防火墙</button>
+            <button class="btn btn-success" onclick="fwAction('backup')">备份配置</button>
+            <button class="btn btn-secondary" onclick="loadOverview()">刷新数据</button>
+        </div>
+        <div id="action_result" class="netmanager-result"></div>
+    </div>
+    <div class="footer-sign">网络管理插件 v1.4.0</div>
+</div>
+<script>
+const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
+function loadOverview() {
+    fetch(API_URL, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: 'action=overview'
+    }).then(r => r.text()).then(data => {
+        const lines = data.split('\n');
+        lines.forEach(line => {
+            if (line.includes('=') && !line.includes('===')) {
+                const idx = line.indexOf('=');
+                const key = line.substring(0, idx);
+                const value = line.substring(idx + 1);
+                const el = document.getElementById(key.toLowerCase());
+                if (el) {
+                    if (key === 'FW_STATUS') {
+                        el.innerHTML = value === 'running' ? '<span class="badge badge-green">运行中</span>' : '<span class="badge badge-red">已停止</span>';
+                    } else if (key === 'MEM_PERCENT') {
+                        el.textContent = value + '%';
+                    } else {
+                        el.textContent = value;
+                    }
+                }
+            }
+        });
+    });
+}
+function fwAction(action) {
+    const resultDiv = document.getElementById('action_result');
+    resultDiv.innerHTML = '<span class="text-info">执行中...</span>';
+    fetch(API_URL, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: 'action=' + action
+    }).then(r => r.text()).then(data => {
+        resultDiv.innerHTML = '<pre class="result-pre">' + data + '</pre>';
+        setTimeout(loadOverview, 2000);
+    });
+}
+loadOverview();
+setInterval(loadOverview, 30000);
+</script>
+<%+footer%>

@@ -1,0 +1,26 @@
+#!/bin/sh /etc/rc.common
+# ============================================================
+# 网络管理插件 - 中国IPv4访问限制 开机自启
+# 
+# 作用: 开机后从本地持久化列表重建 nft 集合与过滤规则
+#       (nft 规则在内核内存中，重启即清空，需重新应用)
+# ============================================================
+
+START=99
+
+boot() {
+    # 后台延迟执行，等待网络/防火墙就绪，避免阻塞开机
+    sh -c 'sleep 8; /usr/sbin/netmanager china_filter boot' >/dev/null 2>&1 &
+}
+
+start() {
+    /usr/sbin/netmanager china_filter boot
+}
+
+stop() {
+    :
+}
+
+restart() {
+    /usr/sbin/netmanager china_filter boot
+}

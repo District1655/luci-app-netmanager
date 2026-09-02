@@ -1,0 +1,112 @@
+<%+header%>
+<%+netmanager/common_head%>
+<div class="netmanager-container">
+    <div class="netmanager-header">
+        <h1>网络管理</h1>
+        <span class="netmanager-author">Network Manager</span>
+    </div>
+    <%+netmanager/nav%>
+    <div class="netmanager-content">
+        <h2>端口访问日志</h2>
+        <div class="netmanager-toolbar">
+            <label style="font-size:13px;color:#6b7280;">筛选端口:</label>
+            <input type="text" id="filter_port" placeholder="留空全部" style="width:100px;">
+            <label style="font-size:13px;color:#6b7280;">条数:</label>
+            <select id="access_limit">
+                <option value="50">50条</option>
+                <option value="100" selected>100条</option>
+                <option value="200">200条</option>
+            </select>
+            <button class="btn btn-primary btn-sm" onclick="loadAccessLog()">刷新</button>
+            <button class="btn btn-secondary btn-sm" onclick="toggleAuto()">自动刷新</button>
+            <span id="auto_status" class="text-muted"></span>
+        </div>
+        <div class="netmanager-cards" style="grid-template-columns: repeat(4, 1fr);">
+            <div class="netmanager-card">
+                <div class="card-label">活跃连接</div>
+                <div class="card-value blue" id="active_count">0</div>
+            </div>
+            <div class="netmanager-card">
+                <div class="card-label">入站连接</div>
+                <div class="card-value green" id="inbound_count">0</div>
+            </div>
+            <div class="netmanager-card">
+                <div class="card-label">出站连接</div>
+                <div class="card-value" id="outbound_count">0</div>
+            </div>
+            <div class="netmanager-card">
+                <div class="card-label">累计拦截</div>
+                <div class="card-value red" id="blocked_count">0</div>
+            </div>
+        </div>
+        <h3>当前活跃连接</h3>
+        <div class="netmanager-log" id="active_log"><div class="text-muted">加载中...</div></div>
+        <h3>防火墙拦截统计 (按端口)</h3>
+        <div class="netmanager-log" id="blocked_log"><div class="text-muted">加载中...</div></div>
+    </div>
+    <div class="footer-sign">网络管理插件 v1.4.0</div>
+</div>
+<script>
+const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
+let autoTimer = null;
+const PORT_SVC = {'22':'SSH','21':'FTP','23':'Telnet','25':'SMTP','53':'DNS','80':'HTTP','110':'POP3','143':'IMAP','443':'HTTPS','445':'SMB','3306':'MySQL','3389':'RDP','5432':'PostgreSQL','6379':'Redis','8080':'HTTP-Alt','8443':'HTTPS-Alt','8888':'HTTP-Alt','21115':'RustDesk','21116':'RustDesk','21117':'RustDesk','25550':'SSH(改)','853':'DoT','51133':'Bitwarden','53000':'Joyflix','53002':'SunPanel','58013':'Music-DL'};
+function loadAccessLog() {
+    const port = document.getElementById('filter_port').value.trim();
+    const limit = document.getElementById('access_limit').value;
+    fetch(API_URL, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: 'action=access_log&port=' + encodeURIComponent(port) + '&limit=' + limit
+    }).then(r => r.text()).then(data => {
+        const sections = data.split('---');
+        let activeHtml = '', blockedHtml = '';
+        let activeCount = 0, inboundCount = 0, outboundCount = 0, blockedTotal = 0;
+        let current = '';
+        sections.forEach(section => {
+            if (section.includes('ACTIVE')) current = 'active';
+            else if (section.includes('BLOCKED')) current = 'blocked';
+            else if (section.includes('===END')) current = '';
+            const lines = section.split('\n').filter(l => l.trim());
+            lines.forEach(line => {
+                // 统计行（带=号）
+                if (line.includes('=') && !line.includes('|')) {
+                    const idx = line.indexOf('=');
+                    const k = line.substring(0, idx), v = line.substring(idx + 1);
+                    if (k === 'ACTIVE_COUNT') activeCount = parseInt(v) || 0;
+                    if (k === 'IN_COUNT') inboundCount = parseInt(v) || 0;
+                    if (k === 'OUT_COUNT') outboundCount = parseInt(v) || 0;
+                    if (k === 'BLOCK_TOTAL') blockedTotal = parseInt(v) || 0;
+                    return;
+                }
+                // 数据行（带|）
+                if (!line.includes('|')) return;
+                const parts = line.split('|');
+                if (current === 'active' && parts.length >= 4) {
+                    const proto = parts[0], src = parts[1], dst = parts[2], state = parts[3];
+                    const isInbound = !src.match(/^(192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[01])\.|127\.)/);
+                    const dirBadge = isInbound ? '<span class="badge badge-green">入</span>' : '<span class="badge badge-blue">出</span>';
+                    const protoBadge = proto === 'tcp' ? '<span class="badge badge-blue">TCP</span>' : '<span class="badge badge-purple">UDP</span>';
+                    activeHtml += `<div>${protoBadge} ${dirBadge} <span class="log-ip">${src}</span> → <span class="log-ip">${dst}</span> <span style="color:#9ca3af;">[${state}]</span></div>`;
+                } else if (current === 'blocked' && parts.length >= 3) {
+                    const proto = parts[0], dport = parts[1], pkts = parts[2];
+                    if (parseInt(pkts) > 0) {
+                        blockedHtml += `<div><span class="log-fail">拦截</span> ${proto.toUpperCase()} 端口 <b>${dport}</b> 累计 <b>${pkts}</b> 个包</div>`;
+                    }
+                }
+            });
+        });
+        document.getElementById('active_count').textContent = activeCount;
+        document.getElementById('inbound_count').textContent = inboundCount;
+        document.getElementById('outbound_count').textContent = outboundCount;
+        document.getElementById('blocked_count').textContent = blockedTotal;
+        document.getElementById('active_log').innerHTML = activeHtml || '<div class="text-muted">暂无活跃连接</div>';
+        document.getElementById('blocked_log').innerHTML = blockedHtml || '<div class="text-muted">暂无拦截记录（防火墙DROP规则计数器为0）</div>';
+    });
+}
+function toggleAuto() {
+    if (autoTimer) { clearInterval(autoTimer); autoTimer = null; document.getElementById('auto_status').textContent = '自动刷新已关闭'; }
+    else { autoTimer = setInterval(loadAccessLog, 5000); document.getElementById('auto_status').textContent = '自动刷新中(5s)'; }
+}
+loadAccessLog();
+</script>
+<%+footer%>

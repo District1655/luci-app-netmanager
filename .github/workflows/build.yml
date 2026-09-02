@@ -1,0 +1,133 @@
+name: Build Install Package
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: '强制重新打包（忽略版本已存在检查）'
+        required: false
+        type: boolean
+        default: false
+  push:
+    branches:
+      - main
+      - master
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version from README
+        id: version
+        run: |
+          # 从 README.md 头部「版本：vX.Y.Z」提取最新版本号（-m1 取第一处匹配）
+          # 提取失败时用当前日期兜底，保证流水线不中断
+          VERSION=$(grep -m1 -oE '版本：v[0-9]+\.[0-9]+\.[0-9]+' README.md | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
+          if [ -z "$VERSION" ]; then
+            VERSION=$(date +'%Y.%m.%d')
+            echo "WARN: 未从 README.md 提取到版本号，使用日期兜底: $VERSION"
+          fi
+          TAG="v${VERSION}"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "Version: ${TAG}"
+
+      - name: Check if tag already exists
+        id: check
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Tag ${TAG} 已存在，跳过打包与发布（如需强制重新发布，请手动运行本 workflow 并勾选 force）"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "Tag ${TAG} 不存在，开始打包发布"
+          fi
+
+      - name: Build tar.gz install package
+        if: steps.check.outputs.exists == 'false' || inputs.force == true
+        run: |
+          chmod +x install.sh files/usr/sbin/netmanager files/usr/sbin/dnssettings-apply.sh files/usr/sbin/dnssettings-backup.sh files/etc/init.d/netmanager-china files/etc/hotplug.d/iface/95-netmanager-china 2>/dev/null || true
+          # 打包安装包（iStoreOS 不支持标准 ipk，使用 tar.gz + install.sh 脚本安装）
+          # 使用 GNU tar --owner=0 --group=0 保证在路由器上属主正确；--mode 保证脚本可执行
+          tar --owner=0 --group=0 --mode='u=rwX,go=rX' -czvf luci-app-netmanager-install_${{ steps.version.outputs.tag }}.tar.gz install.sh files/
+          ls -lh luci-app-netmanager-install_*.tar.gz
+
+      - name: Create and push tag
+        if: steps.check.outputs.exists == 'false' || inputs.force == true
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -f ${{ steps.version.outputs.tag }}
+          git push -f origin ${{ steps.version.outputs.tag }}
+
+      - name: Release
+        if: steps.check.outputs.exists == 'false' || inputs.force == true
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          files: luci-app-netmanager-install_*.tar.gz
+          generate_release_notes: true
+          body: |
+            ## 网络管理插件 ${{ steps.version.outputs.tag }}
+
+            > 适配：iStoreOS / OpenWrt (fw4/nftables)
+            >
+            > 由 luci-app-fwmanager 与 luci-app-dnssettings 合并而成
+
+            ### 功能模块
+            - 系统概览（防火墙状态/端口统计/网络信息/快捷操作）
+            - 端口转发管理（IPv4 DNAT + IPv6放行，支持TCP/UDP/双协议）
+            - 防火墙规则管理（自定义增删规则 + 常用模板）
+            - SSH登录日志（成功/失败记录 + 失败IP排行 + 自动刷新）
+            - 端口访问日志（活跃连接/入站出站计数/拦截统计）
+            - **DNS设置（v1.4.0 新增）**：WAN口上游DNS / LAN口设备下发DNS / dnsmasq全局转发，IPv4+IPv6双栈，一键应用与配置备份
+            - **静态IPv6分配（v1.4.0 新增）**：基于MAC绑定 hostid/ip6/DUID，自动合并重复条目与 hostid 冲突检测
+            - 设置（默认目标IP/安全建议/系统工具/配置备份/插件在线更新/运行日志排错）
+            - **中国IPv4访问限制（继承自 v1.3.33）**：仅允许中国大陆 IPv4 访问已开放端口（DNAT+路由器本地开放端口），境外 IPv4 新建连接丢弃；默认订阅 `https://metowolf.github.io/iplist/data/special/china.txt`，支持自定义订阅链接与自定义 cron 更新计划；开机 init + WAN hotplug 自愈；**旧版 nft 自动降级兼容**（modern `flags interval, auto-merge` 分片加载 / compat `flags interval` 单次原子加载 + 逐行回退）
+
+            ### 安装方法（iStoreOS 推荐脚本安装）
+            1. 下载 `luci-app-netmanager-install_*.tar.gz` 上传到路由器 `/tmp`
+            2. SSH 登录路由器，执行：
+            ```bash
+            cd /tmp
+            tar xzvf luci-app-netmanager-install_*.tar.gz
+            ./install.sh
+            ```
+            3. 安装后左侧菜单出现「网络管理」，浏览器 Ctrl+Shift+R 强制刷新
+
+            ### 中国IPv4访问限制 使用指引
+            1. 左侧进入「网络管理 → 设置」→ 找到「中国IPv4访问限制」区块
+            2. 确认 IP库订阅链接（默认 `https://metowolf.github.io/iplist/data/special/china.txt`，可改自定义订阅）
+            3. 选择更新计划（预设每天/每周/每月/每12小时或自定义 cron）
+            4. 先点「更新IP库」下载最新 CIDR 列表，再点「立即启用」应用 nft 规则
+            5. 状态显示 "已启用 / RULE_ACTIVE=1" 即代表过滤生效；若路由器 nft 过旧，运行日志会显示自动降级 `旧版 nft 不支持 auto-merge，降级为 flags interval + 一次性原子加载`
+
+            ### 命令行用法
+            ```bash
+            netmanager overview       # 系统概览
+            netmanager port_list      # 端口转发列表
+            netmanager ssh_log        # SSH登录日志
+            netmanager access_log     # 端口访问日志
+            netmanager rule_list      # 防火墙规则列表
+
+            # DNS设置（v1.4.0+，等价于页面「应用配置」按钮）
+            dnssettings-apply.sh      # 应用 /etc/config/dnssettings 到系统
+            dnssettings-backup.sh     # 备份 network/dhcp 配置到 /root/backup/
+
+            # 中国IPv4访问限制（继承自 v1.3.33）
+            netmanager china_filter status                 # 查看状态
+            netmanager china_filter enable                 # 开启（应用规则 + 装cron + 自启）
+            netmanager china_filter disable                # 关闭（清规则 + 移cron，保留列表与设置）
+            netmanager china_filter update                 # 更新IP库并重应用规则
+            netmanager china_filter set_url <url>          # 自定义订阅链接
+            netmanager china_filter set_cron "0 4 * * *"   # 自定义更新计划cron
+
+            # 卸载插件
+            netmanager uninstall                # 全删（含 DNS 配置与脚本）
+            netmanager uninstall keep           # 保留 /etc/config/netmanager、/etc/netmanager/ 与 /etc/config/dnssettings，其余全删
+            ```
+
+            > 也可在「设置」页面点击「一键卸载插件」按钮卸载（支持保留配置勾选）。卸载不影响用户在 /etc/config/firewall 中的端口转发与防火墙规则。

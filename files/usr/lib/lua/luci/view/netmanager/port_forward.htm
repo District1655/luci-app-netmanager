@@ -1,0 +1,166 @@
+<%+header%>
+<%+netmanager/common_head%>
+<div class="netmanager-container">
+    <div class="netmanager-header">
+        <h1>网络管理</h1>
+        <span class="netmanager-author">Network Manager</span>
+    </div>
+    <%+netmanager/nav%>
+    <div class="netmanager-content">
+        <h2>端口转发管理</h2>
+        <!-- 添加表单 -->
+        <div class="netmanager-form" id="add_form">
+            <div style="margin-bottom:8px;"><b>添加端口转发</b></div>
+            <div>
+                <label>外部端口:</label>
+                <input type="text" id="add_port" placeholder="如 443 或 1000-2000" style="width:120px;">
+                <label>协议:</label>
+                <select id="add_proto">
+                    <option value="tcp">TCP</option>
+                    <option value="udp">UDP</option>
+                    <option value="both">TCP+UDP</option>
+                </select>
+                <label>目标IP:</label>
+                <input type="text" id="add_target" placeholder="留空用默认" style="width:130px;">
+                <label>IP版本:</label>
+                <select id="add_ipver">
+                    <option value="both">IPv4+IPv6</option>
+                    <option value="v4">仅IPv4</option>
+                    <option value="v6">仅IPv6</option>
+                </select>
+                <button class="btn btn-success btn-sm" onclick="addPortForward()">添加</button>
+            </div>
+            <div class="text-muted" style="margin-top:6px;">默认目标IP: <span id="default_target_display">加载中...</span> | 可在「设置」中修改</div>
+        </div>
+        <!-- 编辑表单（默认隐藏） -->
+        <div class="netmanager-form" id="edit_form" style="display:none;border-left:3px solid #f0ad4e;">
+            <div style="margin-bottom:8px;"><b>编辑端口转发</b> <span class="text-muted" id="edit_old_info"></span></div>
+            <div>
+                <label>新端口:</label>
+                <input type="text" id="edit_port" placeholder="如 443" style="width:120px;">
+                <label>协议:</label>
+                <select id="edit_proto">
+                    <option value="tcp">TCP</option>
+                    <option value="udp">UDP</option>
+                    <option value="both">TCP+UDP</option>
+                </select>
+                <label>目标IP:</label>
+                <input type="text" id="edit_target" placeholder="留空用默认" style="width:130px;">
+                <label>IP版本:</label>
+                <select id="edit_ipver">
+                    <option value="both">IPv4+IPv6</option>
+                    <option value="v4">仅IPv4</option>
+                    <option value="v6">仅IPv6</option>
+                </select>
+                <button class="btn btn-primary btn-sm" onclick="savePortEdit()">保存修改</button>
+                <button class="btn btn-secondary btn-sm" onclick="cancelPortEdit()">取消</button>
+            </div>
+            <input type="hidden" id="edit_old_port">
+            <input type="hidden" id="edit_old_proto">
+        </div>
+        <h3>IPv4 端口转发 (DNAT)</h3>
+        <table class="netmanager-table" id="ipv4_table">
+            <thead><tr><th>名称</th><th>协议</th><th>外部端口</th><th>目标地址</th><th>命中数</th><th>状态</th><th>操作</th></tr></thead>
+            <tbody><tr><td colspan="7" class="empty-state">—</td></tr></tbody>
+        </table>
+        <h3>IPv6 端口放行</h3>
+        <table class="netmanager-table" id="ipv6_table">
+            <thead><tr><th>名称</th><th>协议</th><th>端口</th><th>命中数</th><th>状态</th><th>操作</th></tr></thead>
+            <tbody><tr><td colspan="6" class="empty-state">—</td></tr></tbody>
+        </table>
+        <div id="action_result" class="netmanager-result"></div>
+    </div>
+    <div class="footer-sign">网络管理插件 v1.4.0</div>
+</div>
+<script>
+const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
+function loadPortList() {
+    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=port_list'})
+    .then(r => r.text()).then(data => {
+        const sections = data.split('---');
+        let ipv4Html = '', ipv6Html = '';
+        let currentSection = '';
+        sections.forEach(section => {
+            if (section.includes('IPV4')) currentSection = 'ipv4';
+            else if (section.includes('IPV6')) currentSection = 'ipv6';
+            else if (section.includes('DEFAULT_TARGET')) {
+                const m = section.match(/DEFAULT_TARGET=(.+)/);
+                if (m) document.getElementById('default_target_display').textContent = m[1].trim();
+            }
+            const lines = section.split('\n').filter(l => l.includes('|'));
+            lines.forEach(line => {
+                const parts = line.split('|');
+                if (currentSection === 'ipv4' && parts.length >= 8) {
+                    const [idx, name, proto, sp, dip, dp, enabled, pkts] = parts;
+                    const status = enabled === '1' ? '<span class="badge badge-green">启用</span>' : '<span class="badge badge-gray">禁用</span>';
+                    const protoBadge = proto === 'tcp' ? '<span class="badge badge-blue">TCP</span>' : proto === 'udp' ? '<span class="badge badge-purple">UDP</span>' : '<span class="badge badge-blue">TCP+UDP</span>';
+                    ipv4Html += `<tr><td>${name}</td><td>${protoBadge}</td><td><b>${sp}</b></td><td>${dip}:${dp}</td><td>${pkts}</td><td>${status}</td><td><button class="btn btn-primary btn-sm" onclick="editPort('${sp}','${proto}','${dip}')">编辑</button> <button class="btn btn-danger btn-sm" onclick="delPort('${sp}','${proto}')">删除</button></td></tr>`;
+                } else if (currentSection === 'ipv6' && parts.length >= 6) {
+                    const [idx, name, proto, dp, enabled, pkts] = parts;
+                    const status = enabled === '1' ? '<span class="badge badge-green">启用</span>' : '<span class="badge badge-gray">禁用</span>';
+                    const protoBadge = proto === 'tcp' ? '<span class="badge badge-blue">TCP</span>' : proto === 'udp' ? '<span class="badge badge-purple">UDP</span>' : '<span class="badge badge-blue">TCP+UDP</span>';
+                    ipv6Html += `<tr><td>${name}</td><td>${protoBadge}</td><td><b>${dp}</b></td><td>${pkts}</td><td>${status}</td><td><button class="btn btn-primary btn-sm" onclick="editPort('${dp}','${proto}','')">编辑</button> <button class="btn btn-danger btn-sm" onclick="delPort('${dp}','${proto}')">删除</button></td></tr>`;
+                }
+            });
+        });
+        document.querySelector('#ipv4_table tbody').innerHTML = ipv4Html || '<tr><td colspan="7" class="empty-state">暂无规则</td></tr>';
+        document.querySelector('#ipv6_table tbody').innerHTML = ipv6Html || '<tr><td colspan="6" class="empty-state">暂无规则</td></tr>';
+    });
+}
+function addPortForward() {
+    const port = document.getElementById('add_port').value.trim();
+    const proto = document.getElementById('add_proto').value;
+    const target = document.getElementById('add_target').value.trim();
+    const ipver = document.getElementById('add_ipver').value;
+    if (!port) { alert('请输入端口号'); return; }
+    const body = 'action=port_add&port=' + encodeURIComponent(port) + '&proto=' + proto + '&target=' + encodeURIComponent(target) + '&ipver=' + ipver;
+    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + data + '</pre>';
+        document.getElementById('add_port').value = '';
+        document.getElementById('add_target').value = '';
+        setTimeout(loadPortList, 400);
+    });
+}
+function delPort(port, proto) {
+    if (!confirm('确定删除端口 ' + port + '/' + proto + ' ?')) return;
+    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=port_del&port=' + encodeURIComponent(port) + '&proto=' + encodeURIComponent(proto)})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + data + '</pre>';
+        setTimeout(loadPortList, 300);
+    });
+}
+function editPort(port, proto, target) {
+    document.getElementById('add_form').style.display = 'none';
+    document.getElementById('edit_form').style.display = 'block';
+    document.getElementById('edit_old_port').value = port;
+    document.getElementById('edit_old_proto').value = proto;
+    document.getElementById('edit_port').value = port;
+    document.getElementById('edit_proto').value = proto;
+    document.getElementById('edit_target').value = target || '';
+    document.getElementById('edit_old_info').textContent = '(原: ' + port + '/' + proto + ')';
+    document.getElementById('edit_form').scrollIntoView({behavior:'smooth', block:'center'});
+}
+function cancelPortEdit() {
+    document.getElementById('edit_form').style.display = 'none';
+    document.getElementById('add_form').style.display = 'block';
+}
+function savePortEdit() {
+    const old_port = document.getElementById('edit_old_port').value;
+    const old_proto = document.getElementById('edit_old_proto').value;
+    const new_port = document.getElementById('edit_port').value.trim();
+    const new_proto = document.getElementById('edit_proto').value;
+    const new_target = document.getElementById('edit_target').value.trim();
+    const new_ipver = document.getElementById('edit_ipver').value;
+    if (!new_port) { alert('请输入新端口号'); return; }
+    const body = 'action=port_edit&old_port=' + encodeURIComponent(old_port) + '&old_proto=' + old_proto + '&new_port=' + encodeURIComponent(new_port) + '&new_proto=' + new_proto + '&new_target=' + encodeURIComponent(new_target) + '&new_ipver=' + new_ipver;
+    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + data + '</pre>';
+        cancelPortEdit();
+        setTimeout(loadPortList, 300);
+    });
+}
+loadPortList();
+</script>
+<%+footer%>

@@ -1,0 +1,22 @@
+config wan 'wan'
+    option peerdns '0'
+    option dns1_v4 '223.5.5.5'
+    option dns2_v4 '119.29.29.29'
+    option dns1_v6 '2400:3200::1'
+    option dns2_v6 '2402:4e00::'
+
+config lan 'lan'
+    option force_dns '1'
+    option dns1_v4 '223.5.5.5'
+    option dns2_v4 '119.29.29.29'
+    option dns1_v6 '2400:3200::1'
+    option dns2_v6 '2402:4e00::'
+
+config dnsmasq 'dnsmasq'
+    option enable '1'
+    list forward_v4 '223.5.5.5'
+    list forward_v4 '119.29.29.29'
+    list forward_v6 '2400:3200::1'
+    list forward_v6 '2402:4e00::'
+
+config actions 'actions'

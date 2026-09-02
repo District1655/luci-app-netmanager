@@ -1,0 +1,15 @@
+# 强制所有文本文件使用 LF 换行
+# 路由器（BusyBox ash）上的 shell 脚本必须使用 LF，CRLF 会导致 shebang 解析失败
+* text=auto eol=lf
+
+# Windows 专用文件例外
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制文件
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.tar.gz binary
+*.ipk binary
