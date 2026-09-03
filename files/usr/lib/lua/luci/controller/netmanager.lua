@@ -315,6 +315,14 @@ function api_handler()
     elseif action == "china_filter_set_cron" then
         local cron = luci.http.formvalue("cron") or ""
         cmd = string.format("/usr/sbin/netmanager china_filter set_cron %s", shell_escape(cron))
+    elseif action == "update_check" then
+        cmd = "/usr/sbin/netmanager update_check"
+    elseif action == "update_apply" then
+        -- 在线更新：下载可能较慢，浏览器端需耐心等待完整响应
+        cmd = "/usr/sbin/netmanager update_apply"
+    elseif action == "set_update_mirror" then
+        local mirror = luci.http.formvalue("mirror") or ""
+        cmd = string.format("/usr/sbin/netmanager set_update_mirror %s", shell_escape(mirror))
     elseif action == "uninstall" then
         local keep = luci.http.formvalue("keep") or "0"
         local mode = (keep == "1") and "keep" or "full"

@@ -1,6 +1,6 @@
 # 网络管理插件 (luci-app-netmanager)
 
-> 版本：v1.4.0
+> 版本：v1.4.1
 >
 > 适配：iStoreOS / OpenWrt (fw4/nftables, Lua LuCI)
 >
@@ -150,6 +150,11 @@ netmanager plugin_update <文件名>    # 从上传的包更新插件
 netmanager plugin_version <文件名>   # 查看插件包版本信息
 netmanager cleanup_uploads           # 清理临时上传文件
 
+# 在线更新（v1.4.1+，从 GitHub Releases 自动检查下载安装）
+netmanager update_check              # 检查最新版本（GitHub API → 302重定向两级容错）
+netmanager update_apply              # 下载最新 release 资产并自动安装（大小+tar 完整性校验）
+netmanager set_update_mirror <url>   # 设置镜像/加速前缀（空=直连），如 https://gh-proxy.com
+
 # 中国IPv4访问限制
 netmanager china_filter status                 # 查看状态
 netmanager china_filter enable                 # 开启（应用规则 + 装cron + 自启）
@@ -220,6 +225,15 @@ config actions 'actions'  # 操作按钮占位
 5. 更新前建议先备份配置；只支持 `.tar.gz` 或 `.tgz` 格式
 
 ## 更新日志
+
+### v1.4.1 (2026-09-03)
+
+- **新增「在线更新」功能**：设置页新增「在线更新」区块，一键从 GitHub Releases（`District1655/luci-app-netmanager`）检查并安装最新版
+- **检查两级容错**：优先 GitHub API + `jsonfilter` 解析最新 tag 与资产 URL；API 不可达时自动降级用 `/releases/latest` 的 302 Location 头解析 tag（无需 API，直连受限场景仍可用）
+- **`netmanager update_apply`**：自动下载最新 `luci-app-netmanager-install_*.tar.gz`（wget / uclient-fetch / curl 依次兜底），下载后做**大小校验 + tar 完整性预检**（杜绝半截包/错误页进入安装），再复用 plugin_update 流程安装（解压 + install.sh + 延迟重启 uhttpd）
+- **镜像加速可配置**：`netmanager set_update_mirror <url>` 或设置页输入框，检查与下载 URL 均自动拼接加速前缀（如 `https://gh-proxy.com`），应对 GitHub 直连受限
+- **语义化版本比较**：major.minor.patch 数值比较，仅提示升级不误报降级；版本号统一收敛到后端 `PLUGIN_VERSION` 变量（`netmanager version` / 在线更新共用）
+- UI：设置页显示当前版本/最新版本/更新状态，检查与更新按钮带禁用态与结果展示
 
 ### v1.4.0 (2026-09-02)
 

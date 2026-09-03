@@ -11,6 +11,13 @@ LOG_DIR="/tmp/netmanager"
 LOG_FILE="$LOG_DIR/run.log"
 LOG_ENABLED=0
 
+# 在线更新配置：版本号与 GitHub 仓库（发版时同步修改 PLUGIN_VERSION）
+PLUGIN_VERSION="1.4.1"
+REPO_OWNER="District1655"
+REPO_NAME="luci-app-netmanager"
+REPO_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
+REPO_API_URL="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest"
+
 # 确保日志目录存在（tmp每次重启会清，需要每次重建）
 mkdir -p "$LOG_DIR" 2>/dev/null
 
@@ -61,6 +68,11 @@ load_config() {
         uci set netmanager.settings.china_filter_cron='0 3 * * 0'
         uci set netmanager.settings.china_filter_last_update=''
         uci set netmanager.settings.china_filter_count='0'
+        uci commit netmanager 2>/dev/null
+    fi
+    # 补齐在线更新镜像前缀默认值（空=直连 GitHub）
+    if [ -z "$(uci get netmanager.settings.update_mirror 2>/dev/null)" ]; then
+        uci set netmanager.settings.update_mirror=''
         uci commit netmanager 2>/dev/null
     fi
 }
@@ -1202,6 +1214,198 @@ cmd_cleanup_uploads() {
     fi
 }
 
+# ========== 10.5 在线更新（GitHub Releases） ==========
+# 用法:
+#   netmanager update_check                 检查最新版本（GitHub API → 302重定向兜底）
+#   netmanager update_apply                 下载最新 release 资产并安装（复用 plugin_update 流程）
+#   netmanager set_update_mirror <url|''>   设置镜像/加速前缀（空=直连），如 https://gh-proxy.com
+#
+# 检查策略（两级容错）:
+#   1) GitHub API + jsonfilter 解析（可拿到资产 URL/大小）
+#   2) 失败则用 /releases/latest 的 302 Location 头解析最新 tag（无需 API，兼容直连受限场景+镜像前缀）
+# 版本比较: 语义化 major.minor.patch 数值比较，仅提示升级，不自动降级
+
+# 语义化版本比较: version_gt 1.10.0 1.9.9 → 返回 0(真)
+version_gt() {
+    local v1="${1#v}" v2="${2#v}"
+    local a1 a2 a3 b1 b2 b3
+    a1=$(echo "$v1" | cut -d. -f1); a2=$(echo "$v1" | cut -d. -f2); a3=$(echo "$v1" | cut -d. -f3)
+    b1=$(echo "$v2" | cut -d. -f1); b2=$(echo "$v2" | cut -d. -f2); b3=$(echo "$v2" | cut -d. -f3)
+    a1=${a1:-0}; a2=${a2:-0}; a3=${a3:-0}
+    b1=${b1:-0}; b2=${b2:-0}; b3=${b3:-0}
+    [ "$a1" -gt "$b1" ] 2>/dev/null && return 0
+    [ "$a1" -eq "$b1" ] 2>/dev/null || return 1
+    [ "$a2" -gt "$b2" ] 2>/dev/null && return 0
+    [ "$a2" -eq "$b2" ] 2>/dev/null || return 1
+    [ "$a3" -gt "$b3" ] 2>/dev/null && return 0
+    return 1
+}
+
+# HTTP GET：兼容 wget / uclient-fetch / curl，输出 body 到 stdout
+update_http_get() {
+    local url="$1"
+    if command -v wget >/dev/null 2>&1; then
+        wget -q -T 15 -O - "$url" 2>/dev/null && return 0
+    fi
+    if command -v uclient-fetch >/dev/null 2>&1; then
+        uclient-fetch -q -T 15 -O - "$url" 2>/dev/null && return 0
+    fi
+    if command -v curl >/dev/null 2>&1; then
+        curl -sS --max-time 15 "$url" 2>/dev/null && return 0
+    fi
+    return 1
+}
+
+cmd_update_check() {
+    load_config
+    local mirror=$(uci get netmanager.settings.update_mirror 2>/dev/null | tr -d ' ')
+    local api_url="$REPO_API_URL"
+    [ -n "$mirror" ] && api_url="${mirror%/}/$REPO_API_URL"
+
+    echo "===UPDATE_CHECK==="
+    echo "CURRENT_VERSION=v$PLUGIN_VERSION"
+    echo "REPO=${REPO_OWNER}/${REPO_NAME}"
+    echo "MIRROR=${mirror:-(直连)}"
+
+    local latest_tag="" asset_url="" asset_size=0 api_ok=0
+
+    # ---- 方式1: GitHub API + jsonfilter ----
+    if command -v jsonfilter >/dev/null 2>&1; then
+        local api_json
+        api_json=$(update_http_get "$api_url")
+        if [ -n "$api_json" ] && echo "$api_json" | grep -q '"tag_name"'; then
+            latest_tag=$(echo "$api_json" | jsonfilter -e '@.tag_name' 2>/dev/null)
+            asset_url=$(echo "$api_json" | jsonfilter -e '@.assets[0].browser_download_url' 2>/dev/null)
+            asset_size=$(echo "$api_json" | jsonfilter -e '@.assets[0].size' 2>/dev/null)
+            api_ok=1
+        fi
+    fi
+
+    # ---- 方式2: /releases/latest 302 Location 解析 tag（无需 API） ----
+    if [ -z "$latest_tag" ]; then
+        local latest_url="$REPO_BASE_URL/releases/latest"
+        [ -n "$mirror" ] && latest_url="${mirror%/}/$latest_url"
+        latest_tag=$( (wget -S --spider -T 15 -O /dev/null "$latest_url" 2>&1 || true) | grep -i 'location:' | sed -n 's/.*\/releases\/tag\/\(v[0-9][0-9.]*\).*/\1/p' | tail -1)
+        if [ -z "$latest_tag" ] && command -v curl >/dev/null 2>&1; then
+            latest_tag=$(curl -sIL --max-time 15 -o /dev/null -w '%{url_effective}' "$latest_url" 2>/dev/null | sed -n 's/.*\/releases\/tag\/\(v[0-9][0-9.]*\).*/\1/p')
+        fi
+    fi
+
+    if [ -z "$latest_tag" ]; then
+        echo "UPDATE_AVAILABLE=unknown"
+        echo "ERROR=无法获取最新版本（网络不通或 GitHub 直连受限，可设置镜像加速后重试）"
+        echo "===END==="
+        write_log "WARN" "update_check: 无法获取最新版本 (mirror=${mirror:-无})"
+        return 1
+    fi
+
+    # 构造资产下载 URL（CI 固定命名规则兜底；API 获取的真实 URL 优先）
+    local asset_name="luci-app-netmanager-install_${latest_tag}.tar.gz"
+    local dl_url="${REPO_BASE_URL}/releases/download/${latest_tag}/${asset_name}"
+    [ -z "$asset_url" ] && asset_url="$dl_url"
+    [ -n "$mirror" ] && asset_url="${mirror%/}/$asset_url"
+
+    local update_available=0
+    version_gt "$latest_tag" "v$PLUGIN_VERSION" && update_available=1
+
+    echo "LATEST_VERSION=$latest_tag"
+    echo "ASSET_URL=$asset_url"
+    echo "ASSET_SIZE=$asset_size"
+    echo "UPDATE_AVAILABLE=$update_available"
+    if [ "$update_available" = "1" ]; then
+        echo "MESSAGE=发现新版本 $latest_tag（当前 v$PLUGIN_VERSION）"
+    else
+        echo "MESSAGE=当前已是最新版本 (v$PLUGIN_VERSION)"
+    fi
+    echo "===END==="
+    write_log "INFO" "update_check: current=v$PLUGIN_VERSION latest=$latest_tag available=$update_available (api_ok=$api_ok)"
+    return 0
+}
+
+cmd_update_apply() {
+    load_config
+    write_log "INFO" "update_apply: 开始在线更新 (current=v$PLUGIN_VERSION)"
+
+    # 1. 检查最新版本（内部结构化输出同时展示给用户）
+    local check_out
+    check_out=$(cmd_update_check)
+    local latest_tag=$(echo "$check_out" | sed -n 's/^LATEST_VERSION=//p')
+    local asset_url=$(echo "$check_out" | sed -n 's/^ASSET_URL=//p')
+    echo "$check_out"
+    if [ -z "$latest_tag" ] || [ -z "$asset_url" ]; then
+        error "在线更新失败：无法获取最新版本信息"
+        exit 1
+    fi
+    if echo "$check_out" | grep -q '^UPDATE_AVAILABLE=0$'; then
+        info "当前已是最新版本 (v$PLUGIN_VERSION)，无需更新"
+        return 0
+    fi
+    info "准备在线更新: v$PLUGIN_VERSION -> $latest_tag"
+
+    # 2. 下载资产（wget/uclient-fetch/curl 依次兜底；GitHub release URL 302 由客户端自动跟随）
+    local download_dir="/tmp/netmanager_upload"
+    mkdir -p "$download_dir" 2>/dev/null
+    local dest_name="luci-app-netmanager-install_${latest_tag}.tar.gz"
+    local dest_file="$download_dir/$dest_name"
+    info "开始下载: $asset_url"
+    write_log "INFO" "update_apply: 下载 $asset_url -> $dest_file"
+    local dl_rc=1
+    if command -v wget >/dev/null 2>&1; then
+        wget -T 60 -O "$dest_file" "$asset_url" >/dev/null 2>&1 && dl_rc=0
+    fi
+    if [ $dl_rc -ne 0 ] && command -v uclient-fetch >/dev/null 2>&1; then
+        uclient-fetch -T 60 -O "$dest_file" "$asset_url" >/dev/null 2>&1 && dl_rc=0
+    fi
+    if [ $dl_rc -ne 0 ] && command -v curl >/dev/null 2>&1; then
+        curl -sSL --max-time 300 -o "$dest_file" "$asset_url" >/dev/null 2>&1 && dl_rc=0
+    fi
+    if [ $dl_rc -ne 0 ] || [ ! -s "$dest_file" ]; then
+        rm -f "$dest_file" 2>/dev/null
+        error "下载失败（网络不通或镜像不可用，可设置镜像加速后重试）"
+        write_log "ERROR" "update_apply: 下载失败 url=$asset_url"
+        exit 1
+    fi
+
+    # 3. 下载校验：大小 + tar 完整性预检，杜绝半截包/HTML 错误页进入安装流程
+    local pkg_size=$(wc -c < "$dest_file" 2>/dev/null | tr -d ' ')
+    if [ "${pkg_size:-0}" -lt 2000 ]; then
+        rm -f "$dest_file" 2>/dev/null
+        error "下载的文件异常（仅 ${pkg_size:-0} 字节），已放弃更新"
+        write_log "ERROR" "update_apply: 下载文件过小 size=$pkg_size"
+        exit 1
+    fi
+    if ! tar tzf "$dest_file" >/dev/null 2>&1; then
+        rm -f "$dest_file" 2>/dev/null
+        error "下载的文件不是有效的 tar.gz 包（可能不完整），已放弃更新"
+        write_log "ERROR" "update_apply: tar 校验失败 size=$pkg_size"
+        exit 1
+    fi
+    info "下载完成: $pkg_size 字节，完整性校验通过"
+    write_log "INFO" "update_apply: 下载校验通过 size=$pkg_size"
+
+    # 4. 复用 plugin_update 安装流程（解压 + install.sh + 延迟重启 uhttpd）
+    cmd_plugin_update "$dest_name"
+}
+
+cmd_set_update_mirror() {
+    local m="$1"
+    load_config
+    if [ -n "$m" ]; then
+        case "$m" in
+            http://*|https://*) ;;
+            *) error "镜像前缀必须以 http:// 或 https:// 开头（留空表示直连 GitHub）"; exit 1 ;;
+        esac
+        m="${m%/}"
+    fi
+    uci set netmanager.settings.update_mirror="$m"
+    uci commit netmanager
+    if [ -n "$m" ]; then
+        info "更新镜像已设置: $m"
+    else
+        info "更新镜像已清空（直连 GitHub）"
+    fi
+}
+
 # ========== 11. 设置管理 ==========
 cmd_set_default_target() {
     ip="$1"
@@ -1272,14 +1476,15 @@ cmd_settings() {
     echo "CHINA_FILTER_CRON=$(uci get netmanager.settings.china_filter_cron 2>/dev/null || echo '0 3 * * 0')"
     echo "CHINA_FILTER_LAST_UPDATE=$(uci get netmanager.settings.china_filter_last_update 2>/dev/null)"
     echo "CHINA_FILTER_COUNT=$(uci get netmanager.settings.china_filter_count 2>/dev/null || echo 0)"
+    echo "UPDATE_MIRROR=$(uci get netmanager.settings.update_mirror 2>/dev/null)"
     echo "===END==="
 }
 
 # ========== 12. 版本信息 ==========
 cmd_version() {
-    echo "网络管理插件 v1.4.0"
+    echo "网络管理插件 v$PLUGIN_VERSION"
     echo ""
-    echo "功能: 系统概览 / 端口转发 / 规则管理 / SSH日志 / 访问日志 / 备份恢复 / 插件更新 / 运行日志 / 中国IPv4访问限制"
+    echo "功能: 系统概览 / 端口转发 / 规则管理 / SSH日志 / 访问日志 / 备份恢复 / 在线更新 / 插件更新 / 运行日志 / 中国IPv4访问限制"
     echo "适配: iStoreOS / OpenWrt (fw4/nftables)"
 }
 
@@ -1842,6 +2047,7 @@ usage() {
     echo "操作: restart | reload"
     echo "备份: backup | backup_list | backup_restore <文件> | backup_delete <文件>"
     echo "插件: upload_file <文件名> <b64文件> | plugin_update <文件> | plugin_version <文件> | cleanup_uploads"
+    echo "在线更新: update_check | update_apply | set_update_mirror <url|''>"
     echo "中国IPv4过滤: china_filter status | enable | disable | update | set_url <url> | set_cron <expr>"
     echo "卸载: uninstall [full|keep]   # full=全删(默认) keep=保留配置与备份"
 }
@@ -1874,6 +2080,9 @@ case "$1" in
     plugin_update)      shift; cmd_plugin_update "$@" ;;
     plugin_version)     shift; cmd_plugin_version "$@" ;;
     cleanup_uploads)    cmd_cleanup_uploads ;;
+    update_check)       cmd_update_check ;;
+    update_apply)       cmd_update_apply ;;
+    set_update_mirror)  shift; cmd_set_update_mirror "$@" ;;
     china_filter)       shift; cmd_china_filter "$@" ;;
     uninstall)          shift; cmd_uninstall "$@" ;;
     *)                  usage ;;
