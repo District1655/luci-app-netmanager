@@ -63,6 +63,22 @@ jobs:
           git tag -f ${{ steps.version.outputs.tag }}
           git push -f origin ${{ steps.version.outputs.tag }}
 
+      - name: Extract changelog from README
+        id: extract
+        if: steps.check.outputs.exists == 'false' || inputs.force == true
+        run: |
+          # 从 README 更新日志提取当前版本的段落，作为 Release body 的变更内容
+          CHANGELOG=$(awk -v ver="${{ steps.version.outputs.version }}" -f .github/workflows/extract_changelog.awk README.md)
+          if [ -z "$(echo "$CHANGELOG" | tr -d '[:space:]')" ]; then
+            CHANGELOG="（README 中未找到 v${{ steps.version.outputs.version }} 的更新日志段落）"
+            echo "WARN: 未提取到更新日志，Release 将使用占位文案"
+          fi
+          # 写入多行 output（heredoc 定界符语法，GitHub Actions 官方推荐，保留换行）
+          echo "changelog<<CHANGELOG_EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGELOG" >> $GITHUB_OUTPUT
+          echo "CHANGELOG_EOF" >> $GITHUB_OUTPUT
+          echo "提取到的更新日志行数: $(echo "$CHANGELOG" | wc -l)"
+
       - name: Release
         if: steps.check.outputs.exists == 'false' || inputs.force == true
         uses: softprops/action-gh-release@v2
@@ -76,6 +92,12 @@ jobs:
             > 适配：iStoreOS / OpenWrt (fw4/nftables)
             >
             > 由 luci-app-fwmanager 与 luci-app-dnssettings 合并而成
+
+            ### 本次更新（v${{ steps.version.outputs.version }}）
+
+            ${{ steps.extract.outputs.changelog }}
+
+            ---
 
             ### 功能模块
             - 系统概览（防火墙状态/端口统计/网络信息/快捷操作）
