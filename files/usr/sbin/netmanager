@@ -12,7 +12,7 @@ LOG_FILE="$LOG_DIR/run.log"
 LOG_ENABLED=0
 
 # 在线更新配置：版本号与 GitHub 仓库（发版时同步修改 PLUGIN_VERSION）
-PLUGIN_VERSION="1.4.3"
+PLUGIN_VERSION="1.4.4"
 REPO_OWNER="District1655"
 REPO_NAME="luci-app-netmanager"
 REPO_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
@@ -50,6 +50,40 @@ write_log() {
 info() { echo "[INFO] $*"; write_log "INFO" "$*"; }
 warn() { echo "[WARN] $*"; write_log "WARN" "$*"; }
 error() { echo "[ERROR] $*"; write_log "ERROR" "$*"; }
+
+# proto_match <条目proto> <待匹配proto>：返回0=匹配
+# fw4 语义：proto 缺省（空）= tcp+udp（both）
+proto_match() {
+    local rp="$1" mp="$2"
+    [ -z "$rp" ] && rp="tcp udp"
+    case " $rp " in
+        *" $mp "*) return 0 ;;
+    esac
+    return 1
+}
+
+# tar_list_check <tar包> <列表输出文件>：返回0=安全（成员可列出且无路径穿越）
+# BusyBox tar 解压时不剥离 ../ 成员，恶意包可借此覆盖系统文件（配合在线更新=远程RCE链）
+# 检查规则：列出失败（坏包）、成员含 ../ 段、或以绝对路径开头 → 全部拒绝
+tar_list_check() {
+    local pkg="$1" listfile="$2"
+    # 尝试列出成员（gzip 直接列失败时退回 gunzip + tar tf）
+    tar tzf "$pkg" > "$listfile" 2>/dev/null
+    if [ $? -ne 0 ] && [ ! -s "$listfile" ]; then
+        local ungz="${pkg%.gz}"
+        if [ "$ungz" != "$pkg" ]; then
+            gunzip -c "$pkg" > "$ungz" 2>/dev/null && tar tf "$ungz" > "$listfile" 2>/dev/null
+            rm -f "$ungz" 2>/dev/null
+        fi
+    fi
+    # 完全列不出来 = 坏包，拒绝
+    [ ! -s "$listfile" ] && return 1
+    # 检查非法成员：../ 段 或 绝对路径开头
+    if grep -qE '(^|/)\.\.(/|$)|^/' "$listfile"; then
+        return 1
+    fi
+    return 0
+}
 
 load_config() {
     [ -f "$CONFIG_FILE" ] || {
@@ -93,11 +127,11 @@ cmd_overview() {
     # 规则数量
     redirect_count=0; rule_count=0
     idx=0
-    while uci get firewall.@redirect[$idx].name >/dev/null 2>&1; do
+    while uci -q get "firewall.@redirect[$idx]" >/dev/null 2>&1; do
         redirect_count=$((redirect_count+1)); idx=$((idx+1))
     done
     idx=0
-    while uci get firewall.@rule[$idx].name >/dev/null 2>&1; do
+    while uci -q get "firewall.@rule[$idx]" >/dev/null 2>&1; do
         rule_count=$((rule_count+1)); idx=$((idx+1))
     done
     echo "REDIRECT_COUNT=$redirect_count"
@@ -364,11 +398,10 @@ cmd_port_add() {
         for p in $(echo "$proto" | sed 's/both/tcp udp/'); do
             exists=0; idx=0
             while true; do
-                name=$(uci get firewall.@redirect[$idx].name 2>/dev/null)
-                [ -z "$name" ] && break
+                uci -q get "firewall.@redirect[$idx]" >/dev/null 2>&1 || break
                 sp=$(uci get firewall.@redirect[$idx].src_dport 2>/dev/null)
                 pr=$(uci get firewall.@redirect[$idx].proto 2>/dev/null)
-                [ "$sp" = "$port" ] && [ "$pr" = "$p" ] && exists=1
+                if [ "$sp" = "$port" ] && proto_match "$pr" "$p"; then exists=1; fi
                 idx=$((idx+1))
             done
             if [ $exists -eq 0 ]; then
@@ -392,12 +425,11 @@ cmd_port_add() {
         for p in $(echo "$proto" | sed 's/both/tcp udp/'); do
             exists=0; idx=0
             while true; do
-                name=$(uci get firewall.@rule[$idx].name 2>/dev/null)
-                [ -z "$name" ] && break
+                uci -q get "firewall.@rule[$idx]" >/dev/null 2>&1 || break
                 fam=$(uci get firewall.@rule[$idx].family 2>/dev/null)
                 dp=$(uci get firewall.@rule[$idx].dest_port 2>/dev/null)
                 pr=$(uci get firewall.@rule[$idx].proto 2>/dev/null)
-                [ "$fam" = "ipv6" ] && [ "$dp" = "$port" ] && [ "$pr" = "$p" ] && exists=1
+                if [ "$fam" = "ipv6" ] && [ "$dp" = "$port" ] && proto_match "$pr" "$p"; then exists=1; fi
                 idx=$((idx+1))
             done
             if [ $exists -eq 0 ]; then
@@ -406,10 +438,11 @@ cmd_port_add() {
                 uci set firewall.@rule[-1].src="wan"
                 uci set firewall.@rule[-1].proto="$p"
                 uci set firewall.@rule[-1].dest="lan"
+                uci set firewall.@rule[-1].dest_ip="$target"
                 uci set firewall.@rule[-1].dest_port="$port"
                 uci set firewall.@rule[-1].family="ipv6"
                 uci set firewall.@rule[-1].target="ACCEPT"
-                info "IPv6放行: $port/$p"
+                info "IPv6放行: $port/$p -> 仅放行到 $target"
             else
                 warn "IPv6已存在: $port/$p"
             fi
@@ -430,6 +463,10 @@ cmd_port_edit() {
     [ -z "$old_port" ] && { error "用法: netmanager port_edit <旧端口> <旧协议> <新端口> <新协议> <新目标IP> [v4|v6|both] [新内部端口]"; exit 1; }
     [ -z "$old_proto" ] && old_proto="tcp"
     [ -z "$new_proto" ] && new_proto="tcp"
+    # 归一化：both/tcpudp 统一为 fw4 合法值 tcpudp（一条规则同时覆盖tcp+udp）
+    case "$new_proto" in
+        both|tcpudp) new_proto="tcpudp" ;;
+    esac
     load_config
     [ -z "$new_target" ] && new_target="$DEFAULT_TARGET"
     [ -z "$new_ipver" ] && new_ipver="both"
@@ -462,17 +499,26 @@ cmd_port_edit() {
 
     # 修改IPv4 redirect
     idx=0
-    while uci get firewall.@redirect[$idx].name >/dev/null 2>&1; do
+    while uci -q get "firewall.@redirect[$idx]" >/dev/null 2>&1; do
         sp=$(uci get firewall.@redirect[$idx].src_dport 2>/dev/null)
         pr=$(uci get firewall.@redirect[$idx].proto 2>/dev/null)
-        [ -z "$pr" ] && pr="tcp"  # 空proto默认为tcp
         if [ "$sp" = "$old_port" ]; then
             for mp in $match_old_protos; do
-                if [ "$pr" = "$mp" ]; then
+                if proto_match "$pr" "$mp"; then
                     if [ "$new_ipver" = "v6" ]; then
-                        # 新规则只要IPv6，删除IPv4
+                        # 新规则只要IPv6：删除IPv4并补建IPv6放行（否则新旧规则全部消失）
                         uci delete firewall.@redirect[$idx]
                         info "删除IPv4转发: $old_port/$pr"
+                        uci add firewall rule > /dev/null
+                        uci set firewall.@rule[-1].name="Allow-IPv6-${new_port}-${new_proto}"
+                        uci set firewall.@rule[-1].src="wan"
+                        uci set firewall.@rule[-1].proto="$new_proto"
+                        uci set firewall.@rule[-1].dest="lan"
+                        uci set firewall.@rule[-1].dest_ip="$new_target"
+                        uci set firewall.@rule[-1].dest_port="$new_port"
+                        uci set firewall.@rule[-1].family="ipv6"
+                        uci set firewall.@rule[-1].target="ACCEPT"
+                        info "补建IPv6放行: $new_port/$new_proto -> $new_target"
                     else
                         uci set firewall.@redirect[$idx].src_dport="$new_port"
                         uci set firewall.@redirect[$idx].dest_port="$new_dport"
@@ -491,17 +537,27 @@ cmd_port_edit() {
 
     # 修改IPv6 rule（放宽条件，支持系统自带规则）
     idx=0
-    while uci get firewall.@rule[$idx].name >/dev/null 2>&1; do
+    while uci -q get "firewall.@rule[$idx]" >/dev/null 2>&1; do
         fam=$(uci get firewall.@rule[$idx].family 2>/dev/null)
         dp=$(uci get firewall.@rule[$idx].dest_port 2>/dev/null)
         pr=$(uci get firewall.@rule[$idx].proto 2>/dev/null)
-        [ -z "$pr" ] && pr="tcp"  # 空proto默认为tcp
         if [ "$fam" = "ipv6" ] && [ "$dp" = "$old_port" ]; then
             for mp in $match_old_protos; do
-                if [ "$pr" = "$mp" ]; then
+                if proto_match "$pr" "$mp"; then
                     if [ "$new_ipver" = "v4" ]; then
+                        # 新规则只要IPv4：删除IPv6并补建IPv4 DNAT（否则新旧规则全部消失）
                         uci delete firewall.@rule[$idx]
                         info "删除IPv6放行: $old_port/$pr"
+                        uci add firewall redirect > /dev/null
+                        uci set firewall.@redirect[-1].name="Forward-${new_port}"
+                        uci set firewall.@redirect[-1].src="wan"
+                        uci set firewall.@redirect[-1].proto="$new_proto"
+                        uci set firewall.@redirect[-1].src_dport="$new_port"
+                        uci set firewall.@redirect[-1].dest="lan"
+                        uci set firewall.@redirect[-1].dest_ip="$new_target"
+                        uci set firewall.@redirect[-1].dest_port="$new_dport"
+                        uci set firewall.@redirect[-1].target="DNAT"
+                        info "补建IPv4转发: 外部$new_port/内部$new_dport -> $new_target"
                     else
                         uci set firewall.@rule[$idx].dest_port="$new_port"
                         uci set firewall.@rule[$idx].proto="$new_proto"
@@ -559,13 +615,12 @@ cmd_port_del() {
     idx=0
     while true; do
         name=$(uci get firewall.@redirect[$idx].name 2>/dev/null)
-        [ -z "$name" ] && break
+        uci -q get "firewall.@redirect[$idx]" >/dev/null 2>&1 || break
         sp=$(uci get firewall.@redirect[$idx].src_dport 2>/dev/null)
         pr=$(uci get firewall.@redirect[$idx].proto 2>/dev/null)
-        [ -z "$pr" ] && pr="tcp"  # 空proto默认为tcp
         if [ "$sp" = "$port" ]; then
             for mp in $match_protos; do
-                if [ "$pr" = "$mp" ]; then
+                if proto_match "$pr" "$mp"; then
                     del_indices="$idx $del_indices"
                     break
                 fi
@@ -586,14 +641,13 @@ cmd_port_del() {
     idx=0
     while true; do
         name=$(uci get firewall.@rule[$idx].name 2>/dev/null)
-        [ -z "$name" ] && break
+        uci -q get "firewall.@rule[$idx]" >/dev/null 2>&1 || break
         fam=$(uci get firewall.@rule[$idx].family 2>/dev/null)
         dp=$(uci get firewall.@rule[$idx].dest_port 2>/dev/null)
         pr=$(uci get firewall.@rule[$idx].proto 2>/dev/null)
-        [ -z "$pr" ] && pr="tcp"  # 空proto默认为tcp
         if [ "$fam" = "ipv6" ] && [ "$dp" = "$port" ]; then
             for mp in $match_protos; do
-                if [ "$pr" = "$mp" ]; then
+                if proto_match "$pr" "$mp"; then
                     del_rule_indices="$idx $del_rule_indices"
                     break
                 fi
@@ -623,7 +677,7 @@ cmd_rule_list() {
     idx=0
     while true; do
         name=$(uci get firewall.@rule[$idx].name 2>/dev/null)
-        [ -z "$name" ] && break
+        uci -q get "firewall.@rule[$idx]" >/dev/null 2>&1 || break
         src=$(uci get firewall.@rule[$idx].src 2>/dev/null)
         dst=$(uci get firewall.@rule[$idx].dest 2>/dev/null)
         proto=$(uci get firewall.@rule[$idx].proto 2>/dev/null)
@@ -658,6 +712,9 @@ cmd_rule_add() {
     [ -z "$target" ] && target="ACCEPT"
     # 端口格式标准化：冒号转横线
     port=$(echo "$port" | sed 's/:/-/g')
+    # 关键：@rule[-1] 只能引用已存在节点，必须先 add 才能落到新节点
+    # （否则所有 set 会覆盖最后一条既有规则）
+    uci add firewall rule > /dev/null
     uci set firewall.@rule[-1].name="$name"
     [ -n "$src" ] && uci set firewall.@rule[-1].src="$src"
     [ -n "$dst" ] && uci set firewall.@rule[-1].dest="$dst"
@@ -1028,6 +1085,16 @@ cmd_upload_file() {
     local b64file="$2"
     [ -z "$filename" ] && { error "用法: netmanager upload_file <文件名> <base64文件>"; exit 1; }
     
+    # 安全：文件名防路径穿越（filename=../../etc/xxx 可让root写任意路径）
+    case "$filename" in
+        */*|*\\*|.|..|"") error "非法的文件名（不允许包含路径分隔符）"; exit 1 ;;
+    esac
+    # 只保留最后一段文件名，防御双保险
+    filename=$(basename -- "$filename")
+    case "$filename" in
+        .|..|"") error "非法的文件名"; exit 1 ;;
+    esac
+    
     local upload_dir="/tmp/netmanager_upload"
     mkdir -p "$upload_dir"
     
@@ -1042,13 +1109,20 @@ cmd_upload_file() {
             base64 -d -o "$outfile" "$b64file" 2>/dev/null
             if [ $? -ne 0 ]; then
                 # 最后备选：直接复制（如果上传的就是原始文件而非base64）
+                warn "base64解码失败，尝试按原始文件处理"
                 cp "$b64file" "$outfile"
+                if [ $? -ne 0 ]; then
+                    rm -f "$b64file" 2>/dev/null
+                    error "文件保存失败（base64解码且复制均失败）"
+                    exit 1
+                fi
             fi
         fi
     fi
     
     rm -f "$b64file" 2>/dev/null
     [ -f "$outfile" ] && info "文件已保存: $outfile ($(wc -c < "$outfile" 2>/dev/null)字节)"
+    [ ! -f "$outfile" ] && { error "文件保存失败（未收到有效数据）"; exit 1; }
 }
 
 cmd_plugin_update() {
@@ -1081,6 +1155,14 @@ cmd_plugin_update() {
     # 复制一份到工作目录，避免文件名混乱
     local work_pkg="$work_dir/update.tar.gz"
     cp -f "$package_file" "$work_pkg"
+    
+    # 安全：tar成员预检（拒绝 ../ 路径穿越与绝对路径成员，防止恶意包覆盖系统文件）
+    if ! tar_list_check "$work_pkg" "$work_dir/tar.list"; then
+        error "插件包含非法成员（../ 路径穿越或绝对路径），拒绝解压"
+        write_log "ERROR" "plugin_update: tar成员预检失败, 非法成员: $(grep -hE '(^|/)\.\.(/|$)|^/' "$work_dir/tar.list" 2>/dev/null | head -5 | tr '\n' ' ')"
+        rm -rf "$work_dir"
+        exit 1
+    fi
     
     info "正在解压插件包 (tar xzvf)..."
     write_log "DEBUG" "plugin_update: 执行 tar xzvf $work_pkg"
@@ -1180,6 +1262,14 @@ cmd_plugin_version() {
     local package_file="$upload_dir/$plugin_file"
     
     [ ! -f "$package_file" ] && { error "插件包不存在: $package_file"; exit 1; }
+    
+    # 安全：tar成员预检（拒绝 ../ 路径穿越与绝对路径成员）
+    if ! tar_list_check "$package_file" "/tmp/.netmanager_pv.list"; then
+        error "插件包含非法成员（../ 路径穿越或绝对路径），拒绝解压"
+        rm -f /tmp/.netmanager_pv.list
+        exit 1
+    fi
+    rm -f /tmp/.netmanager_pv.list
     
     local extract_dir="/tmp/netmanager_check_$(date +%s)"
     mkdir -p "$extract_dir"

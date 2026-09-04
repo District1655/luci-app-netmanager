@@ -1,4 +1,4 @@
--- 静态 IP / IPv6 分配 - v1.4.3
+-- 静态 IP / IPv6 分配 - v1.4.4
 -- v1.4.3 更新：
 --   1. 在线客户端识别增强：IPv4（dnsmasq 租约 + ARP）+ IPv6（odhcpd 租约 + NDP 邻居表，覆盖 SLAAC 地址）
 --   2. 自动捕获 DUID：dnsmasq clientid / odhcpd 租约 / 主机名关联，在线设备 DUID 直接可见

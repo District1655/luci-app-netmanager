@@ -114,7 +114,7 @@
         </div>
         <div id="action_result" class="netmanager-result"></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.4.3</div>
+    <div class="footer-sign">网络管理插件 v1.4.4</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -122,15 +122,19 @@ function loadRuleList() {
     fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=rule_list'})
     .then(r => r.text()).then(data => {
         let html = '';
+        // 【安全】行数据存入 JS 数组，onclick 只传纯数字下标，杜绝 UCI 自由文本注入 onclick
+        window.RULE_ROWS = [];
         const lines = data.split('\n').filter(l => l.includes('|') && !l.includes('---'));
         lines.forEach(line => {
             const parts = line.split('|');
             if (parts.length >= 9) {
                 const [idx, name, src, dst, proto, port, target, fam, enabled] = parts;
                 const tBadge = target === 'ACCEPT' ? '<span class="badge badge-green">ACCEPT</span>' : target === 'DROP' ? '<span class="badge badge-red">DROP</span>' : '<span class="badge badge-orange">REJECT</span>';
-                const fBadge = fam === 'any' ? '全部' : fam.toUpperCase();
+                const fBadge = fam === 'any' ? '全部' : escapeHtml(fam.toUpperCase());
                 const status = enabled === '1' ? '<span class="badge badge-green">启用</span>' : '<span class="badge badge-gray">禁用</span>';
-                html += `<tr><td>${idx}</td><td><b>${name}</b></td><td>${src || '-'}</td><td>${dst || '-'}</td><td>${proto || '-'}</td><td>${port || '-'}</td><td>${tBadge}</td><td>${fBadge}</td><td>${status}</td><td><button class="btn btn-primary btn-sm" onclick="editRule(${idx},'${name}','${src}','${dst}','${proto}','${port}','${target}','${fam}')">编辑</button> <button class="btn btn-danger btn-sm" onclick="delRule(${idx})">删除</button></td></tr>`;
+                const rowId = window.RULE_ROWS.length;
+                window.RULE_ROWS.push({idx: idx, name: name, src: src, dst: dst, proto: proto, port: port, target: target, fam: fam});
+                html += `<tr><td>${escapeHtml(idx)}</td><td><b>${escapeHtml(name)}</b></td><td>${escapeHtml(src || '-')}</td><td>${escapeHtml(dst || '-')}</td><td>${escapeHtml(proto || '-')}</td><td>${escapeHtml(port || '-')}</td><td>${tBadge}</td><td>${fBadge}</td><td>${status}</td><td><button class="btn btn-primary btn-sm" onclick="editRule(${parseInt(idx)},${rowId})">编辑</button> <button class="btn btn-danger btn-sm" onclick="delRule(${parseInt(idx)})">删除</button></td></tr>`;
             }
         });
         document.querySelector('#rule_table tbody').innerHTML = html || '<tr><td colspan="10" class="empty-state">暂无规则</td></tr>';
@@ -150,7 +154,7 @@ function addRule() {
     });
     fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
     .then(r => r.text()).then(data => {
-        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + data + '</pre>';
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         document.getElementById('rule_name').value = '';
         document.getElementById('rule_port').value = '';
         setTimeout(loadRuleList, 1500);
@@ -160,22 +164,24 @@ function delRule(idx) {
     if (!confirm('确定删除规则 #' + idx + ' ?')) return;
     fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=rule_del&idx=' + idx})
     .then(r => r.text()).then(data => {
-        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + data + '</pre>';
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         setTimeout(loadRuleList, 1500);
     });
 }
-function editRule(idx, name, src, dst, proto, port, target, fam) {
+function editRule(idx, rowId) {
+    const r = window.RULE_ROWS && window.RULE_ROWS[rowId];
+    if (!r) return;
     document.getElementById('add_form').style.display = 'none';
     document.getElementById('edit_form').style.display = 'block';
     document.getElementById('edit_idx').value = idx;
     document.getElementById('edit_idx_display').textContent = idx;
-    document.getElementById('edit_name').value = name;
-    document.getElementById('edit_src').value = src || '';
-    document.getElementById('edit_dst').value = dst || '';
-    document.getElementById('edit_proto').value = proto || 'tcp';
-    document.getElementById('edit_port').value = port || '';
-    document.getElementById('edit_target').value = target || 'ACCEPT';
-    document.getElementById('edit_family').value = fam || 'any';
+    document.getElementById('edit_name').value = r.name;
+    document.getElementById('edit_src').value = r.src || '';
+    document.getElementById('edit_dst').value = r.dst || '';
+    document.getElementById('edit_proto').value = r.proto || 'tcp';
+    document.getElementById('edit_port').value = r.port || '';
+    document.getElementById('edit_target').value = r.target || 'ACCEPT';
+    document.getElementById('edit_family').value = r.fam || 'any';
     document.getElementById('edit_form').scrollIntoView({behavior:'smooth', block:'center'});
 }
 function cancelRuleEdit() {
@@ -196,7 +202,7 @@ function saveRuleEdit() {
     });
     fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
     .then(r => r.text()).then(data => {
-        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + data + '</pre>';
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         cancelRuleEdit();
         setTimeout(loadRuleList, 1500);
     });

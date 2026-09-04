@@ -57,7 +57,7 @@
         </div>
         <div id="action_result" class="netmanager-result"></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.4.3</div>
+    <div class="footer-sign">网络管理插件 v1.4.4</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -95,7 +95,7 @@ function fwAction(action) {
         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
         body: 'action=' + action
     }).then(r => r.text()).then(data => {
-        resultDiv.innerHTML = '<pre class="result-pre">' + data + '</pre>';
+        resultDiv.innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         setTimeout(loadOverview, 2000);
     });
 }

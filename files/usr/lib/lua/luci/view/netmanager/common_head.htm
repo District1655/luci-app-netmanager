@@ -71,3 +71,86 @@
 .text-warning { color: #f59e0b; }
 .text-info { color: #2563eb; }
 </style>
+<script>
+/* ===== 公共 JS（v1.4.4）：HTML转义 + API 调用封装 =====
+   背景：命令输出（含用户可控的文件名/用户名/日志内容）此前直接拼 innerHTML，
+   构成存储型 XSS；统一走本封装消除注入面。 */
+
+/* HTML 转义：任何要写入 innerHTML 的动态内容必须先过此函数 */
+function escapeHtml(s) {
+	if (s === null || s === undefined) return '';
+	return String(s).replace(/[&<>"']/g, function (c) {
+		switch (c) {
+			case '&': return '&amp;';
+			case '<': return '&lt;';
+			case '>': return '&gt;';
+			case '"': return '&quot;';
+			case "'": return '&#39;';
+		}
+	});
+}
+
+/* 将命令输出安全渲染到结果容器（自动转义，带 [CMD] 行灰色样式）
+   el: 结果容器 DOM；data: 后端返回的纯文本 */
+function showResult(el, data) {
+	if (!el) return;
+	if (typeof data !== 'string') data = String(data == null ? '' : data);
+	var lines = data.split('\n').map(function (l) {
+		var e = escapeHtml(l);
+		return (/^\[CMD\]/.test(l)) ? '<span style="color:#9ca3af">' + e + '</span>' : e;
+	});
+	el.innerHTML = '<pre class="result-pre">' + lines.join('\n') + '</pre>';
+}
+
+/* API 调用封装：POST + 超时控制 + 错误提示
+   action: API 动作名；params: 参数对象；opts: {timeout, parseFn}
+   返回 Promise<response 文本>；失败时 reject Error（message 已可读） */
+function apiFetch(action, params, opts) {
+	opts = opts || {};
+	params = params || {};
+	var body = new URLSearchParams();
+	body.set('action', action);
+	for (var k in params) { if (params.hasOwnProperty(k)) body.set(k, params[k]); }
+
+	var ctrl = new AbortController();
+	var timer = setTimeout(function () { ctrl.abort(); }, opts.timeout || 30000);
+
+	// 与各视图一致：用 LuCI dispatcher 生成 API 绝对地址（避免依赖 REQUEST_URI 推导）
+	var API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
+	return fetch(API_URL, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+		body: body.toString(),
+		signal: ctrl.signal,
+		credentials: 'same-origin'
+	}).then(function (res) {
+		clearTimeout(timer);
+		if (res.redirected && /\/login\.html|\/admin\/login/.test(res.url)) {
+			throw new Error('会话已过期，请刷新页面重新登录');
+		}
+		if (!res.ok) throw new Error('服务器响应异常: HTTP ' + res.status);
+		return res.text();
+	}).catch(function (err) {
+		clearTimeout(timer);
+		if (err.name === 'AbortError') throw new Error('请求超时，请稍后重试');
+		throw err;
+	});
+}
+
+/* 按钮防抖：执行期间禁用按钮，防止重复提交
+   用法: withBusy(btn, function(){ return fetch...; }) */
+function withBusy(btn, fn) {
+	if (!btn) { return Promise.resolve().then(fn); }
+	if (btn.disabled) { return Promise.resolve(); }
+	btn.disabled = true;
+	btn.style.opacity = '0.6';
+	var restore = function () {
+		btn.disabled = false;
+		btn.style.opacity = '';
+	};
+	return Promise.resolve().then(fn).then(
+		function (v) { restore(); return v; },
+		function (e) { restore(); throw e; }
+	);
+}
+</script>

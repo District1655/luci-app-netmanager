@@ -44,43 +44,45 @@
         <h3>失败登录记录</h3>
         <div class="netmanager-log" id="failed_log"><div class="text-muted">加载中...</div></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.4.3</div>
+    <div class="footer-sign">网络管理插件 v1.4.4</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
 let autoTimer = null;
 function loadSshLog() {
     const limit = document.getElementById('log_limit').value;
-    fetch(API_URL, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-        body: 'action=ssh_log&limit=' + limit
-    }).then(r => r.text()).then(data => {
-        const sections = data.split('---');
+    apiFetch('ssh_log', {limit: limit}, {timeout: 15000}).then(data => {
+        // 后端输出带分节标记行（---SUCCESS--- 等），按行首标记解析，不再用 includes 模糊匹配
+        let current = '';
         let successHtml = '', failedHtml = '', statsHtml = '';
         let successCount = 0, failedCount = 0;
-        let current = '';
-        sections.forEach(section => {
-            if (section.includes('SUCCESS')) current = 'success';
-            else if (section.includes('FAILED')) current = 'failed';
-            else if (section.includes('STATS')) current = 'stats';
-            const lines = section.split('\n').filter(l => l.includes('|'));
-            lines.forEach(line => {
-                const parts = line.split('|');
-                if (current === 'success' && parts.length >= 3) {
-                    successCount++;
-                    successHtml += `<div><span class="log-time">[${parts[0]}]</span> <span class="log-success">成功</span> 用户:<b>${parts[1]}</b> 来自:<span class="log-ip">${parts[2]}</span></div>`;
-                } else if (current === 'failed' && parts.length >= 4) {
-                    failedCount++;
-                    failedHtml += `<div><span class="log-time">[${parts[0]}]</span> <span class="log-fail">失败</span> 用户:<b>${parts[1]}</b> 来自:<span class="log-ip">${parts[2]}</span> 原因:${parts[3]}</div>`;
-                } else if (current === 'stats' && parts.length >= 2) {
-                    const count = parseInt(parts[1]);
-                    let risk = '<span class="badge badge-green">低</span>';
-                    if (count >= 10) risk = '<span class="badge badge-red">高危</span>';
-                    else if (count >= 5) risk = '<span class="badge badge-orange">中危</span>';
-                    statsHtml += `<tr><td><span class="log-ip">${parts[0]}</span></td><td><b>${count}</b></td><td>${risk}</td></tr>`;
-                }
-            });
+        data.split('\n').forEach(line => {
+            if (/^---[A-Z]+---$/.test(line.trim())) {
+                // 分节标记行：SUCCESS / FAILED / STATS
+                if (line.includes('SUCCESS')) current = 'success';
+                else if (line.includes('FAILED')) current = 'failed';
+                else if (line.includes('STATS')) current = 'stats';
+                else current = '';
+                return;
+            }
+            if (!current || !line.includes('|')) return;
+            const parts = line.split('|');
+            // 【安全】SSH用户名/IP/原因均为外部可控内容，写入前必须转义
+            const t = escapeHtml(parts[0]), u = escapeHtml(parts[1]), ip = escapeHtml(parts[2]);
+            if (current === 'success' && parts.length >= 3) {
+                successCount++;
+                successHtml += `<div><span class="log-time">[${t}]</span> <span class="log-success">成功</span> 用户:<b>${u}</b> 来自:<span class="log-ip">${ip}</span></div>`;
+            } else if (current === 'failed' && parts.length >= 4) {
+                failedCount++;
+                failedHtml += `<div><span class="log-time">[${t}]</span> <span class="log-fail">失败</span> 用户:<b>${u}</b> 来自:<span class="log-ip">${ip}</span> 原因:${escapeHtml(parts[3])}</div>`;
+            } else if (current === 'stats' && parts.length >= 2) {
+                const count = parseInt(parts[1]);
+                if (isNaN(count)) return;
+                let risk = '<span class="badge badge-green">低</span>';
+                if (count >= 10) risk = '<span class="badge badge-red">高危</span>';
+                else if (count >= 5) risk = '<span class="badge badge-orange">中危</span>';
+                statsHtml += `<tr><td><span class="log-ip">${ip}</span></td><td><b>${count}</b></td><td>${risk}</td></tr>`;
+            }
         });
         document.getElementById('success_count').textContent = successCount;
         document.getElementById('failed_count').textContent = failedCount;
@@ -88,6 +90,8 @@ function loadSshLog() {
         document.querySelector('#stats_table tbody').innerHTML = statsHtml || '<tr><td colspan="3" class="empty-state">暂无失败记录</td></tr>';
         document.getElementById('success_log').innerHTML = successHtml || '<div class="text-muted">暂无成功登录记录</div>';
         document.getElementById('failed_log').innerHTML = failedHtml || '<div class="text-muted">暂无失败登录记录</div>';
+    }).catch(err => {
+        document.getElementById('success_log').innerHTML = `<div class="text-danger">加载失败: ${escapeHtml(err.message)}</div>`;
     });
 }
 function toggleAuto() {

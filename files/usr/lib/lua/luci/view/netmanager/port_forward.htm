@@ -74,7 +74,7 @@
         </table>
         <div id="action_result" class="netmanager-result"></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.4.3</div>
+    <div class="footer-sign">网络管理插件 v1.4.4</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -84,6 +84,8 @@ function loadPortList() {
         const sections = data.split('---');
         let ipv4Html = '', ipv6Html = '';
         let currentSection = '';
+        // 【安全】行数据存入 JS 数组，onclick 只传纯数字下标，杜绝自由文本注入 onclick
+        window.PORT_ROWS = [];
         sections.forEach(section => {
             if (section.includes('IPV4')) currentSection = 'ipv4';
             else if (section.includes('IPV6')) currentSection = 'ipv6';
@@ -98,12 +100,14 @@ function loadPortList() {
                     const [idx, name, proto, sp, dip, dp, enabled, pkts] = parts;
                     const status = enabled === '1' ? '<span class="badge badge-green">启用</span>' : '<span class="badge badge-gray">禁用</span>';
                     const protoBadge = proto === 'tcp' ? '<span class="badge badge-blue">TCP</span>' : proto === 'udp' ? '<span class="badge badge-purple">UDP</span>' : '<span class="badge badge-blue">TCP+UDP</span>';
-                    ipv4Html += `<tr><td>${name}</td><td>${protoBadge}</td><td><b>${sp}</b></td><td>${dip}:${dp}</td><td>${pkts}</td><td>${status}</td><td><button class="btn btn-primary btn-sm" onclick="editPort('${sp}','${proto}','${dip}','${dp}')">编辑</button> <button class="btn btn-danger btn-sm" onclick="delPort('${sp}','${proto}')">删除</button></td></tr>`;
+                    const rowId = window.PORT_ROWS.push({sp: sp, proto: proto, dip: dip, dp: dp}) - 1;
+                    ipv4Html += `<tr><td>${escapeHtml(name)}</td><td>${protoBadge}</td><td><b>${escapeHtml(sp)}</b></td><td>${escapeHtml(dip)}:${escapeHtml(dp)}</td><td>${escapeHtml(pkts)}</td><td>${status}</td><td><button class="btn btn-primary btn-sm" onclick="editPort(${rowId})">编辑</button> <button class="btn btn-danger btn-sm" onclick="delPort('${escapeHtml(sp)}','${escapeHtml(proto)}')">删除</button></td></tr>`;
                 } else if (currentSection === 'ipv6' && parts.length >= 6) {
                     const [idx, name, proto, dp, enabled, pkts] = parts;
                     const status = enabled === '1' ? '<span class="badge badge-green">启用</span>' : '<span class="badge badge-gray">禁用</span>';
                     const protoBadge = proto === 'tcp' ? '<span class="badge badge-blue">TCP</span>' : proto === 'udp' ? '<span class="badge badge-purple">UDP</span>' : '<span class="badge badge-blue">TCP+UDP</span>';
-                    ipv6Html += `<tr><td>${name}</td><td>${protoBadge}</td><td><b>${dp}</b></td><td>${pkts}</td><td>${status}</td><td><button class="btn btn-primary btn-sm" onclick="editPort('${dp}','${proto}','')">编辑</button> <button class="btn btn-danger btn-sm" onclick="delPort('${dp}','${proto}')">删除</button></td></tr>`;
+                    const rowId = window.PORT_ROWS.push({sp: dp, proto: proto, dip: '', dp: dp}) - 1;
+                    ipv6Html += `<tr><td>${escapeHtml(name)}</td><td>${protoBadge}</td><td><b>${escapeHtml(dp)}</b></td><td>${escapeHtml(pkts)}</td><td>${status}</td><td><button class="btn btn-primary btn-sm" onclick="editPort(${rowId})">编辑</button> <button class="btn btn-danger btn-sm" onclick="delPort('${escapeHtml(dp)}','${escapeHtml(proto)}')">删除</button></td></tr>`;
                 }
             });
         });
@@ -121,7 +125,7 @@ function addPortForward() {
     const body = 'action=port_add&port=' + encodeURIComponent(port) + '&dport=' + encodeURIComponent(dport) + '&proto=' + proto + '&target=' + encodeURIComponent(target) + '&ipver=' + ipver;
     fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
     .then(r => r.text()).then(data => {
-        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + data + '</pre>';
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         document.getElementById('add_port').value = '';
         document.getElementById('add_dport').value = '';
         document.getElementById('add_target').value = '';
@@ -132,11 +136,14 @@ function delPort(port, proto) {
     if (!confirm('确定删除端口 ' + port + '/' + proto + ' ?')) return;
     fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=port_del&port=' + encodeURIComponent(port) + '&proto=' + encodeURIComponent(proto)})
     .then(r => r.text()).then(data => {
-        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + data + '</pre>';
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         setTimeout(loadPortList, 300);
     });
 }
-function editPort(port, proto, target, dport) {
+function editPort(rowId) {
+    const r = window.PORT_ROWS && window.PORT_ROWS[rowId];
+    if (!r) return;
+    const port = r.sp, proto = r.proto, target = r.dip, dport = r.dp;
     document.getElementById('add_form').style.display = 'none';
     document.getElementById('edit_form').style.display = 'block';
     document.getElementById('edit_old_port').value = port;
@@ -164,7 +171,7 @@ function savePortEdit() {
     const body = 'action=port_edit&old_port=' + encodeURIComponent(old_port) + '&old_proto=' + old_proto + '&new_port=' + encodeURIComponent(new_port) + '&new_dport=' + encodeURIComponent(new_dport) + '&new_proto=' + new_proto + '&new_target=' + encodeURIComponent(new_target) + '&new_ipver=' + new_ipver;
     fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
     .then(r => r.text()).then(data => {
-        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + data + '</pre>';
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         cancelPortEdit();
         setTimeout(loadPortList, 300);
     });

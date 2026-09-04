@@ -98,7 +98,7 @@
             <table class="netmanager-table" style="margin-bottom:10px;">
                 <tr>
                     <td width="30%">当前版本</td>
-                    <td><b id="online_cur_version">v1.4.3</b></td>
+                    <td><b id="online_cur_version">v1.4.4</b></td>
                 </tr>
                 <tr>
                     <td>最新版本</td>
@@ -199,7 +199,7 @@
         <h3>关于插件</h3>
         <table class="netmanager-table">
             <tr><td width="30%">插件名称</td><td>网络管理 (luci-app-netmanager)</td></tr>
-            <tr><td>版本</td><td id="plugin_version">v1.4.3</td></tr>
+            <tr><td>版本</td><td id="plugin_version">v1.4.4</td></tr>
             <tr><td>作者</td><td><b>Network Manager</b></td></tr>
             <tr><td>适配系统</td><td>iStoreOS / OpenWrt (fw4/nftables)</td></tr>
             <tr><td>功能模块</td><td>系统概览 / 端口转发 / 规则管理 / SSH日志 / 访问日志</td></tr>
@@ -231,7 +231,7 @@
             </div>
         </div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.4.3<br><span style="font-size:10px;">适配 iStoreOS / OpenWrt | 基于 fw4/nftables</span></div>
+    <div class="footer-sign">网络管理插件 v1.4.4<br><span style="font-size:10px;">适配 iStoreOS / OpenWrt | 基于 fw4/nftables</span></div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -245,7 +245,7 @@ function loadSettings() {
                 const k = line.substring(0, idx), v = line.substring(idx + 1);
                 if (k === 'DEFAULT_TARGET') document.getElementById('default_target').value = v;
                 if (k === 'LOG_ENABLE') document.getElementById('log_enable').checked = (v === '1');
-                if (k === 'LOG_FILE') document.getElementById('log_path').innerHTML = `<code style="background:#f1f5f9;padding:2px 6px;border-radius:3px;">${v}</code> <span class="text-muted">(路由器重启后自动清空)</span>`;
+                if (k === 'LOG_FILE') document.getElementById('log_path').innerHTML = `<code style="background:#f1f5f9;padding:2px 6px;border-radius:3px;">${escapeHtml(v)}</code> <span class="text-muted">(路由器重启后自动清空)</span>`;
                 if (k === 'UPDATE_MIRROR') document.getElementById('update_mirror').value = v;
             }
         });
@@ -275,22 +275,22 @@ function checkUpdate() {
         if (mirror === '(直连)') mirror = '';
         if (mirror !== '') document.getElementById('update_mirror').value = mirror;
         if (!latest) {
-            box.innerHTML = '<pre class="result-pre" style="color:#f87171;">' + data + '</pre>';
+            box.innerHTML = '<pre class="result-pre" style="color:#f87171;">' + escapeHtml(data) + '</pre>';
         } else {
-            document.getElementById('online_latest_version').innerHTML = '<b>' + latest + '</b>';
+            document.getElementById('online_latest_version').innerHTML = '<b>' + escapeHtml(latest) + '</b>';
             if (avail === '1') {
-                box.innerHTML = '<span class="text-success">✓ ' + (msg || '发现新版本') + '</span>';
+                box.innerHTML = '<span class="text-success">✓ ' + escapeHtml(msg || '发现新版本') + '</span>';
                 document.getElementById('btn_apply_update').style.display = '';
             } else if (avail === '0') {
-                box.innerHTML = '<span class="text-success">✓ ' + (msg || '当前已是最新版本') + '</span>';
+                box.innerHTML = '<span class="text-success">✓ ' + escapeHtml(msg || '当前已是最新版本') + '</span>';
                 document.getElementById('btn_apply_update').style.display = 'none';
             } else {
-                box.innerHTML = '<pre class="result-pre">' + data + '</pre>';
+                box.innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
             }
         }
     })
     .catch(e => {
-        box.innerHTML = '<span class="text-danger">检查失败: ' + e.message + '</span>';
+        box.innerHTML = '<span class="text-danger">检查失败: ' + escapeHtml(e.message) + '</span>';
     })
     .then(() => { btn.disabled = false; });
 }
@@ -303,13 +303,13 @@ function applyUpdate() {
     box.innerHTML = '<span class="text-info">正在下载并安装最新版（取决于网速，可能需要 1~3 分钟），请勿关闭或刷新页面...</span>';
     fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=update_apply'})
     .then(r => r.text()).then(data => {
-        box.innerHTML = '<pre class="result-pre">' + data + '</pre>';
+        box.innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         if (data.indexOf('插件更新完成') >= 0 || data.indexOf('install_rc=0') >= 0) {
             box.innerHTML += '<div class="text-success" style="margin-top:8px;"><b>更新成功！</b>LuCI 将在数秒后重启导致连接断开（属正常现象），之后按 Ctrl+Shift+R 强制刷新浏览器即可使用新版本。</div>';
         }
     })
     .catch(e => {
-        box.innerHTML = '<span class="text-warning">更新请求中断: ' + e.message + '（若因 LuCI 重启断开属正常现象，稍后刷新页面查看「关于插件」中的版本号确认）</span>';
+        box.innerHTML = '<span class="text-warning">更新请求中断: ' + escapeHtml(e.message) + '（若因 LuCI 重启断开属正常现象，稍后刷新页面查看「关于插件」中的版本号确认）</span>';
     })
     .then(() => { btn.disabled = false; });
 }
@@ -318,7 +318,7 @@ function saveUpdateMirror() {
     const m = document.getElementById('update_mirror').value.trim();
     fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=set_update_mirror&mirror=' + encodeURIComponent(m)})
     .then(r => r.text()).then(data => {
-        document.getElementById('update_status').innerHTML = '<pre class="result-pre">' + data + '</pre>';
+        document.getElementById('update_status').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
     });
 }
 
@@ -327,7 +327,7 @@ function saveLogSetting() {
     const en = document.getElementById('log_enable').checked ? '1' : '0';
     fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=log_set&enable=' + en})
     .then(r => r.text()).then(data => {
-        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + data + '</pre>';
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         loadSettings();
     });
 }
@@ -360,7 +360,7 @@ function clearRunLog() {
     if (!confirm('确定要清空运行日志吗？')) return;
     fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=log_clear'})
     .then(r => r.text()).then(data => {
-        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + data + '</pre>';
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         setTimeout(loadRunLog, 500);
     });
 }
@@ -371,7 +371,7 @@ function saveDefaultTarget() {
     if (!/^(\d{1,3}\.){3}\d{1,3}$/.test(ip)) { alert('IP格式不正确'); return; }
     fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=set_default_target&ip=' + ip})
     .then(r => r.text()).then(data => {
-        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + data + '</pre>';
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
     });
 }
 
@@ -379,7 +379,7 @@ function runAction(action) {
     document.getElementById('action_result').innerHTML = '<span class="text-info">执行中...</span>';
     fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=' + action})
     .then(r => r.text()).then(data => {
-        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + data + '</pre>';
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
     });
 }
 
@@ -388,7 +388,7 @@ function doBackup() {
     if (!confirm('确定要备份当前防火墙配置吗？')) return;
     fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=backup'})
     .then(r => r.text()).then(data => {
-        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + data + '</pre>';
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         setTimeout(listBackups, 1500);
     });
 }
@@ -448,7 +448,7 @@ function restoreBackup(filename) {
         body:'action=backup_restore&filename=' + encodeURIComponent(filename)
     })
     .then(r => r.text()).then(data => {
-        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + data + '</pre>';
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         setTimeout(listBackups, 1500);
     });
 }
@@ -461,7 +461,7 @@ function deleteBackup(filename) {
         body:'action=backup_delete&filename=' + encodeURIComponent(filename)
     })
     .then(r => r.text()).then(data => {
-        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + data + '</pre>';
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         setTimeout(listBackups, 1500);
     });
 }
@@ -497,14 +497,14 @@ function uploadPlugin() {
     .then(r => r.text())
     .then(data => {
         statusEl.innerHTML = '';
-        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + data + '</pre>';
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         if (data.includes('完成') || data.includes('成功')) {
             statusEl.innerHTML = '<div class="text-success" style="margin-top:10px;">✅ 插件更新完成！请刷新页面 (Ctrl+Shift+R)</div>';
             fileInput.value = '';
         }
     })
     .catch(err => {
-        statusEl.innerHTML = '<div class="text-danger">❌ 更新失败: ' + err.message + '</div>';
+        statusEl.innerHTML = '<div class="text-danger">❌ 更新失败: ' + escapeHtml(err.message) + '</div>';
     });
 }
 
@@ -550,7 +550,7 @@ function loadChinaStatus() {
             customInput.style.display = 'none';
         }
     }).catch(e => {
-        document.getElementById('china_status_cell').innerHTML = '<span class="text-danger">加载失败: ' + e.message + '</span>';
+        document.getElementById('china_status_cell').innerHTML = '<span class="text-danger">加载失败: ' + escapeHtml(e.message) + '</span>';
     });
 }
 
@@ -567,7 +567,7 @@ function saveChinaUrl() {
     if (!/^https?:\/\//.test(url)) { alert('链接必须以 http:// 或 https:// 开头'); return; }
     fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_set_url&url=' + encodeURIComponent(url)})
     .then(r => r.text()).then(data => {
-        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + data + '</pre>';
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
     });
 }
 
@@ -580,7 +580,7 @@ function saveChinaCron() {
     }
     fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_set_cron&cron=' + encodeURIComponent(cron)})
     .then(r => r.text()).then(data => {
-        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + data + '</pre>';
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         setTimeout(loadChinaStatus, 300);
     });
 }
@@ -597,7 +597,7 @@ function enableChinaFilter() {
     setChinaBtns(false);
     fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_enable'})
     .then(r => r.text()).then(data => {
-        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + data + '</pre>';
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         setTimeout(() => { loadChinaStatus(); setChinaBtns(true); }, 600);
     }).catch(e => { setChinaBtns(true); alert('启用失败: ' + e.message); });
 }
@@ -607,7 +607,7 @@ function disableChinaFilter() {
     setChinaBtns(false);
     fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_disable'})
     .then(r => r.text()).then(data => {
-        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + data + '</pre>';
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         setTimeout(() => { loadChinaStatus(); setChinaBtns(true); }, 400);
     }).catch(e => { setChinaBtns(true); alert('关闭失败: ' + e.message); });
 }
@@ -616,7 +616,7 @@ function updateChinaFilter() {
     setChinaBtns(false);
     fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_update'})
     .then(r => r.text()).then(data => {
-        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + data + '</pre>';
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         setTimeout(() => { loadChinaStatus(); setChinaBtns(true); }, 600);
     }).catch(e => { setChinaBtns(true); alert('更新失败: ' + e.message); });
 }
@@ -641,7 +641,7 @@ function uninstallPlugin() {
     document.getElementById('action_result').innerHTML = '<pre class="result-pre" style="color:#dc2626;">卸载进行中，请勿关闭页面...（uhttpd 重启会导致连接断开，属正常现象）</pre>';
     fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=uninstall&keep=' + keep})
     .then(r => r.text()).then(data => {
-        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + data + '</pre>';
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         // 3秒后uhttpd已重启，跳转首页
         setTimeout(() => {
             alert('卸载已完成，uhttpd 正在重启。\n点击确定后浏览器将跳转到首页。');

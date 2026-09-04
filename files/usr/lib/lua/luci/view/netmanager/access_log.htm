@@ -44,7 +44,7 @@
         <h3>防火墙拦截统计 (按端口)</h3>
         <div class="netmanager-log" id="blocked_log"><div class="text-muted">加载中...</div></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.4.3</div>
+    <div class="footer-sign">网络管理插件 v1.4.4</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -86,11 +86,11 @@ function loadAccessLog() {
                     const isInbound = !src.match(/^(192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[01])\.|127\.)/);
                     const dirBadge = isInbound ? '<span class="badge badge-green">入</span>' : '<span class="badge badge-blue">出</span>';
                     const protoBadge = proto === 'tcp' ? '<span class="badge badge-blue">TCP</span>' : '<span class="badge badge-purple">UDP</span>';
-                    activeHtml += `<div>${protoBadge} ${dirBadge} <span class="log-ip">${src}</span> → <span class="log-ip">${dst}</span> <span style="color:#9ca3af;">[${state}]</span></div>`;
+                    activeHtml += `<div>${protoBadge} ${dirBadge} <span class="log-ip">${escapeHtml(src)}</span> → <span class="log-ip">${escapeHtml(dst)}</span> <span style="color:#9ca3af;">[${escapeHtml(state)}]</span></div>`;
                 } else if (current === 'blocked' && parts.length >= 3) {
                     const proto = parts[0], dport = parts[1], pkts = parts[2];
                     if (parseInt(pkts) > 0) {
-                        blockedHtml += `<div><span class="log-fail">拦截</span> ${proto.toUpperCase()} 端口 <b>${dport}</b> 累计 <b>${pkts}</b> 个包</div>`;
+                        blockedHtml += `<div><span class="log-fail">拦截</span> ${escapeHtml(proto.toUpperCase())} 端口 <b>${escapeHtml(dport)}</b> 累计 <b>${escapeHtml(pkts)}</b> 个包</div>`;
                     }
                 }
             });

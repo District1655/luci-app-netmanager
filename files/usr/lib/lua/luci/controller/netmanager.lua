@@ -104,6 +104,15 @@ local function setup_upload_handler()
 end
 
 function api_handler()
+    -- 【安全】仅接受 POST：防止 <img src="...?action=uninstall"> 之类的跨站 GET 触发
+    -- （LuCI 的会话认证仅证明"登录页有效"，不阻止 GET 请求携带会话执行操作）
+    if luci.http.getenv("REQUEST_METHOD") ~= "POST" then
+        luci.http.status(405, "Method Not Allowed")
+        luci.http.prepare_content("text/plain; charset=utf-8")
+        luci.http.write('[ERROR] 仅允许 POST 请求')
+        return
+    end
+
     -- 【关键】先设置文件上传处理器，再读任何formvalue（包括action）
     setup_upload_handler()
     
