@@ -68,7 +68,8 @@ jobs:
         if: steps.check.outputs.exists == 'false' || inputs.force == true
         run: |
           # 从 README 更新日志提取当前版本的段落，作为 Release body 的变更内容
-          CHANGELOG=$(awk -v ver="${{ steps.version.outputs.version }}" -f .github/workflows/extract_changelog.awk README.md)
+          # 注意：README 日志标题是 "### vX.Y.Z"（带 v 前缀），必须补 v 再匹配
+          CHANGELOG=$(awk -v ver="v${{ steps.version.outputs.version }}" -f .github/workflows/extract_changelog.awk README.md)
           if [ -z "$(echo "$CHANGELOG" | tr -d '[:space:]')" ]; then
             CHANGELOG="（README 中未找到 v${{ steps.version.outputs.version }} 的更新日志段落）"
             echo "WARN: 未提取到更新日志，Release 将使用占位文案"
