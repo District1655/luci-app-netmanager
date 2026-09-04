@@ -4,7 +4,10 @@
 local m, s, o
 
 m = Map("dnssettings", translate("DNS设置"),
-    translate("统一管理 WAN/LAN 的 IPv4 和 IPv6 DNS 服务器。修改后点击「应用配置」生效。"))
+    translate("统一管理 WAN/LAN 的 IPv4 和 IPv6 DNS 服务器。修改后点击「应用配置」生效。")
+    .. "<br><em style='color:#6b7280;font-size:12px;'>"
+    .. translate("防护说明：自定义 DNS 模式下若 DNS 留空，应用时将跳过该接口保持现状（防止断网）；每次应用前自动备份到 /root/backup/。")
+    .. "</em>")
 
 -- ============================================================
 -- 第一部分：WAN 口 DNS（上游 DNS，路由器自己用）

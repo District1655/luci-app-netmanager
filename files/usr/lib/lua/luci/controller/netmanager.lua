@@ -23,26 +23,32 @@ end
 
 -- ============================================================
 -- DNS 设置：应用配置
--- 读取 /etc/config/dnssettings，写入 network/dhcp 并重启网络/dnsmasq/odhcpd
+-- 读取 /etc/config/dnssettings，写入 network/dhcp 并重载网络/dnsmasq/odhcpd
+-- v1.4.5：用 exec 捕获脚本完整输出回传（含 WARN 空值防护提示）
 -- ============================================================
 function action_dns_apply()
-    local ret = luci.sys.call("/usr/sbin/dnssettings-apply.sh 2>&1")
-    if ret == 0 then
-        luci.http.write("OK:DNS配置已应用，网络服务正在重启")
+    -- ucode版LuCI的exec在无输出时可能返回nil，用 or "" 兜底
+    local out = luci.sys.exec("/usr/sbin/dnssettings-apply.sh 2>&1") or ""
+    luci.http.prepare_content("text/plain; charset=utf-8")
+    -- 通过输出内容判断成败（脚本致命错误时含 ERROR）
+    if out:match("ERROR:") then
+        luci.http.write("应用失败，详细输出：\n" .. out)
     else
-        luci.http.write("ERROR:应用失败，请检查系统日志")
+        luci.http.write("DNS配置已应用，详细输出：\n" .. out .. "\n提示: 若有 WARN 行为空值防护跳过项，请补全对应 DNS 后重新应用\n")
     end
 end
 
 -- ============================================================
 -- DNS 设置：备份当前系统 network/dhcp 配置到 /root/backup/
+-- v1.4.5：同样捕获完整输出回传
 -- ============================================================
 function action_dns_backup()
-    local ret = luci.sys.call("/usr/sbin/dnssettings-backup.sh 2>&1")
-    if ret == 0 then
-        luci.http.write("OK:配置已备份到 /root/backup/")
+    local out = luci.sys.exec("/usr/sbin/dnssettings-backup.sh 2>&1") or ""
+    luci.http.prepare_content("text/plain; charset=utf-8")
+    if out:match("备份失败") or out == "" then
+        luci.http.write("备份失败，详细输出：\n" .. out)
     else
-        luci.http.write("ERROR:备份失败")
+        luci.http.write("配置已备份，详细输出：\n" .. out)
     end
 end
 
