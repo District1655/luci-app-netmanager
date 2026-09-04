@@ -138,10 +138,7 @@ local function get_online_devices()
         end
         f:close()
     end
-            end
-        end
-        f:close()
-    end
+
 
     -- 3. odhcpd DHCPv6 租约: <duid> <iaid> <name> <ts> <id> <len> <addr>
     --    行首 '#' 为前缀委托(PD)行，跳过；len=128 为地址分配
