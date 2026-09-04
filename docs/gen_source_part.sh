@@ -5,7 +5,7 @@
 # 输出: docs/source_part.md
 # 合并: 用 docs/source_part.md 替换 PROJECT.md 中第 5 章内容
 #       （从「## 第 5 章 源码全录」到「> 第 5 章结束」标记）
-# 说明: 按固定顺序嵌入全部 23 个受控文件；内容含 ``` 围栏的
+# 说明: 按固定顺序嵌入全部 24 个受控文件；内容含 ``` 围栏的
 #       文件（README.md）自动升级为 4 反引号围栏包裹。
 #       新增受控文件时，在 paths/langs/descs/notes 四个数组
 #       同步添加条目，并更新 PROJECT.md 第 2 章目录树。
@@ -25,6 +25,7 @@ paths=(
 "files/usr/lib/lua/luci/model/cbi/netmanager/dns_staticv6.lua"
 "files/usr/lib/lua/luci/view/netmanager/common_head.htm"
 "files/usr/lib/lua/luci/view/netmanager/nav.htm"
+"files/usr/lib/lua/luci/view/netmanager/cbi_nav.htm"
 "files/usr/lib/lua/luci/view/netmanager/overview.htm"
 "files/usr/lib/lua/luci/view/netmanager/port_forward.htm"
 "files/usr/lib/lua/luci/view/netmanager/firewall_rules.htm"
@@ -45,7 +46,7 @@ paths=(
 langs=(
 "bash" "bash" "bash"
 "lua" "lua" "lua"
-"html" "html" "html" "html" "html" "html" "html" "html"
+"html" "html" "html" "html" "html" "html" "html" "html" "html"
 "uci" "uci"
 "bash" "bash" "bash"
 "yaml" "awk"
@@ -62,6 +63,7 @@ descs=(
 "静态 IPv6 分配 CBI 模型：绑定 dhcp.host + 在线客户端速览（4 数据源交叉）+ 冲突检测"
 "全部视图公共头：CSS 样式 + 公共 JS（escapeHtml / apiFetch / withBusy）"
 "页内导航条：防火墙 6 页 + DNS 设置 / 静态 IPv6 两个 CBI 入口"
+"CBI 页面专用导航条（v1.4.6 新增）：自带内联样式，由 dns_settings / dns_staticv6 以 Template 节点注入，修复 CBI 页页签消失"
 "系统概览页：防火墙状态 / 端口统计 / 网络信息 / 快捷操作"
 "端口转发管理页：列表 / 添加 / 编辑 / 删除，外部端口到内部端口映射"
 "防火墙规则管理页：自定义规则增删改 + 常用模板一键应用"
@@ -84,10 +86,11 @@ notes=(
 "v1.4.5 重写：空值断网防护 / 应用前自动备份 / list 字段正确写法 / network reload 化。已知待修：L145 dhcp_option 单值写法应 delete+add_list；L68/L97 WAN 接口名硬编码 network.wan/wan6；L120-132 PPPoE 双栈 fallback 未去重即 add_list"
 "逻辑简单，注意保持与 apply 脚本一致的保留 5 份自动备份策略"
 "api_handler 强制 POST（约 L115）；shell_escape 约 L56-64（所有拼命令参数必经）；L20-21 dns_apply/dns_backup 仍为 GET 路由（v1.4.6 待修 POST 化）；L85/L294 上传临时文件 .b64_<秒级时间戳> 同秒冲突待修；arg() 在 4 处重复定义待提取"
-"forward_v4/forward_v6 为 DynamicList（L93-101）；L108-120 apply/backup 按钮通过 redirect 触发 GET 路由（v1.4.6 随路由 POST 化一并调整）"
-"L32-152 get_online_devices 四数据源（dnsmasq 租约/ARP/odhcpd 租约/NDP）；L157-202 merge_duplicate_hosts；L207-217 页面 GET 加载即执行 merge+commit（v1.4.6 待修）；L96/L131 WAN 过滤 ^wan 漏 pppoe-wan；L291-294 on_after_commit 无差别 restart odhcpd；L452-465 DUID 校验 4-130 hex（与文档 8-64 不一致待统一）"
+"forward_v4/forward_v6 为 DynamicList（L93-101）；L108-120 apply/backup 按钮通过 redirect 触发 GET 路由（v1.4.6 待修 POST 化）；v1.4.6 已注入 cbi_nav 导航模板（L14-16）"
+"L32-166 get_online_devices 四数据源（dnsmasq 租约/ARP/odhcpd 租约/NDP）；v1.4.6 修复：L45-54 first_opt 用 foreach 替代 get_first（ucode 桥无此方法）；L171-216 merge_duplicate_hosts；L221 页面 GET 加载即执行 merge+commit（v1.4.6 待修）；L290 已注入 cbi_nav；L293/L308 on_before_commit/on_after_commit；L469-481 DUID 校验 4-130 hex"
 "L74-155 公共 JS 区。apiFetch 带超时与会话过期处理，但目前仅 ssh_log 使用（v1.4.6 统一）；withBusy 为死代码待启用或删除；L75 附近版本注释是版本号登记处之一"
 "与 controller 菜单双维护：新增页面需两处同步修改"
+"CBI 页面专用导航（v1.4.6 新增修复 bug2）：自带内联样式（CBI 页不加载 common_head）；active 判断 requestpath[3] 带 nil 防护"
 "裸 fetch（v1.4.6 统一 apiFetch）；L142 附近 grep -v '172\\.' / grep -v '192.168' 过滤会误伤公网 IP（待修）"
 "L104/L110 delPort onclick 传自由文本（escapeHtml 在 onclick 属性上下文无效，v1.4.6 P1 待修，方案改数组下标传参）；L135-142 delPort；L143-157 editPort 已用数组下标（v1.4.4 修复）；L162-178 savePortEdit"
 "L137 editRule 已改数组下标传参（v1.4.4 修复）"
@@ -111,8 +114,8 @@ echo "---"
 echo ""
 echo "## 第 5 章 源码全录"
 echo ""
-echo "> 本章由脚本自动嵌入（基线 commit 686582f / v1.4.5，生成时间 $(date '+%Y-%m-%d %H:%M')）。"
-echo "> 收录全部 23 个受控文件的完整内容，每个文件附用途与维护要点。"
+echo "> 本章由脚本自动嵌入（基线 commit 90b2bf9 / v1.4.5+两bug修复，生成时间 $(date '+%Y-%m-%d %H:%M')）。"
+echo "> 收录全部 24 个受控文件的完整内容，每个文件附用途与维护要点。"
 echo "> **源码是唯一事实来源**：前文描述与源码不一致时，以源码为准。"
 echo ""
 

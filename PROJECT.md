@@ -1,12 +1,12 @@
 # luci-app-netmanager 项目全景文档（PROJECT.md）
 
-> **基线**：v1.4.5 · commit `686582f` · main 分支 · 生成时间 2026-09-04
+> **基线**：v1.4.5 + 线上修复 · commit `90b2bf9`（文档待提交处见 6.1 表尾注） · main 分支 · 更新时间 2026-09-04
 >
 > **用途**：本文件是项目的**单一查阅入口**——文件架构、全部源码、维护历史、开发计划、注意事项集中一处，供后续开发、排错与交接时快速定位。
 >
 > **分工**：README.md 面向用户（安装/使用）；本文档面向维护者（实现/历史/计划）。
 >
-> **源码收录**：第 5 章嵌入全部 23 个受控文件的完整源码，与 commit `686582f` 完全一致。
+> **源码收录**：第 5 章嵌入全部 24 个受控文件的完整源码，与 commit `90b2bf9` 完全一致。
 
 ## 目录
 
@@ -74,7 +74,7 @@ iStoreOS 的 /usr/bin/ 是只读 squashfs 分区，标准 ipk 安装会失败。
 
 ## 第 2 章 完整文件架构
 
-### 2.1 目录树（23 个受控文件，基线 686582f）
+### 2.1 目录树（24 个受控文件，基线 90b2bf9）
 
 ```
 luci-app-netmanager/
@@ -85,11 +85,12 @@ luci-app-netmanager/
 ├── files/usr/lib/lua/luci/
 │   ├── controller/netmanager.lua                # 353 行：路由 + API 分发 + 上传
 │   ├── model/cbi/netmanager/
-│   │   ├── dns_settings.lua                     # 98 行：DNS 设置表单
-│   │   └── dns_staticv6.lua                     # 420 行：静态 IPv6 分配表单
-│   └── view/netmanager/                         # 自绘视图层（8 个 htm）
+│   │   ├── dns_settings.lua                     # 125 行：DNS 设置表单（v1.4.6 注入 cbi_nav）
+│   │   └── dns_staticv6.lua                     # 489 行：静态 IPv6 分配表单（v1.4.6 修 get_first + 注入 cbi_nav）
+│   └── view/netmanager/                         # 自绘视图层（9 个 htm）
 │       ├── common_head.htm                      # 148 行：公共 CSS+JS（escapeHtml/apiFetch）
 │       ├── nav.htm                              # 10 行：页内导航
+│       ├── cbi_nav.htm                          # 28 行：CBI 页面专用导航（v1.4.6 新增）
 │       ├── overview.htm                         # 105 行：系统概览
 │       ├── port_forward.htm                     # 181 行：端口转发
 │       ├── firewall_rules.htm                   # 229 行：防火墙规则
@@ -272,12 +273,12 @@ dnssettings-apply.sh 执行流程：
 
 ---
 
+
 ## 第 5 章 源码全录
 
-> 本章由脚本自动嵌入（基线 commit 686582f / v1.4.5，生成时间 2026-09-04 18:57）。
-> 收录全部 23 个受控文件的完整内容，每个文件附用途与维护要点。
-> 源码是唯一事实来源：前文描述与源码不一致时，以源码为准。
-
+> 本章由脚本自动嵌入（基线 commit 90b2bf9 / v1.4.5+两bug修复，生成时间 2026-09-04 23:22）。
+> 收录全部 24 个受控文件的完整内容，每个文件附用途与维护要点。
+> **源码是唯一事实来源**：前文描述与源码不一致时，以源码为准。
 
 
 ### 5.1 files/usr/sbin/netmanager
@@ -3132,8 +3133,8 @@ end
 ### 5.5 files/usr/lib/lua/luci/model/cbi/netmanager/dns_settings.lua
 
 - **用途**：DNS 设置 CBI 模型：Map 绑定 /etc/config/dnssettings（wan/lan/dnsmasq 三节 + 应用/备份按钮）
-- **规模**：122 行
-- **维护要点**：forward_v4/forward_v6 为 DynamicList（L93-101）；L108-120 apply/backup 按钮通过 redirect 触发 GET 路由（v1.4.6 随路由 POST 化一并调整）
+- **规模**：125 行
+- **维护要点**：forward_v4/forward_v6 为 DynamicList（L93-101）；L108-120 apply/backup 按钮通过 redirect 触发 GET 路由（v1.4.6 待修 POST 化）；v1.4.6 已注入 cbi_nav 导航模板（L14-16）
 
 ```lua
 -- DNS设置插件 - CBI 表单模型
@@ -3146,6 +3147,9 @@ m = Map("dnssettings", translate("DNS设置"),
     .. "<br><em style='color:#6b7280;font-size:12px;'>"
     .. translate("防护说明：自定义 DNS 模式下若 DNS 留空，应用时将跳过该接口保持现状（防止断网）；每次应用前自动备份到 /root/backup/。")
     .. "</em>")
+
+-- v1.4.6 修复：CBI 页面缺少页内导航（从自绘页面进入后页签消失），注入导航模板
+m:append(Template("netmanager/cbi_nav"))
 
 -- ============================================================
 -- 第一部分：WAN 口 DNS（上游 DNS，路由器自己用）
@@ -3263,8 +3267,8 @@ return m
 ### 5.6 files/usr/lib/lua/luci/model/cbi/netmanager/dns_staticv6.lua
 
 - **用途**：静态 IPv6 分配 CBI 模型：绑定 dhcp.host + 在线客户端速览（4 数据源交叉）+ 冲突检测
-- **规模**：472 行
-- **维护要点**：L32-152 get_online_devices 四数据源（dnsmasq 租约/ARP/odhcpd 租约/NDP）；L157-202 merge_duplicate_hosts；L207-217 页面 GET 加载即执行 merge+commit（v1.4.6 待修）；L96/L131 WAN 过滤 ^wan 漏 pppoe-wan；L291-294 on_after_commit 无差别 restart odhcpd；L452-465 DUID 校验 4-130 hex（与文档 8-64 不一致待统一）
+- **规模**：489 行
+- **维护要点**：L32-166 get_online_devices 四数据源（dnsmasq 租约/ARP/odhcpd 租约/NDP）；v1.4.6 修复：L45-54 first_opt 用 foreach 替代 get_first（ucode 桥无此方法）；L171-216 merge_duplicate_hosts；L221 页面 GET 加载即执行 merge+commit（v1.4.6 待修）；L290 已注入 cbi_nav；L293/L308 on_before_commit/on_after_commit；L469-481 DUID 校验 4-130 hex
 
 ```lua
 -- 静态 IP / IPv6 分配 - v1.4.4
@@ -3303,13 +3307,27 @@ local function get_online_devices()
     local uci = require "uci".cursor()
 
     -- 租约文件路径允许 UCI 覆盖（默认与 OpenWrt 一致）
+    -- v1.4.6 兼容性修复：不再调用 uci:get_first()，改用 foreach 实现同语义。
+    -- 原因：iStoreOS 24.10 / OpenWrt 24.10+ 的 ucode 版 LuCI 中，Lua CBI 经
+    --       ucodebridge 桥接执行，桥接的 uci cursor 没有 get_first 扩展方法，
+    --       报 "attempt to call method 'get_first' (a nil value)"。
+    --       foreach/get/set/commit 桥接均支持（merge_duplicate_hosts 已验证）。
     local dhcp_leasefile = "/tmp/dhcp.leases"
     local od_leasefile = "/tmp/odhcpd.leases"
     if uci then
-        local lf = uci:get_first("dhcp", "dnsmasq", "leasefile")
-        if lf and lf ~= "" then dhcp_leasefile = lf end
-        lf = uci:get_first("dhcp", "odhcpd", "leasefile")
-        if lf and lf ~= "" then od_leasefile = lf end
+        local function first_opt(stype, opt)
+            local v
+            uci:foreach("dhcp", stype, function(sec)
+                if not v and sec[opt] and sec[opt] ~= "" then
+                    v = sec[opt]
+                end
+            end)
+            return v
+        end
+        local lf = first_opt("dnsmasq", "leasefile")
+        if lf then dhcp_leasefile = lf end
+        lf = first_opt("odhcpd", "leasefile")
+        if lf then od_leasefile = lf end
     end
 
     local function ensure(mac_upper)
@@ -3540,6 +3558,9 @@ if merged_count > 0 then
 end
 
 m = Map("dhcp", translate("静态 IP / IPv6 分配"), desc)
+
+-- v1.4.6 修复：CBI 页面缺少页内导航（从自绘页面进入后页签消失），注入导航模板
+m:append(Template("netmanager/cbi_nav"))
 
 -- 保存前清理幽灵条目（MAC 与 DUID 均为空，避免"消失但占位"无法删除）
 m.on_before_commit = function(self)
@@ -3925,7 +3946,45 @@ function withBusy(btn, fn) {
 </div>
 ```
 
-### 5.9 files/usr/lib/lua/luci/view/netmanager/overview.htm
+### 5.9 files/usr/lib/lua/luci/view/netmanager/cbi_nav.htm
+
+- **用途**：CBI 页面专用导航条（v1.4.6 新增）：自带内联样式，由 dns_settings / dns_staticv6 以 Template 节点注入，修复 CBI 页页签消失
+- **规模**：28 行
+- **维护要点**：CBI 页面专用导航（v1.4.6 新增修复 bug2）：自带内联样式（CBI 页不加载 common_head）；active 判断 requestpath[3] 带 nil 防护
+
+```html
+<%--
+    netmanager/cbi_nav.htm - CBI 页面专用页内导航条
+    用途：DNS设置 / 静态IPv6分配 两个 CBI 表单页面无自绘视图的 nav.htm 页内导航，
+         从自绘页面进入后页签消失（bug2），本模板以 CBI Template 节点注入补齐。
+    特点：自带内联样式（CBI 页面不加载 common_head.htm，不能依赖外部样式类）；
+         active 判断与 nav.htm 一致（requestpath[3]）。
+--%>
+<%
+local path = luci.dispatcher.context.requestpath
+local cur = (type(path) == "table") and (path[3] or "") or ""
+local function url(...) return luci.dispatcher.build_url("admin", "netmanager", ...) end
+local function cls(id) return (cur == id) and ' class="active"' or '' end
+%>
+<style>
+.netmanager-nav { display: flex; gap: 2px; background: #fff; padding: 6px; border-radius: 8px; margin: 0 0 14px 0; box-shadow: 0 1px 2px rgba(0,0,0,0.06); border: 1px solid #e5e7eb; flex-wrap: wrap; }
+.netmanager-nav a { padding: 7px 14px; text-decoration: none; color: #6b7280; border-radius: 6px; font-size: 13px; transition: all 0.15s; }
+.netmanager-nav a:hover { background: #f3f4f6; color: #111827; }
+.netmanager-nav a.active { background: #2563eb; color: #fff; }
+</style>
+<div class="netmanager-nav">
+    <a href="<%=url('overview')%>"<%=cls('overview')%>>📊 系统概览</a>
+    <a href="<%=url('port_forward')%>"<%=cls('port_forward')%>>🔄 端口转发</a>
+    <a href="<%=url('firewall_rules')%>"<%=cls('firewall_rules')%>>📋 规则管理</a>
+    <a href="<%=url('ssh_log')%>"<%=cls('ssh_log')%>>🔐 SSH登录日志</a>
+    <a href="<%=url('access_log')%>"<%=cls('access_log')%>>🌐 端口访问日志</a>
+    <a href="<%=url('dns')%>"<%=cls('dns')%>>🧭 DNS设置</a>
+    <a href="<%=url('dns_staticv6')%>"<%=cls('dns_staticv6')%>>📮 静态IPv6分配</a>
+    <a href="<%=url('settings')%>"<%=cls('settings')%>>⚙️ 设置</a>
+</div>
+```
+
+### 5.10 files/usr/lib/lua/luci/view/netmanager/overview.htm
 
 - **用途**：系统概览页：防火墙状态 / 端口统计 / 网络信息 / 快捷操作
 - **规模**：105 行
@@ -4039,7 +4098,7 @@ setInterval(loadOverview, 30000);
 <%+footer%>
 ```
 
-### 5.10 files/usr/lib/lua/luci/view/netmanager/port_forward.htm
+### 5.11 files/usr/lib/lua/luci/view/netmanager/port_forward.htm
 
 - **用途**：端口转发管理页：列表 / 添加 / 编辑 / 删除，外部端口到内部端口映射
 - **规模**：181 行
@@ -4229,7 +4288,7 @@ loadPortList();
 <%+footer%>
 ```
 
-### 5.11 files/usr/lib/lua/luci/view/netmanager/firewall_rules.htm
+### 5.12 files/usr/lib/lua/luci/view/netmanager/firewall_rules.htm
 
 - **用途**：防火墙规则管理页：自定义规则增删改 + 常用模板一键应用
 - **规模**：229 行
@@ -4467,7 +4526,7 @@ loadRuleList();
 <%+footer%>
 ```
 
-### 5.12 files/usr/lib/lua/luci/view/netmanager/ssh_log.htm
+### 5.13 files/usr/lib/lua/luci/view/netmanager/ssh_log.htm
 
 - **用途**：SSH 登录日志页：成功/失败记录 + 失败 IP Top10 + 自动刷新
 - **规模**：103 行
@@ -4579,7 +4638,7 @@ loadSshLog();
 <%+footer%>
 ```
 
-### 5.13 files/usr/lib/lua/luci/view/netmanager/access_log.htm
+### 5.14 files/usr/lib/lua/luci/view/netmanager/access_log.htm
 
 - **用途**：端口访问日志页：活跃连接 / 入站出站计数 / 拦截统计
 - **规模**：112 行
@@ -4700,7 +4759,7 @@ loadAccessLog();
 <%+footer%>
 ```
 
-### 5.14 files/usr/lib/lua/luci/view/netmanager/settings.htm
+### 5.15 files/usr/lib/lua/luci/view/netmanager/settings.htm
 
 - **用途**：设置页：默认目标 / 备份恢复 / 插件更新 / 在线更新 / 中国IPv4过滤 / 运行日志 / 卸载
 - **规模**：660 行
@@ -5370,7 +5429,7 @@ listBackups();
 <%+footer%>
 ```
 
-### 5.15 files/etc/config/netmanager
+### 5.16 files/etc/config/netmanager
 
 - **用途**：防火墙模块 UCI 配置：默认目标 IP / 日志开关 / 中国过滤全部参数
 - **规模**：12 行
@@ -5391,7 +5450,7 @@ config netmanager 'settings'
     option update_mirror ''
 ```
 
-### 5.16 files/etc/config/dnssettings
+### 5.17 files/etc/config/dnssettings
 
 - **用途**：DNS 模块 UCI 配置：wan / lan / dnsmasq / actions 四节
 - **规模**：22 行
@@ -5422,7 +5481,7 @@ config dnsmasq 'dnsmasq'
 config actions 'actions'
 ```
 
-### 5.17 files/etc/init.d/netmanager-china
+### 5.18 files/etc/init.d/netmanager-china
 
 - **用途**：开机自启脚本：重应用中国 IPv4 过滤规则
 - **规模**：26 行
@@ -5457,7 +5516,7 @@ restart() {
 }
 ```
 
-### 5.18 files/etc/hotplug.d/iface/95-netmanager-china
+### 5.19 files/etc/hotplug.d/iface/95-netmanager-china
 
 - **用途**：WAN 上线热插拔脚本：接口上线自动重应用规则（自愈机制）
 - **规模**：24 行
@@ -5490,7 +5549,7 @@ esac
 exit 0
 ```
 
-### 5.19 install.sh
+### 5.20 install.sh
 
 - **用途**：一键安装脚本：7 步安装，复制文件 / 权限 / /bin/netmanager 符号链接 / init / cron，支持 SKIP_UHTTPD_RESTART
 - **规模**：109 行
@@ -5551,7 +5610,7 @@ echo "  ✓ model/cbi/netmanager/dns_staticv6.lua"
 echo "[4/7] 复制LuCI视图模板..."
 mkdir -p /usr/lib/lua/luci/view/netmanager
 cp -f "$FILES_DIR/usr/lib/lua/luci/view/netmanager/"*.htm /usr/lib/lua/luci/view/netmanager/
-echo "  ✓ view/netmanager/*.htm (8个文件)"
+echo "  ✓ view/netmanager/*.htm (9个文件)"
 
 echo "[5/7] 复制配置文件..."
 if [ ! -f "/etc/config/netmanager" ]; then
@@ -5608,7 +5667,7 @@ echo ""
 echo "============================================"
 ```
 
-### 5.20 .github/workflows/build.yml
+### 5.21 .github/workflows/build.yml
 
 - **用途**：GitHub Actions 工作流：tag 推送时打包 tar.gz 资产并创建 Release
 - **规模**：156 行
@@ -5773,7 +5832,7 @@ jobs:
             > 也可在「设置」页面点击「一键卸载插件」按钮卸载（支持保留配置勾选）。卸载不影响用户在 /etc/config/firewall 中的端口转发与防火墙规则。
 ````
 
-### 5.21 .github/workflows/extract_changelog.awk
+### 5.22 .github/workflows/extract_changelog.awk
 
 - **用途**：Release body 提取脚本：从 README.md 更新日志提取指定版本段落
 - **规模**：16 行
@@ -5799,7 +5858,7 @@ found {
 }
 ```
 
-### 5.22 .gitattributes
+### 5.23 .gitattributes
 
 - **用途**：git 属性：强制 LF 行尾（.gitattributes，CRLF 警告可忽略）
 - **规模**：14 行
@@ -5823,7 +5882,7 @@ found {
 *.ipk binary
 ```
 
-### 5.23 README.md
+### 5.24 README.md
 
 - **用途**：项目主文档：功能 / 安装 / CLI / 配置说明 / 更新日志 / 许可证
 - **规模**：301 行
@@ -6140,7 +6199,7 @@ MIT License
 
 ## 第 6 章 更新维护记录
 
-### 6.1 提交历史（基线 686582f，全 10 commit）
+### 6.1 提交历史（基线 90b2bf9，全 13 commit）
 
 | commit | 日期 | 版本 | 摘要 |
 |--------|------|------|------|
@@ -6154,8 +6213,24 @@ MIT License
 | dcfeecd | 2026-09-04 | — | CI Release body 自动提取 README 更新日志 |
 | d3bfcc4 | 2026-09-04 | v1.4.5 | DNS 应用脚本重写（空值断网防护） |
 | 686582f | 2026-09-04 | — | CI 修复：Release 提取 v 前缀不匹配 |
+| fc62f27 | 2026-09-04 | — | docs: 项目全景文档 PROJECT.md + 源码嵌入生成脚本 |
+| 90b2bf9 | 2026-09-04 | — | fix: ucode LuCI 两处线上问题（静态IPv6页崩溃 + CBI页缺页内导航） |
+| （后续） | — | — | 待提交：PROJECT.md 同步更新 + 生成脚本 24 文件化 |
 
 ### 6.2 各版本要点
+
+**线上紧急修复（2026-09-04，commit 90b2bf9，用户实机报障）**
+
+用户在 iStoreOS 24.10（ucode 版 LuCI）实机使用中发现两个问题：
+
+1. **静态 IPv6 分配页崩溃**（Runtime error: `attempt to call method 'get_first' (a nil value)`）
+   - 根因：`dns_staticv6.lua` 使用 `uci:get_first()`，该方法仅存在于原生 libuci-lua；ucode 版 LuCI 中 Lua CBI 经 ucodebridge 桥接执行，桥接的 uci cursor 无此扩展方法（foreach/get/set/commit 桥接支持，同函数上方 merge_duplicate_hosts 已成功执行佐证）
+   - 修复：新增局部函数 `first_opt()`，用 `uci:foreach` 遍历取第一个非空值实现同语义；不依赖回调 return false 中止语义（桥接环境最大兼容）；默认路径 /tmp/dhcp.leases 兜底不变
+   - 排查确认：全项目仅此 2 处 get_first，无其他 libuci-lua 独有 API
+2. **DNS 设置页进入后页内导航消失**
+   - 根因：DNS设置/静态IPv6 是 CBI 框架渲染页面，不含自绘视图的 nav.htm 页内导航条；从自绘页面（带 8 页签）进入 CBI 页后页签全部消失，观感为"菜单丢失"
+   - 修复：新建 `view/netmanager/cbi_nav.htm`（自带内联样式，CBI 页不加载 common_head.htm 不能依赖外部样式类；active 判断带 nil 防护），两个 CBI 模型以 `m:append(Template("netmanager/cbi_nav"))` 注入（Template 节点在 luci-compat cbi.lua 为标准节点，已查证源码）
+   - install.sh 文案 8→9 个文件同步
 
 **v1.4.0（2026-09-02）合并**
 
@@ -6290,6 +6365,13 @@ MIT License
 | P3-11 | 备份文件未显式 chmod 600 | [豆] | 补权限 |
 | P3-12 | uci set 未批量 commit | [豆] | 检查各处 commit 时机 |
 
+#### 已完成（2026-09-04 线上报障修复，commit 90b2bf9）
+
+| 问题 | 来源 | 状态 |
+|------|------|------|
+| ucode LuCI 兼容：dns_staticv6 用 uci:get_first（桥接无此方法）页面崩溃 | [线上实机] | ✅ 已修：first_opt 用 foreach 实现同语义 |
+| CBI 页面（DNS设置/静态IPv6）无页内导航，进入后页签消失 | [线上实机] | ✅ 已修：新增 cbi_nav.htm + Template 节点注入两个 CBI 模型 |
+
 > 待用户决策项：模块化拆分（P3-1）与 CI 增强（P3-2）是否进入 v1.4.6——默认建议推 v1.5+。
 
 ### 7.2 实施批次建议（v1.4.6）
@@ -6377,7 +6459,7 @@ MIT License
 
 ## 第 9 章 快速索引（行号定位表）
 
-> 行号基于 v1.4.5 基线（commit 686582f）。大改动后需同步更新本表。
+> 行号基于 v1.4.5 + 线上修复基线（commit 90b2bf9）。大改动后需同步更新本表。
 
 ### 9.1 后端 netmanager（2197 行）
 
@@ -6429,7 +6511,9 @@ MIT License
 | 文件 | 功能区:行号 |
 |------|------------|
 | dnssettings-apply.sh | 空值防护: 全文贯穿；dhcp_option 待修: L145；WAN 硬编码待修: L68/L97；PPPoE fallback 待去重: L120-132 |
-| dns_staticv6.lua | get_online_devices: L32-152；merge_duplicate_hosts: L157-202；页面加载即执行待修: L207-217；WAN 过滤待修: L96/L131；on_after_commit: L291-294；DUID 校验: L452-465 |
+| dns_staticv6.lua | get_online_devices: L32-166（v1.4.6 已修 get_first→first_opt: L45-54）；merge_duplicate_hosts: L171-216；页面加载即执行待修: L221；cbi_nav 注入: L290；on_before_commit: L293；on_after_commit: L308；DUID 校验: L469-481 |
+| cbi_nav.htm | CBI 专用导航（v1.4.6 新增）：L9-12 requestpath nil 防护；L13-18 内联样式 |
+| dns_settings.lua | cbi_nav 注入: L14-16；按钮 redirect: L111-124 |
 | port_forward.htm | delPort onclick 待修: L104/L110；editPort 已修: L143-157 |
 | common_head.htm | escapeHtml/apiFetch/withBusy: L74-155 |
 | install.sh | 符号链接 /bin/netmanager: L32；版本: L3/L8 |
@@ -6444,10 +6528,10 @@ MIT License
 |----|----|
 | 仓库 | District1655/luci-app-netmanager |
 | 分支 | main |
-| 基线 commit | 686582f |
-| 版本 | v1.4.5（2026-09-04） |
-| 受控文件 | 23 个 |
-| 代码量 | 约 5,800 行（含文档） |
+| 基线 commit | 90b2bf9（代码）/ 本文档随后提交 |
+| 版本 | v1.4.5 + 线上修复（2026-09-04） |
+| 受控文件 | 24 个 |
+| 代码量 | 约 6,000 行（含文档） |
 | CI | GitHub Actions（tag 触发打包+Release） |
 | 推送方式 | SSH |
 | 文档生成 | 本文档由脚本自动嵌入源码 + 手写章节（生成时间见头部） |
