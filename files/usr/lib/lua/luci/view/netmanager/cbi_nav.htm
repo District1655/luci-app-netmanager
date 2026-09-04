@@ -1,0 +1,29 @@
+<%--
+    netmanager/cbi_nav.htm - CBI 页面专用页内导航条
+    用途：DNS设置 / 静态IPv6分配 两个 CBI 表单页面无自绘视图的 nav.htm 页内导航，
+         从自绘页面进入后页签消失（bug2），本模板以 CBI Template 节点注入补齐。
+    特点：自带内联样式（CBI 页面不加载 common_head.htm，不能依赖外部样式类）；
+         active 判断与 nav.htm 一致（requestpath[3]）。
+--%>
+<%
+local path = luci.dispatcher.context.requestpath
+local cur = (type(path) == "table") and (path[3] or "") or ""
+local function url(...) return luci.dispatcher.build_url("admin", "netmanager", ...) end
+local function cls(id) return (cur == id) and ' class="active"' or '' end
+%>
+<style>
+.netmanager-nav { display: flex; gap: 2px; background: #fff; padding: 6px; border-radius: 8px; margin: 0 0 14px 0; box-shadow: 0 1px 2px rgba(0,0,0,0.06); border: 1px solid #e5e7eb; flex-wrap: wrap; }
+.netmanager-nav a { padding: 7px 14px; text-decoration: none; color: #6b7280; border-radius: 6px; font-size: 13px; transition: all 0.15s; }
+.netmanager-nav a:hover { background: #f3f4f6; color: #111827; }
+.netmanager-nav a.active { background: #2563eb; color: #fff; }
+</style>
+<div class="netmanager-nav">
+    <a href="<%=url('overview')%>"<%=cls('overview')%>>📊 系统概览</a>
+    <a href="<%=url('port_forward')%>"<%=cls('port_forward')%>>🔄 端口转发</a>
+    <a href="<%=url('firewall_rules')%>"<%=cls('firewall_rules')%>>📋 规则管理</a>
+    <a href="<%=url('ssh_log')%>"<%=cls('ssh_log')%>>🔐 SSH登录日志</a>
+    <a href="<%=url('access_log')%>"<%=cls('access_log')%>>🌐 端口访问日志</a>
+    <a href="<%=url('dns')%>"<%=cls('dns')%>>🧭 DNS设置</a>
+    <a href="<%=url('dns_staticv6')%>"<%=cls('dns_staticv6')%>>📮 静态IPv6分配</a>
+    <a href="<%=url('settings')%>"<%=cls('settings')%>>⚙️ 设置</a>
+</div>

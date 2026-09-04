@@ -34,13 +34,27 @@ local function get_online_devices()
     local uci = require "uci".cursor()
 
     -- 租约文件路径允许 UCI 覆盖（默认与 OpenWrt 一致）
+    -- v1.4.6 兼容性修复：不再调用 uci:get_first()，改用 foreach 实现同语义。
+    -- 原因：iStoreOS 24.10 / OpenWrt 24.10+ 的 ucode 版 LuCI 中，Lua CBI 经
+    --       ucodebridge 桥接执行，桥接的 uci cursor 没有 get_first 扩展方法，
+    --       报 "attempt to call method 'get_first' (a nil value)"。
+    --       foreach/get/set/commit 桥接均支持（merge_duplicate_hosts 已验证）。
     local dhcp_leasefile = "/tmp/dhcp.leases"
     local od_leasefile = "/tmp/odhcpd.leases"
     if uci then
-        local lf = uci:get_first("dhcp", "dnsmasq", "leasefile")
-        if lf and lf ~= "" then dhcp_leasefile = lf end
-        lf = uci:get_first("dhcp", "odhcpd", "leasefile")
-        if lf and lf ~= "" then od_leasefile = lf end
+        local function first_opt(stype, opt)
+            local v
+            uci:foreach("dhcp", stype, function(sec)
+                if not v and sec[opt] and sec[opt] ~= "" then
+                    v = sec[opt]
+                end
+            end)
+            return v
+        end
+        local lf = first_opt("dnsmasq", "leasefile")
+        if lf then dhcp_leasefile = lf end
+        lf = first_opt("odhcpd", "leasefile")
+        if lf then od_leasefile = lf end
     end
 
     local function ensure(mac_upper)
@@ -271,6 +285,9 @@ if merged_count > 0 then
 end
 
 m = Map("dhcp", translate("静态 IP / IPv6 分配"), desc)
+
+-- v1.4.6 修复：CBI 页面缺少页内导航（从自绘页面进入后页签消失），注入导航模板
+m:append(Template("netmanager/cbi_nav"))
 
 -- 保存前清理幽灵条目（MAC 与 DUID 均为空，避免"消失但占位"无法删除）
 m.on_before_commit = function(self)

@@ -52,7 +52,7 @@ echo "  ✓ model/cbi/netmanager/dns_staticv6.lua"
 echo "[4/7] 复制LuCI视图模板..."
 mkdir -p /usr/lib/lua/luci/view/netmanager
 cp -f "$FILES_DIR/usr/lib/lua/luci/view/netmanager/"*.htm /usr/lib/lua/luci/view/netmanager/
-echo "  ✓ view/netmanager/*.htm (8个文件)"
+echo "  ✓ view/netmanager/*.htm (9个文件)"
 
 echo "[5/7] 复制配置文件..."
 if [ ! -f "/etc/config/netmanager" ]; then
