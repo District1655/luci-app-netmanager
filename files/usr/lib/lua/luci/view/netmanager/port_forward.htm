@@ -14,6 +14,8 @@
             <div>
                 <label>外部端口:</label>
                 <input type="text" id="add_port" placeholder="如 443 或 1000-2000" style="width:120px;">
+                <label>内部端口:</label>
+                <input type="text" id="add_dport" placeholder="留空同外部" style="width:110px;">
                 <label>协议:</label>
                 <select id="add_proto">
                     <option value="tcp">TCP</option>
@@ -36,8 +38,10 @@
         <div class="netmanager-form" id="edit_form" style="display:none;border-left:3px solid #f0ad4e;">
             <div style="margin-bottom:8px;"><b>编辑端口转发</b> <span class="text-muted" id="edit_old_info"></span></div>
             <div>
-                <label>新端口:</label>
-                <input type="text" id="edit_port" placeholder="如 443" style="width:120px;">
+                <label>新外部端口:</label>
+                <input type="text" id="edit_port" placeholder="如 443" style="width:110px;">
+                <label>内部端口:</label>
+                <input type="text" id="edit_dport" placeholder="留空同外部" style="width:110px;">
                 <label>协议:</label>
                 <select id="edit_proto">
                     <option value="tcp">TCP</option>
@@ -70,7 +74,7 @@
         </table>
         <div id="action_result" class="netmanager-result"></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.4.1</div>
+    <div class="footer-sign">网络管理插件 v1.4.2</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -94,7 +98,7 @@ function loadPortList() {
                     const [idx, name, proto, sp, dip, dp, enabled, pkts] = parts;
                     const status = enabled === '1' ? '<span class="badge badge-green">启用</span>' : '<span class="badge badge-gray">禁用</span>';
                     const protoBadge = proto === 'tcp' ? '<span class="badge badge-blue">TCP</span>' : proto === 'udp' ? '<span class="badge badge-purple">UDP</span>' : '<span class="badge badge-blue">TCP+UDP</span>';
-                    ipv4Html += `<tr><td>${name}</td><td>${protoBadge}</td><td><b>${sp}</b></td><td>${dip}:${dp}</td><td>${pkts}</td><td>${status}</td><td><button class="btn btn-primary btn-sm" onclick="editPort('${sp}','${proto}','${dip}')">编辑</button> <button class="btn btn-danger btn-sm" onclick="delPort('${sp}','${proto}')">删除</button></td></tr>`;
+                    ipv4Html += `<tr><td>${name}</td><td>${protoBadge}</td><td><b>${sp}</b></td><td>${dip}:${dp}</td><td>${pkts}</td><td>${status}</td><td><button class="btn btn-primary btn-sm" onclick="editPort('${sp}','${proto}','${dip}','${dp}')">编辑</button> <button class="btn btn-danger btn-sm" onclick="delPort('${sp}','${proto}')">删除</button></td></tr>`;
                 } else if (currentSection === 'ipv6' && parts.length >= 6) {
                     const [idx, name, proto, dp, enabled, pkts] = parts;
                     const status = enabled === '1' ? '<span class="badge badge-green">启用</span>' : '<span class="badge badge-gray">禁用</span>';
@@ -109,15 +113,17 @@ function loadPortList() {
 }
 function addPortForward() {
     const port = document.getElementById('add_port').value.trim();
+    const dport = document.getElementById('add_dport').value.trim();
     const proto = document.getElementById('add_proto').value;
     const target = document.getElementById('add_target').value.trim();
     const ipver = document.getElementById('add_ipver').value;
     if (!port) { alert('请输入端口号'); return; }
-    const body = 'action=port_add&port=' + encodeURIComponent(port) + '&proto=' + proto + '&target=' + encodeURIComponent(target) + '&ipver=' + ipver;
+    const body = 'action=port_add&port=' + encodeURIComponent(port) + '&dport=' + encodeURIComponent(dport) + '&proto=' + proto + '&target=' + encodeURIComponent(target) + '&ipver=' + ipver;
     fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
     .then(r => r.text()).then(data => {
         document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + data + '</pre>';
         document.getElementById('add_port').value = '';
+        document.getElementById('add_dport').value = '';
         document.getElementById('add_target').value = '';
         setTimeout(loadPortList, 400);
     });
@@ -130,7 +136,7 @@ function delPort(port, proto) {
         setTimeout(loadPortList, 300);
     });
 }
-function editPort(port, proto, target) {
+function editPort(port, proto, target, dport) {
     document.getElementById('add_form').style.display = 'none';
     document.getElementById('edit_form').style.display = 'block';
     document.getElementById('edit_old_port').value = port;
@@ -138,6 +144,7 @@ function editPort(port, proto, target) {
     document.getElementById('edit_port').value = port;
     document.getElementById('edit_proto').value = proto;
     document.getElementById('edit_target').value = target || '';
+    document.getElementById('edit_dport').value = dport || '';
     document.getElementById('edit_old_info').textContent = '(原: ' + port + '/' + proto + ')';
     document.getElementById('edit_form').scrollIntoView({behavior:'smooth', block:'center'});
 }
@@ -149,11 +156,12 @@ function savePortEdit() {
     const old_port = document.getElementById('edit_old_port').value;
     const old_proto = document.getElementById('edit_old_proto').value;
     const new_port = document.getElementById('edit_port').value.trim();
+    const new_dport = document.getElementById('edit_dport').value.trim();
     const new_proto = document.getElementById('edit_proto').value;
     const new_target = document.getElementById('edit_target').value.trim();
     const new_ipver = document.getElementById('edit_ipver').value;
     if (!new_port) { alert('请输入新端口号'); return; }
-    const body = 'action=port_edit&old_port=' + encodeURIComponent(old_port) + '&old_proto=' + old_proto + '&new_port=' + encodeURIComponent(new_port) + '&new_proto=' + new_proto + '&new_target=' + encodeURIComponent(new_target) + '&new_ipver=' + new_ipver;
+    const body = 'action=port_edit&old_port=' + encodeURIComponent(old_port) + '&old_proto=' + old_proto + '&new_port=' + encodeURIComponent(new_port) + '&new_dport=' + encodeURIComponent(new_dport) + '&new_proto=' + new_proto + '&new_target=' + encodeURIComponent(new_target) + '&new_ipver=' + new_ipver;
     fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
     .then(r => r.text()).then(data => {
         document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + data + '</pre>';

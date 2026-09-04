@@ -1,6 +1,6 @@
 # 网络管理插件 (luci-app-netmanager)
 
-> 版本：v1.4.1
+> 版本：v1.4.2
 >
 > 适配：iStoreOS / OpenWrt (fw4/nftables, Lua LuCI)
 >
@@ -111,9 +111,9 @@ netmanager overview
 
 # 端口转发
 netmanager port_list
-netmanager port_add <外部端口> <tcp|udp|both> <目标IP> <ipv4|ipv6|both>
+netmanager port_add <外部端口> <tcp|udp|both> <目标IP> <ipv4|ipv6|both> [内部端口]
 netmanager port_del <外部端口> <协议>
-netmanager port_edit <旧端口> <旧协议> <新端口> <新协议> <目标IP> <类型>
+netmanager port_edit <旧端口> <旧协议> <新端口> <新协议> <目标IP> <类型> [新内部端口]
 
 # 防火墙规则
 netmanager rule_list
@@ -225,6 +225,14 @@ config actions 'actions'  # 操作按钮占位
 5. 更新前建议先备份配置；只支持 `.tar.gz` 或 `.tgz` 格式
 
 ## 更新日志
+
+### v1.4.2 (2026-09-04)
+
+- **修复：端口转发支持外部端口与内部端口不一致映射**（如外部 80 → 内部 8080）。此前后端将 `dest_port` 硬编码为外部端口，内外只能同端口
+- 页面「添加端口转发」与「编辑」表单新增**内部端口**输入框，留空则与外部端口一致（兼容旧用法）
+- 命令行 `port_add` / `port_edit` 新增可选内部端口参数（置于末位，旧命令行为不变）
+- 内部端口格式校验：仅允许数字或横线范围（`8080` / `1000-2000`），冒号自动转横线
+- IPv6 放行规则不受影响（放行无 DNAT，端口不变）；命中数统计仍按外部端口计数
 
 ### v1.4.1 (2026-09-03)
 

@@ -120,13 +120,19 @@ function api_handler()
         local proto = luci.http.formvalue("proto") or "tcp"
         local target = luci.http.formvalue("target") or ""
         local ipver = luci.http.formvalue("ipver") or "both"
+        local dport = luci.http.formvalue("dport") or ""
+        local function arg(v)
+            if v == "" then return "''" end
+            return shell_escape(v)
+        end
         -- 关键修复：target为空时不传第3参数，避免shell吞掉空参数导致错位
+        -- dport为内部端口，留空传''占位（后端默认与外部端口一致）
         if target ~= "" then
-            cmd = string.format("/usr/sbin/netmanager port_add %s %s %s %s",
-                shell_escape(port), shell_escape(proto), shell_escape(target), shell_escape(ipver))
+            cmd = string.format("/usr/sbin/netmanager port_add %s %s %s %s %s",
+                shell_escape(port), shell_escape(proto), shell_escape(target), shell_escape(ipver), arg(dport))
         else
-            cmd = string.format("/usr/sbin/netmanager port_add %s %s '' %s",
-                shell_escape(port), shell_escape(proto), shell_escape(ipver))
+            cmd = string.format("/usr/sbin/netmanager port_add %s %s '' %s %s",
+                shell_escape(port), shell_escape(proto), shell_escape(ipver), arg(dport))
         end
     elseif action == "port_del" then
         local port = luci.http.formvalue("port") or ""
@@ -139,14 +145,15 @@ function api_handler()
         local new_proto = luci.http.formvalue("new_proto") or "tcp"
         local new_target = luci.http.formvalue("new_target") or ""
         local new_ipver = luci.http.formvalue("new_ipver") or "both"
+        local new_dport = luci.http.formvalue("new_dport") or ""
         local function arg(v)
             if v == "" then return "''" end
             return shell_escape(v)
         end
-        cmd = string.format("/usr/sbin/netmanager port_edit %s %s %s %s %s %s",
+        cmd = string.format("/usr/sbin/netmanager port_edit %s %s %s %s %s %s %s",
             shell_escape(old_port), shell_escape(old_proto),
             shell_escape(new_port), shell_escape(new_proto),
-            arg(new_target), shell_escape(new_ipver))
+            arg(new_target), shell_escape(new_ipver), arg(new_dport))
     elseif action == "rule_list" then
         cmd = "/usr/sbin/netmanager rule_list"
     elseif action == "rule_add" then

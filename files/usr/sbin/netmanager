@@ -12,7 +12,7 @@ LOG_FILE="$LOG_DIR/run.log"
 LOG_ENABLED=0
 
 # 在线更新配置：版本号与 GitHub 仓库（发版时同步修改 PLUGIN_VERSION）
-PLUGIN_VERSION="1.4.1"
+PLUGIN_VERSION="1.4.2"
 REPO_OWNER="District1655"
 REPO_NAME="luci-app-netmanager"
 REPO_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
@@ -327,13 +327,23 @@ cmd_port_list() {
 
 # ========== 3. 添加端口转发 ==========
 cmd_port_add() {
-    port="$1"; proto="$2"; target="$3"; ipver="$4"
-    [ -z "$port" ] && { error "用法: netmanager port_add <端口> <tcp|udp|both> [目标IP] [v4|v6|both]"; exit 1; }
-    write_log "INFO" "port_add: 请求添加 端口=$port 协议=$proto 目标=$target 版本=$ipver"
+    port="$1"; proto="$2"; target="$3"; ipver="$4"; dport="$5"
+    [ -z "$port" ] && { error "用法: netmanager port_add <外部端口> <tcp|udp|both> [目标IP] [v4|v6|both] [内部端口]"; exit 1; }
+    write_log "INFO" "port_add: 请求添加 外部端口=$port 协议=$proto 目标=$target 版本=$ipver 内部端口=${dport:-同外部}"
     [ -z "$proto" ] && proto="tcp"
     load_config
     # 端口格式标准化：冒号转横线（OpenWrt要求 999-1520 而非 999:1520）
     port=$(echo "$port" | sed 's/:/-/g')
+    dport=$(echo "$dport" | sed 's/:/-/g')
+    # 内部端口：留空则与外部端口一致；非空仅允许数字/横线范围格式
+    if [ -n "$dport" ]; then
+        case "$dport" in
+            *[!0-9-]*|-*) error "内部端口格式无效: $dport (应为 8080 或 1000-2000)"; exit 1 ;;
+            *-|*-*-*) error "内部端口格式无效: $dport (应为 8080 或 1000-2000)"; exit 1 ;;
+        esac
+    else
+        dport="$port"
+    fi
     if [ -n "$target" ]; then
         case "$target" in
             both|v4|v6)
@@ -369,9 +379,9 @@ cmd_port_add() {
                 uci set firewall.@redirect[-1].src_dport="$port"
                 uci set firewall.@redirect[-1].dest="lan"
                 uci set firewall.@redirect[-1].dest_ip="$target"
-                uci set firewall.@redirect[-1].dest_port="$port"
+                uci set firewall.@redirect[-1].dest_port="$dport"
                 uci set firewall.@redirect[-1].target="DNAT"
-                info "IPv4 DNAT: $port/$p -> $target:$port"
+                info "IPv4 DNAT: $port/$p -> $target:$dport"
             else
                 warn "IPv4已存在: $port/$p"
             fi
@@ -416,16 +426,24 @@ cmd_port_add() {
 
 # ========== 4. 编辑端口转发 ==========
 cmd_port_edit() {
-    old_port="$1"; old_proto="$2"; new_port="$3"; new_proto="$4"; new_target="$5"; new_ipver="$6"
-    [ -z "$old_port" ] && { error "用法: netmanager port_edit <旧端口> <旧协议> <新端口> <新协议> <新目标IP> [v4|v6|both]"; exit 1; }
+    old_port="$1"; old_proto="$2"; new_port="$3"; new_proto="$4"; new_target="$5"; new_ipver="$6"; new_dport="$7"
+    [ -z "$old_port" ] && { error "用法: netmanager port_edit <旧端口> <旧协议> <新端口> <新协议> <新目标IP> [v4|v6|both] [新内部端口]"; exit 1; }
     [ -z "$old_proto" ] && old_proto="tcp"
     [ -z "$new_proto" ] && new_proto="tcp"
     load_config
     [ -z "$new_target" ] && new_target="$DEFAULT_TARGET"
     [ -z "$new_ipver" ] && new_ipver="both"
-    # 端口格式标准化
+    # 新内部端口：留空则与新外部端口一致
+    [ -z "$new_dport" ] && new_dport="$new_port"
+    # 端口格式标准化（冒号转横线，OpenWrt要求 999-1520 而非 999:1520）
     new_port=$(echo "$new_port" | sed 's/:/-/g')
     old_port=$(echo "$old_port" | sed 's/:/-/g')
+    new_dport=$(echo "$new_dport" | sed 's/:/-/g')
+    # 内部端口格式校验：仅允许数字/横线范围（须在冒号转换之后进行）
+    case "$new_dport" in
+        *[!0-9-]*|-*) error "内部端口格式无效: $new_dport (应为 8080 或 1000-2000)"; exit 1 ;;
+        *-|*-*-*) error "内部端口格式无效: $new_dport (应为 8080 或 1000-2000)"; exit 1 ;;
+    esac
 
     modified=0
     # 生成要匹配的协议列表（处理 both/tcpudp/空值）
@@ -457,11 +475,11 @@ cmd_port_edit() {
                         info "删除IPv4转发: $old_port/$pr"
                     else
                         uci set firewall.@redirect[$idx].src_dport="$new_port"
-                        uci set firewall.@redirect[$idx].dest_port="$new_port"
+                        uci set firewall.@redirect[$idx].dest_port="$new_dport"
                         uci set firewall.@redirect[$idx].proto="$new_proto"
                         uci set firewall.@redirect[$idx].dest_ip="$new_target"
                         uci set firewall.@redirect[$idx].name="Forward-${new_port}"
-                        info "更新IPv4转发: $old_port/$pr -> $new_port/$new_proto -> $new_target"
+                        info "更新IPv4转发: $old_port/$pr -> 外部$new_port/内部$new_dport -> $new_target"
                     fi
                     modified=1
                     break 2
