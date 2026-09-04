@@ -114,12 +114,12 @@
         </div>
         <div id="action_result" class="netmanager-result"></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.4.5</div>
+    <div class="footer-sign">网络管理插件 v1.4.6</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
 function loadRuleList() {
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=rule_list'})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=rule_list'})
     .then(r => r.text()).then(data => {
         let html = '';
         // 【安全】行数据存入 JS 数组，onclick 只传纯数字下标，杜绝 UCI 自由文本注入 onclick
@@ -152,7 +152,7 @@ function addRule() {
         target:document.getElementById('rule_target').value,
         family:document.getElementById('rule_family').value
     });
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
     .then(r => r.text()).then(data => {
         document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         document.getElementById('rule_name').value = '';
@@ -162,7 +162,7 @@ function addRule() {
 }
 function delRule(idx) {
     if (!confirm('确定删除规则 #' + idx + ' ?')) return;
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=rule_del&idx=' + idx})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=rule_del&idx=' + idx})
     .then(r => r.text()).then(data => {
         document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         setTimeout(loadRuleList, 1500);
@@ -200,7 +200,7 @@ function saveRuleEdit() {
         target:document.getElementById('edit_target').value,
         family:document.getElementById('edit_family').value
     });
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
     .then(r => r.text()).then(data => {
         document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         cancelRuleEdit();

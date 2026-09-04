@@ -1,6 +1,6 @@
 # 网络管理插件 (luci-app-netmanager)
 
-> 版本：v1.4.5
+> 版本：v1.4.6
 >
 > 适配：iStoreOS / OpenWrt (fw4/nftables, Lua LuCI)
 >
@@ -220,11 +220,42 @@ config actions 'actions'  # 操作按钮占位
 
 1. DNS「应用配置」会重启网络服务，期间会短暂断网
 2. 设备端 DNS 有缓存，重连网络后才会拿到新 DNS
-3. 如果 WAN 接口名不是 `wan` 或 `wan6`，请在 `dnssettings-apply.sh` 中修改对应接口名
+ 3. v1.4.6+ WAN 接口自动探测（默认路由反查），自定义接口名可在 `dnssettings` 配置 `wan_iface`/`wan6_iface` 显式指定
 4. DNS 备份文件保存在 `/root/backup/`，防火墙配置备份保存在 `/root/`
 5. 更新前建议先备份配置；只支持 `.tar.gz` 或 `.tgz` 格式
 
 ## 更新日志
+
+### v1.4.6 (2026-09-04)
+
+**安全加固（阶段一 P0 全量落地）**
+
+- **新增 CSRF Token 校验**：API 此前仅强制 POST，跨站恶意页面仍可构造自动提交的 `<form method=POST>` 携带登录 cookie 触发卸载/关闭过滤等危险操作；现每个请求必须携带由会话派生的 token（`csrf_token`，视图渲染时注入 `common_head.htm`，`apiFetch`/`nmFetch` 自动附带），跨站页面无法获得 → 返回 403；无 token 的 curl 直接调用被拒绝
+- **在线更新 sha256 供应链校验**：CI 为 Release 生成 `.tar.gz.sha256` 校验资产，`update_apply` 下载后自动校验 sha256（GitHub 账号被入侵/镜像劫持注入恶意包时拦截并放弃更新）；旧版本 Release 无校验资产时 warn 跳过（向后兼容）
+- **镜像域名白名单**：`set_update_mirror` 与已保存镜像均须通过域名白名单校验（拒绝裸 IP/localhost/非白名单域名），防镜像前缀被注入指向攻击者服务器
+- **上传文件权限收紧**：上传的插件包/配置文件统一 `chmod 600`（其他本地用户不可读）
+- **卸载保留登录会话**：卸载不再删除 `/tmp/luci-sessions`（此前会踢掉所有登录用户导致看不到卸载结果页），仅清 LuCI 页面缓存
+- **XSS 补漏 3 处**：中国IP过滤状态单元格（上次更新时间/CIDR条数/WAN设备名）、备份列表文件名（并改数组下标传参杜绝 onclick 注入）、修复 `restoreBackup`/`deleteBackup` 的自由文本入 onclick
+- **multipart 上传加固**：50MB 大小上限（超限即丢弃，防 /tmp tmpfs OOM）；临时文件名加时间戳+随机数（防同秒并发上传互相覆盖）
+- **logger 控制字符过滤**：DNS 应用脚本写入 syslog 前剔除控制字符（防日志注入转义序列）
+
+**功能与逻辑修复**
+
+- **DNS 应用按钮 POST 化**：`dns_apply`/`dns_backup` 由独立 GET 路由并入 `api_handler` 的 POST action（此前浏览器刷新页面即重复执行应用/备份）；CBI「应用配置」按钮直接执行脚本并显示成功/失败结果（alert 消息，含退出码）
+- **DNS 应用脚本 WAN 接口自动探测**：不再硬编码 `network.wan`/`network.wan6`，按「用户显式配置（`wan_iface`/`wan6_iface`）→ 默认路由反查 → 兜底 wan/wan6」三级探测；`pppoe-wan` 等自定义接口名可正确写入
+- **PPPoE 双栈 fallback 去重**：IPv6 DNS 并入 `wan.dns` 前先 delete 全量重写（修复重复应用配置时 `add_list` 逐次累积导致 DNS 列表无限增长）
+- **`dhcp_option` list 化**：改为 `delete + add_list` 正确写法（UCI 中是 list 类型，旧 `uci set` 单值写法在多实例残留时行为未定义）
+- **静态 IPv6 分配页**：
+  - 重复 MAC 条目合并改为「页面只检测提示、点保存才真正合并」（此前每次打开页面 GET 刷新即静默 commit 修改 `/etc/config/dhcp`）
+  - DUID 自动捕获排除「MAC 原文型」与「01+MAC 硬件型」伪 DUID（此前会被误存为 DUID 导致绑定错乱）
+  - 在线设备 WAN 侧过滤覆盖 `pppoe-wan`/`pppoe-wan6` 等 PPPoE 接口命名（此前仅匹配 `wan` 前缀，PPPoE 拨号对端会被误列为 LAN 设备）
+  - `odhcpd` 改为按需重启（仅本次有实际改动才 restart，无改动保存不再重置 IPv6 租约）；CBI 页面注入页内导航（修复从自绘页面进入后页签消失）
+- **控制器健壮性**：`arg()` 空参数包装函数提取为模块级（原 4 处重复定义）；DNS 动作单次调用同时捕获输出与退出码（`__RC__` 标记法，脚本失败不再静默当成功）
+
+**工程化**
+
+- **CI 语法门禁**：打包前强制 `sh -n`（6 个 shell 脚本）+ `luac -p`（全部 Lua 文件）语法检查，失败即终止流水线；打包后 `tar tzf` 产物预检
+- **仓库补齐 LICENSE 文件**（README 早已声明 MIT）
 
 ### v1.4.5 (2026-09-04)
 

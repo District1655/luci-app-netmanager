@@ -46,6 +46,50 @@ jobs:
             echo "Tag ${TAG} 不存在，开始打包发布"
           fi
 
+      # 【v1.4.6 CI 门禁】语法检查：任何 shell 脚本或 Lua 文件语法错误即终止流水线
+      - name: Shell & Lua syntax check (gate)
+        if: steps.check.outputs.exists == 'false' || inputs.force == true
+        run: |
+          FAIL=0
+          echo "===== Shell 语法检查 (sh -n) ====="
+          for f in files/usr/sbin/netmanager \
+                   files/usr/sbin/dnssettings-apply.sh \
+                   files/usr/sbin/dnssettings-backup.sh \
+                   install.sh \
+                   files/etc/init.d/netmanager-china \
+                   files/etc/hotplug.d/iface/95-netmanager-china; do
+            if [ -f "$f" ]; then
+              if sh -n "$f"; then
+                echo "PASS: $f"
+              else
+                echo "FAIL: $f"
+                FAIL=1
+              fi
+            else
+              echo "WARN: $f 不存在（跳过）"
+            fi
+          done
+          echo "===== Lua 语法检查 (luac -p) ====="
+          sudo apt-get update -qq && sudo apt-get install -y -qq lua5.1 >/dev/null
+          FOUND_LUA=0
+          while IFS= read -r f; do
+            FOUND_LUA=1
+            if luac5.1 -p "$f" 2>&1; then
+              echo "PASS: $f"
+            else
+              echo "FAIL: $f"
+              FAIL=1
+            fi
+          done < <(find files/usr/lib/lua -name '*.lua' 2>/dev/null)
+          if [ "$FOUND_LUA" = "0" ]; then
+            echo "WARN: 未找到任何 .lua 文件"
+          fi
+          if [ "$FAIL" = "1" ]; then
+            echo "::error::语法检查未通过，流水线终止（修复后再发布）"
+            exit 1
+          fi
+          echo "===== 全部语法检查通过 ====="
+
       - name: Build tar.gz install package
         if: steps.check.outputs.exists == 'false' || inputs.force == true
         run: |
@@ -54,6 +98,14 @@ jobs:
           # 使用 GNU tar --owner=0 --group=0 保证在路由器上属主正确；--mode 保证脚本可执行
           tar --owner=0 --group=0 --mode='u=rwX,go=rX' -czvf luci-app-netmanager-install_${{ steps.version.outputs.tag }}.tar.gz install.sh files/
           ls -lh luci-app-netmanager-install_*.tar.gz
+          # 【v1.4.6】产物校验：打包后 tar tzf 预检成员完整可读 + 生成 sha256（供 update_apply 校验）
+          echo "===== 产物 tar 完整性预检 ====="
+          tar tzf luci-app-netmanager-install_*.tar.gz >/dev/null && echo "tar 预检通过"
+          echo "===== 生成 sha256 校验文件 ====="
+          for f in luci-app-netmanager-install_*.tar.gz; do
+            sha256sum "$f" > "${f}.sha256"
+            cat "${f}.sha256"
+          done
 
       - name: Create and push tag
         if: steps.check.outputs.exists == 'false' || inputs.force == true
@@ -85,7 +137,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
-          files: luci-app-netmanager-install_*.tar.gz
+          files: |
+            luci-app-netmanager-install_*.tar.gz
+            luci-app-netmanager-install_*.tar.gz.sha256
           generate_release_notes: true
           body: |
             ## 网络管理插件 ${{ steps.version.outputs.tag }}

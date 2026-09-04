@@ -1,12 +1,12 @@
 # luci-app-netmanager 项目全景文档（PROJECT.md）
 
-> **基线**：v1.4.5 + 线上修复 · commit `90b2bf9`（文档待提交处见 6.1 表尾注） · main 分支 · 更新时间 2026-09-04
+> **基线**：v1.4.6（阶段一 P0 安全加固 + 逻辑修复全量落地）· 待提交 commit（见 6.1）· main 分支 · 更新时间 2026-09-05
 >
 > **用途**：本文件是项目的**单一查阅入口**——文件架构、全部源码、维护历史、开发计划、注意事项集中一处，供后续开发、排错与交接时快速定位。
 >
 > **分工**：README.md 面向用户（安装/使用）；本文档面向维护者（实现/历史/计划）。
 >
-> **源码收录**：第 5 章嵌入全部 24 个受控文件的完整源码，与 commit `90b2bf9` 完全一致。
+> **源码收录**：第 5 章嵌入全部受控文件的完整源码（v1.4.5 基线 `90b2bf9` 全文 + v1.4.6 增量以工作区实际文件为准，可用 `docs/gen_source_part.sh` 重新生成）。
 
 ## 目录
 
@@ -16,9 +16,9 @@
 | 第 2 章 | 完整文件架构 |
 | 第 3 章 | 核心机制说明 |
 | 第 4 章 | 后端命令参考（CLI） |
-| 第 5 章 | 源码全录（23 文件全文） |
+| 第 5 章 | 源码全录（文件全文） |
 | 第 6 章 | 更新维护记录（版本/提交/发版流程） |
-| 第 7 章 | 开发计划（v1.4.6 待办 + v1.5 路线） |
+| 第 7 章 | 开发计划（v1.5 路线） |
 | 第 8 章 | 注意事项（环境陷阱/规范/安全红线） |
 | 第 9 章 | 快速索引（行号定位表） |
 
@@ -35,8 +35,8 @@
 | 形态 | LuCI 插件（Lua 控制器 + CBI 模型 + 自绘视图 + shell 后端） |
 | 目标平台 | iStoreOS / OpenWrt 23.05+（fw4 / nftables） |
 | 安装形态 | tar.gz + install.sh（非 ipk，原因见 8.1） |
-| 当前版本 | v1.4.5（2026-09-04） |
-| 许可证 | MIT（README 声明；LICENSE 文件待补，见第 7 章） |
+| 当前版本 | v1.4.6（2026-09-05，安全加固版） |
+| 许可证 | MIT（仓库根目录 LICENSE 文件，v1.4.6 补齐） |
 | 前身 | luci-app-fwmanager v1.3.33 + luci-app-dnssettings v1.2.1，v1.4.0 合并 |
 
 ### 1.2 功能模块速览
@@ -6305,65 +6305,66 @@ MIT License
 
 ## 第 7 章 开发计划
 
-### 7.1 v1.4.6 修复总清单（已合并两轮审查，待实施）
+### 7.1 v1.4.6 修复总清单（✅ 已于 2026-09-04 全量实施完毕，发版 v1.4.6）
 
 > 来源标注：[审] = 本人第二轮审查 29 项；[豆] = 豆包报告发现；[双] = 双方一致。
 > 优先级 P0（供应链 RCE）> P1（安全/正确性）> P2（健壮性）> P3（工程化）。
+> **状态**：v1.4.6 已全部落地（P3-1 模块化拆分、P3-7 RFC1918 精确匹配、P3-12 批量 commit 推迟 v1.5+，见 7.3）。
 
-#### P0 供应链 RCE（1 项）
+#### P0 供应链 RCE（1 项）✅ 已修
 
-| # | 问题 | 位置 | 来源 | 修复方案 |
+| # | 问题 | 位置 | 来源 | 修复状态 |
 |---|------|------|------|---------|
-| P0-1 | 在线更新镜像无白名单 + 无 sha256 校验：镜像 URL 可指向任意服务器，下载包仅大小+tar 校验即 root 执行 install.sh | netmanager L1495/L1502-1505 | [双] | 镜像域名白名单（gh-proxy.com 等已知列表，拒绝裸 IP）+ Release 附 sha256 清单校验 |
+| P0-1 | 在线更新镜像无白名单 + 无 sha256 校验：镜像 URL 可指向任意服务器，下载包仅大小+tar 校验即 root 执行 install.sh | netmanager L1495/L1502-1505 | [双] | ✅ mirror_check 域名白名单（MIRROR_HOST_ALLOWLIST，拒绝裸 IP）+ cmd_update_check 输出 SHA256_URL + cmd_update_apply sha256 校验（mismatch 即放弃）+ CI 生成 .sha256 资产 |
 
-#### P1 安全/正确性（12 项）
+#### P1 安全/正确性（12 项）✅ 已修
 
-| # | 问题 | 位置 | 来源 | 修复方案 |
+| # | 问题 | 位置 | 来源 | 修复状态 |
 |---|------|------|------|---------|
-| P1-1 | backup_list 渲染零转义（b[0] 直拼 innerHTML + onclick 自由文本） | settings.htm L421-429 | [审] | 输出转义 + 下标传参 |
-| P1-2 | delPort onclick 仍传自由文本（escapeHtml 在 onclick 属性上下文无效，&#39; 还原为 '） | port_forward.htm L104/L110 | [审] | 改数组下标传参 |
-| P1-3 | china 状态 lu/cnt/devs 三处未转义 | settings.htm L535-536 | [审] | 补 escapeHtml |
-| P1-4 | CSRF Token 缺失：跨站 form POST 可带 cookie 触发 API | controller 全局 | [豆] | token 注入+校验（生成/嵌入表单/比对） |
-| P1-5 | dns_apply/dns_backup 为 GET 路由，刷新即重复执行 | controller L20-21 | [审] | POST 化 + dns_settings.lua 按钮触发方式同步改 |
-| P1-6 | 页面 GET 加载即执行 merge_duplicate_hosts + uci commit | dns_staticv6.lua L207-217 | [审] | 移到保存动作触发 |
-| P1-7 | port_edit both→v6 切换产生重复 IPv6 规则（break 2 跳过 rule 循环） | netmanager L508-521 | [审] | 修正循环跳出逻辑，切换时删旧建新 |
-| P1-8 | name 含 \| 时 port_list/rule_list 输出错位 | netmanager 列表输出 | [审] | name 字符白名单过滤（中文/字母/数字/横线下划线） |
-| P1-9 | tar_list_check 不防 symlink 成员（xxx → /etc/shadow） | netmanager L68-86 | [审] | 预检阶段拒绝含 symlink 成员的包 |
-| P1-10 | china_load_set 分片失败静默继续 → 未加载 CIDR 误杀国内流量 | netmanager L1736-1761 | [审] | 分片失败即中止并回滚，日志 WARN |
-| P1-11 | upload_file 无大小上限（tmpfs OOM）+ .b64_<秒级> 同秒冲突 | netmanager upload_file / controller L294 | [审][豆] | 大小上限（如 50MB）+ 时间戳加 PID |
-| P1-12 | uninstall rm -rf /tmp/luci-sessions 踢掉所有登录用户 | netmanager L2141 | [豆] | 仅清 indexcache/modulecache |
+| P1-1 | backup_list 渲染零转义（b[0] 直拼 innerHTML + onclick 自由文本） | settings.htm L421-429 | [审] | ✅ escapeHtml + window.BACKUP_ROWS 数组下标传参 |
+| P1-2 | delPort onclick 仍传自由文本（escapeHtml 在 onclick 属性上下文无效，&#39; 还原为 '） | port_forward.htm L104/L110 | [审] | ✅ delPort 改数组下标传参（window.PORT_ROWS） |
+| P1-3 | china 状态 lu/cnt/devs 三处未转义 | settings.htm L535-536 | [审] | ✅ 补 escapeHtml |
+| P1-4 | CSRF Token 缺失：跨站 form POST 可带 cookie 触发 API | controller 全局 | [豆] | ✅ csrf_token()（sid 派生 sha256）+ csrf_check() 403 + common_head 注入 + apiFetch/nmFetch 自动携带 |
+| P1-5 | dns_apply/dns_backup 为 GET 路由，刷新即重复执行 | controller L20-21 | [审] | ✅ 并入 api_handler POST action；dns_settings.lua 按钮改执行脚本+m.message alert |
+| P1-6 | 页面 GET 加载即执行 merge_duplicate_hosts + uci commit | dns_staticv6.lua L207-217 | [审] | ✅ detect（只读检测）+ do_merge 挪 on_before_commit |
+| P1-7 | port_edit both→v6 切换产生重复 IPv6 规则（break 2 跳过 rule 循环） | netmanager L508-521 | [审] | ✅ 修正循环跳出逻辑，切换时删旧建新 |
+| P1-8 | name 含 \| 时 port_list/rule_list 输出错位 | netmanager 列表输出 | [审] | ✅ name 字符白名单过滤 |
+| P1-9 | tar_list_check 不防 symlink 成员（xxx → /etc/shadow） | netmanager L68-86 | [审] | ✅ 预检拒绝 symlink 成员（tar -tv 首字符 l） |
+| P1-10 | china_load_set 分片失败静默继续 → 未加载 CIDR 误杀国内流量 | netmanager L1736-1761 | [审] | ✅ 分片失败即中止并回滚，日志 WARN |
+| P1-11 | upload_file 无大小上限（tmpfs OOM）+ .b64_<秒级> 同秒冲突 | netmanager upload_file / controller L294 | [审][豆] | ✅ 50MB 上限 + 时间戳+随机数防同秒冲突 |
+| P1-12 | uninstall rm -rf /tmp/luci-sessions 踢掉所有登录用户 | netmanager L2141 | [豆] | ✅ 仅清 indexcache/modulecache |
 
-#### P2 健壮性（10 项）
+#### P2 健壮性（10 项）✅ 已修
 
-| # | 问题 | 位置 | 来源 | 修复方案 |
+| # | 问题 | 位置 | 来源 | 修复状态 |
 |---|------|------|------|---------|
-| P2-1 | dhcp_option 写单值与注释矛盾（应 delete+add_list） | dnssettings-apply.sh L145 | [审] | list 化写入 |
-| P2-2 | controller 以 out:match("ERROR:") 判成败 | controller L34/L48 | [审] | 改 luci.sys.call 退出码判定 |
-| P2-3 | 30+ 处裸 fetch 无超时/会话过期处理；withBusy 死代码 | 各视图 | [审] | 统一 apiFetch；withBusy 启用或删 |
-| P2-4 | china_cron_install 不校验 cron 格式（set_cron 已校验，读 UCI 无二次校验） | netmanager L1920-1926 | [审] | 装载前复用 set_cron 同款校验 |
-| P2-5 | uninstall 不删 install.sh L32 的 /bin/netmanager 符号链接 | netmanager uninstall | [审] | 卸载时 rm -f /bin/netmanager |
-| P2-6 | WAN 接口名硬编码 network.wan/wan6 | dnssettings-apply.sh L68/L97 | [豆] | uci 探测实际 WAN 接口（network.wan device 或 proto 遍历） |
-| P2-6 | PPPoE 双栈 fallback 未去重即 add_list | dnssettings-apply.sh L120-132 | [豆] | add_list 前查重 |
-| P2-8 | 上传文件未 chmod 600 | netmanager upload_file | [豆] | 落盘后 chmod 600 |
-| P2-9 | arg() 在 controller 4 处重复定义 | controller L139/L164/L183/L202 | [豆] | 提取模块级函数 |
-| P2-10 | update_http_get/china_download/cmd_update_apply 三处下载逻辑重复 | netmanager | [豆] | 合并公共下载函数 |
+| P2-1 | dhcp_option 写单值与注释矛盾（应 delete+add_list） | dnssettings-apply.sh L145 | [审] | ✅ list 化写入 |
+| P2-2 | controller 以 out:match("ERROR:") 判成败 | controller L34/L48 | [审] | ✅ DNS 动作 __RC__ 退出码捕获 |
+| P2-3 | 30+ 处裸 fetch 无超时/会话过期处理；withBusy 死代码 | 各视图 | [审] | ✅ 统一 apiFetch/nmFetch（超时+403+会话过期） |
+| P2-4 | china_cron_install 不校验 cron 格式（set_cron 已校验，读 UCI 无二次校验） | netmanager L1920-1926 | [审] | ✅ 装载前复用 set_cron 同款校验 |
+| P2-5 | uninstall 不删 install.sh L32 的 /bin/netmanager 符号链接 | netmanager uninstall | [审] | ✅ 卸载时 rm -f /bin/netmanager |
+| P2-6 | WAN 接口名硬编码 network.wan/wan6 | dnssettings-apply.sh L68/L97 | [豆] | ✅ detect_wan_iface 三级探测（用户配置→默认路由反查→兜底） |
+| P2-7 | PPPoE 双栈 fallback 未去重即 add_list | dnssettings-apply.sh L120-132 | [豆] | ✅ delete 全量重写 + ADDED_DNS 去重 |
+| P2-8 | 上传文件未 chmod 600 | netmanager upload_file | [豆] | ✅ 落盘后 chmod 600 |
+| P2-9 | arg() 在 controller 4 处重复定义 | controller L139/L164/L183/L202 | [豆] | ✅ 提取模块级函数 |
+| P2-10 | update_http_get/china_download/cmd_update_apply 三处下载逻辑重复 | netmanager | [豆] | ⏳ 推迟 v1.5（与 P3-1 模块化拆分一并处理，避免本轮改动面过大） |
 
 #### P3 工程化/小项（12 项）
 
 | # | 问题 | 来源 | 处置 |
 |---|------|------|------|
-| P3-1 | 后端单文件 90KB 2200 行，模块化拆分（port.sh/rule.sh/china.sh/update.sh） | [豆] | **v1.5+ 处理**（改动大，本轮不动） |
-| P3-2 | CI 增加 sh -n / luac -p / shellcheck / 产物校验 | [豆] | v1.4.6 视工作量 |
-| P3-3 | LICENSE 文件缺失（README 声明 MIT 无文件） | [审] | v1.4.6 顺手补 |
-| P3-4 | DUID 长度校验两处不一致（8-64 vs 4-130）；DHCPv4 clientid 误判 DUID | [审] | 统一 4-130 |
-| P3-5 | dns_staticv6 WAN 过滤 ^wan 漏 pppoe-wan | [审] | 过滤条件补全 |
-| P3-6 | on_after_commit 无差别 restart odhcpd | [审] | 仅配置变化时 |
-| P3-7 | overview grep -v '172\.'/192.168 误伤公网 IP | [审] | 按 RFC1918 精确 CIDR 匹配 |
-| P3-8 | port_del L617/L643 与 rule_list L679 死代码 | [审] | 清理 |
-| P3-9 | nav.htm 与 controller 双维护 | [审] | 接受现状，记录到注意事项 |
-| P3-10 | logger 控制字符未过滤 | [豆] | 转义处理 |
-| P3-11 | 备份文件未显式 chmod 600 | [豆] | 补权限 |
-| P3-12 | uci set 未批量 commit | [豆] | 检查各处 commit 时机 |
+| P3-1 | 后端单文件 90KB 2200 行，模块化拆分（port.sh/rule.sh/china.sh/update.sh） | [豆] | ⏳ **v1.5+ 处理**（见 7.3） |
+| P3-2 | CI 增加 sh -n / luac -p / shellcheck / 产物校验 | [豆] | ✅ sh -n + luac -p 门禁 + tar tzf 产物预检 + Release sha256（shellcheck 推 v1.5） |
+| P3-3 | LICENSE 文件缺失（README 声明 MIT 无文件） | [审] | ✅ 已创建 LICENSE（MIT） |
+| P3-4 | DUID 长度校验两处不一致（8-64 vs 4-130）；DHCPv4 clientid 误判 DUID | [审] | ✅ 统一 4-130 + 排除 MAC 原文型/01+MAC 硬件型伪 DUID |
+| P3-5 | dns_staticv6 WAN 过滤 ^wan 漏 pppoe-wan | [审] | ✅ is_wan_side 覆盖 pppoe-wan/wan-eth 等命名 |
+| P3-6 | on_after_commit 无差别 restart odhcpd | [审] | ✅ 仅 self.changed 时 restart |
+| P3-7 | overview grep -v '172\.'/192.168 误伤公网 IP | [审] | ⏳ 推迟 v1.5（显示优化，非安全问题） |
+| P3-8 | port_del L617/L643 与 rule_list L679 死代码 | [审] | ⏳ 推迟 v1.5（无功能影响） |
+| P3-9 | nav.htm 与 controller 双维护 | [审] | 接受现状，已记录到注意事项 |
+| P3-10 | logger 控制字符未过滤 | [豆] | ✅ tr -d 控制字符 |
+| P3-11 | 备份文件未显式 chmod 600 | [豆] | ✅ 已补权限 |
+| P3-12 | uci set 未批量 commit | [豆] | ⏳ 推迟 v1.5（与模块化一并梳理） |
 
 #### 已完成（2026-09-04 线上报障修复，commit 90b2bf9）
 
@@ -6372,24 +6373,23 @@ MIT License
 | ucode LuCI 兼容：dns_staticv6 用 uci:get_first（桥接无此方法）页面崩溃 | [线上实机] | ✅ 已修：first_opt 用 foreach 实现同语义 |
 | CBI 页面（DNS设置/静态IPv6）无页内导航，进入后页签消失 | [线上实机] | ✅ 已修：新增 cbi_nav.htm + Template 节点注入两个 CBI 模型 |
 
-> 待用户决策项：模块化拆分（P3-1）与 CI 增强（P3-2）是否进入 v1.4.6——默认建议推 v1.5+。
+### 7.2 实施记录（v1.4.6，2026-09-04 已全部完成）
 
-### 7.2 实施批次建议（v1.4.6）
-
-| 批次 | 内容 | 对应项 |
-|------|------|--------|
-| 1（安全核心） | 镜像白名单+sha256、CSRF Token、3 处转义补漏、tar symlink、dns_apply POST 化 | P0-1、P1-1/2/3/4/5/9 |
-| 2（正确性） | port_edit 重复规则、name 过滤、china 分片中止、上传大小+时间戳、dhcp_option list 化 | P1-7/8/10/11、P2-1 |
-| 3（健壮性） | 退出码判定、apiFetch 统一、cron 校验、卸载清链接+不删 sessions、WAN 探测、chmod 600 | P1-12、P2-2/3/4/5/6/8 |
-| 4（小项+文档） | P3 全部 + LICENSE + CI 增强 | P3-2~12 |
+| 批次 | 内容 | 对应项 | 状态 |
+|------|------|--------|------|
+| 1（安全核心） | 镜像白名单+sha256、CSRF Token、3 处转义补漏、tar symlink、dns_apply POST 化 | P0-1、P1-1/2/3/4/5/9 | ✅ |
+| 2（正确性） | port_edit 重复规则、name 过滤、china 分片中止、上传大小+时间戳、dhcp_option list 化 | P1-7/8/10/11、P2-1 | ✅ |
+| 3（健壮性） | 退出码判定、apiFetch 统一、cron 校验、卸载清链接+不删 sessions、WAN 探测、chmod 600 | P1-12、P2-2/3/4/5/6/8 | ✅ |
+| 4（小项+文档） | P3 小项 + LICENSE + CI 增强 | P3-2~12 | ✅（除推迟 v1.5 的 4 项） |
 
 ### 7.3 v1.5+ 路线图
 
-1. **后端模块化拆分**（P3-1）：netmanager 单文件拆为 main + port/rule/china/update/backup 模块，install.sh 同步调整
-2. **CI 质量门禁**：shellcheck + luac -p + sh -n 全量语法检查 + 产物完整性校验
+1. **后端模块化拆分**（P3-1 + P2-10）：netmanager 单文件拆为 main + port/rule/china/update/backup 模块，公共 HTTP 下载函数合并，install.sh 同步调整
+2. **CI 质量门禁增强**：shellcheck 加入门禁
 3. **ipk 双形态交付**：保留 tar.gz 主线，增加标准 ipk（非 squashfs 只读分区设备可用）
 4. **LuCI 主分支适配评估**：JS 界面（client controller）迁移调研
 5. **单元测试可行性调研**（OpenWrt shell 单测框架选型）
+6. **次要修复积压**：P3-7 RFC1918 精确匹配、P3-8 死代码清理、P3-12 uci 批量 commit
 
 ---
 

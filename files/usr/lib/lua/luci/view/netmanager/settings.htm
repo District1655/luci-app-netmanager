@@ -98,7 +98,7 @@
             <table class="netmanager-table" style="margin-bottom:10px;">
                 <tr>
                     <td width="30%">当前版本</td>
-                    <td><b id="online_cur_version">v1.4.5</b></td>
+                    <td><b id="online_cur_version">v1.4.6</b></td>
                 </tr>
                 <tr>
                     <td>最新版本</td>
@@ -199,7 +199,7 @@
         <h3>关于插件</h3>
         <table class="netmanager-table">
             <tr><td width="30%">插件名称</td><td>网络管理 (luci-app-netmanager)</td></tr>
-            <tr><td>版本</td><td id="plugin_version">v1.4.5</td></tr>
+            <tr><td>版本</td><td id="plugin_version">v1.4.6</td></tr>
             <tr><td>作者</td><td><b>Network Manager</b></td></tr>
             <tr><td>适配系统</td><td>iStoreOS / OpenWrt (fw4/nftables)</td></tr>
             <tr><td>功能模块</td><td>系统概览 / 端口转发 / 规则管理 / SSH日志 / 访问日志</td></tr>
@@ -231,13 +231,13 @@
             </div>
         </div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.4.5<br><span style="font-size:10px;">适配 iStoreOS / OpenWrt | 基于 fw4/nftables</span></div>
+    <div class="footer-sign">网络管理插件 v1.4.6<br><span style="font-size:10px;">适配 iStoreOS / OpenWrt | 基于 fw4/nftables</span></div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
 
 function loadSettings() {
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=settings'})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=settings'})
     .then(r => r.text()).then(data => {
         data.split('\n').forEach(line => {
             if (line.includes('=')) {
@@ -260,7 +260,7 @@ function checkUpdate() {
     const btn = document.getElementById('btn_check_update');
     btn.disabled = true;
     box.innerHTML = '<span class="text-info">正在连接 GitHub 检查最新版本（最长约 15 秒，直连受限时请先保存镜像加速）...</span>';
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=update_check'})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=update_check'})
     .then(r => r.text()).then(data => {
         let latest = '', avail = '', msg = '', mirror = '';
         data.split('\n').forEach(line => {
@@ -301,7 +301,7 @@ function applyUpdate() {
     const btn = document.getElementById('btn_apply_update');
     btn.disabled = true;
     box.innerHTML = '<span class="text-info">正在下载并安装最新版（取决于网速，可能需要 1~3 分钟），请勿关闭或刷新页面...</span>';
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=update_apply'})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=update_apply'})
     .then(r => r.text()).then(data => {
         box.innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         if (data.indexOf('插件更新完成') >= 0 || data.indexOf('install_rc=0') >= 0) {
@@ -316,7 +316,7 @@ function applyUpdate() {
 
 function saveUpdateMirror() {
     const m = document.getElementById('update_mirror').value.trim();
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=set_update_mirror&mirror=' + encodeURIComponent(m)})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=set_update_mirror&mirror=' + encodeURIComponent(m)})
     .then(r => r.text()).then(data => {
         document.getElementById('update_status').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
     });
@@ -325,7 +325,7 @@ function saveUpdateMirror() {
 // ========== 运行日志功能 ==========
 function saveLogSetting() {
     const en = document.getElementById('log_enable').checked ? '1' : '0';
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=log_set&enable=' + en})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=log_set&enable=' + en})
     .then(r => r.text()).then(data => {
         document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         loadSettings();
@@ -335,7 +335,7 @@ function saveLogSetting() {
 function loadRunLog() {
     const lines = document.getElementById('log_lines').value;
     const box = document.getElementById('run_log_box');
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=log_get&lines=' + lines})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=log_get&lines=' + lines})
     .then(r => r.text()).then(data => {
         let content = '';
         let inContent = false;
@@ -358,7 +358,7 @@ function loadRunLog() {
 
 function clearRunLog() {
     if (!confirm('确定要清空运行日志吗？')) return;
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=log_clear'})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=log_clear'})
     .then(r => r.text()).then(data => {
         document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         setTimeout(loadRunLog, 500);
@@ -369,7 +369,7 @@ function saveDefaultTarget() {
     const ip = document.getElementById('default_target').value.trim();
     if (!ip) { alert('请输入IP地址'); return; }
     if (!/^(\d{1,3}\.){3}\d{1,3}$/.test(ip)) { alert('IP格式不正确'); return; }
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=set_default_target&ip=' + ip})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=set_default_target&ip=' + ip})
     .then(r => r.text()).then(data => {
         document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
     });
@@ -377,7 +377,7 @@ function saveDefaultTarget() {
 
 function runAction(action) {
     document.getElementById('action_result').innerHTML = '<span class="text-info">执行中...</span>';
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=' + action})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=' + action})
     .then(r => r.text()).then(data => {
         document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
     });
@@ -386,7 +386,7 @@ function runAction(action) {
 // 备份功能
 function doBackup() {
     if (!confirm('确定要备份当前防火墙配置吗？')) return;
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=backup'})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=backup'})
     .then(r => r.text()).then(data => {
         document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         setTimeout(listBackups, 1500);
@@ -394,7 +394,7 @@ function doBackup() {
 }
 
 function listBackups() {
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=backup_list'})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=backup_list'})
     .then(r => r.text()).then(data => {
         let html = '';
         const lines = data.split('\n');
@@ -417,13 +417,17 @@ function listBackups() {
             html = '<div class="text-muted" style="padding:10px;">暂无备份文件</div>';
         } else {
             html = `<table class="netmanager-table"><thead><tr><th>备份文件名</th><th>大小</th><th>操作</th></tr></thead><tbody>`;
+            // 【安全 v1.4.6】行数据存入 JS 数组，onclick 只传纯数字下标，
+            // 杜绝备份文件名（用户可控内容）注入 onclick；文件名展示统一转义
+            window.BACKUP_ROWS = [];
             backups.forEach(b => {
+                const rowId = window.BACKUP_ROWS.push(b[0]) - 1;
                 html += `<tr>
-                    <td><code>${b[0]}</code></td>
-                    <td>${formatSize(parseInt(b[1]) || 0)}</td>
+                    <td><code>${escapeHtml(b[0])}</code></td>
+                    <td>${escapeHtml(formatSize(parseInt(b[1]) || 0))}</td>
                     <td>
-                        <button class="btn btn-primary btn-sm" onclick="restoreBackup('${b[0]}')">恢复</button>
-                        <button class="btn btn-danger btn-sm" onclick="deleteBackup('${b[0]}')">删除</button>
+                        <button class="btn btn-primary btn-sm" onclick="restoreBackup(${rowId})">恢复</button>
+                        <button class="btn btn-danger btn-sm" onclick="deleteBackup(${rowId})">删除</button>
                     </td>
                 </tr>`;
             });
@@ -440,9 +444,12 @@ function formatSize(bytes) {
     return (bytes / 1048576).toFixed(1) + ' MB';
 }
 
-function restoreBackup(filename) {
+function restoreBackup(rowId) {
+    // 【安全 v1.4.6】onclick 传数组下标，从 window.BACKUP_ROWS 取文件名（避免自由文本入 onclick）
+    const filename = (window.BACKUP_ROWS && window.BACKUP_ROWS[rowId]) || '';
+    if (!filename) return;
     if (!confirm(`确定要从备份 ${filename} 恢复配置吗？\n\n⚠️ 恢复前会自动备份当前配置！`)) return;
-    fetch(API_URL, {
+    nmFetch({
         method:'POST',
         headers:{'Content-Type':'application/x-www-form-urlencoded'},
         body:'action=backup_restore&filename=' + encodeURIComponent(filename)
@@ -453,9 +460,11 @@ function restoreBackup(filename) {
     });
 }
 
-function deleteBackup(filename) {
+function deleteBackup(rowId) {
+    const filename = (window.BACKUP_ROWS && window.BACKUP_ROWS[rowId]) || '';
+    if (!filename) return;
     if (!confirm(`确定要删除备份 ${filename} 吗？此操作不可恢复！`)) return;
-    fetch(API_URL, {
+    nmFetch({
         method:'POST',
         headers:{'Content-Type':'application/x-www-form-urlencoded'},
         body:'action=backup_delete&filename=' + encodeURIComponent(filename)
@@ -490,7 +499,7 @@ function uploadPlugin() {
     formData.append('action', 'plugin_upload_update');
     formData.append('plugin_file', file);
     
-    fetch(API_URL, {
+    nmFetch({
         method: 'POST',
         body: formData
     })
@@ -510,7 +519,7 @@ function uploadPlugin() {
 
 // ========== 中国IPv4访问限制 ==========
 function loadChinaStatus() {
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_status'})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_status'})
     .then(r => r.text()).then(data => {
         let en='0', url='', cron='', lu='', cnt='0', devs='', active='0';
         data.split('\n').forEach(line => {
@@ -532,8 +541,9 @@ function loadChinaStatus() {
         const statusBadge = en === '1' ? '<span class="badge badge-green">已启用</span>' + ruleBadge : '<span class="badge badge-gray">已关闭</span>';
         document.getElementById('china_status_cell').innerHTML = statusBadge;
         document.getElementById('china_url').value = url;
-        document.getElementById('china_update_cell').innerHTML = '上次更新: ' + (lu || '未更新') + ' | CIDR条数: <b>' + cnt + '</b>';
-        document.getElementById('china_wan_cell').innerHTML = 'WAN设备: <code>' + (devs || '(未探测到)') + '</code> | 规则: ' + (active === '1' ? '<span class="text-success">生效中</span>' : '<span class="text-muted">未生效</span>');
+        // 【安全 v1.4.6】lu/cnt/devs 来自后端命令输出（WAN_DEVS 含接口名），写入前必须转义
+        document.getElementById('china_update_cell').innerHTML = '上次更新: ' + escapeHtml(lu || '未更新') + ' | CIDR条数: <b>' + escapeHtml(cnt) + '</b>';
+        document.getElementById('china_wan_cell').innerHTML = 'WAN设备: <code>' + escapeHtml(devs || '(未探测到)') + '</code> | 规则: ' + (active === '1' ? '<span class="text-success">生效中</span>' : '<span class="text-muted">未生效</span>');
         // cron 预设回填
         const sel = document.getElementById('china_cron_preset');
         const customInput = document.getElementById('china_cron_custom');
@@ -565,7 +575,7 @@ function saveChinaUrl() {
     const url = document.getElementById('china_url').value.trim();
     if (!url) { alert('请输入订阅链接'); return; }
     if (!/^https?:\/\//.test(url)) { alert('链接必须以 http:// 或 https:// 开头'); return; }
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_set_url&url=' + encodeURIComponent(url)})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_set_url&url=' + encodeURIComponent(url)})
     .then(r => r.text()).then(data => {
         document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
     });
@@ -578,7 +588,7 @@ function saveChinaCron() {
         cron = document.getElementById('china_cron_custom').value.trim();
         if (!cron) { alert('请输入自定义cron表达式(5段: 分 时 日 月 周)'); return; }
     }
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_set_cron&cron=' + encodeURIComponent(cron)})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_set_cron&cron=' + encodeURIComponent(cron)})
     .then(r => r.text()).then(data => {
         document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         setTimeout(loadChinaStatus, 300);
@@ -595,7 +605,7 @@ function setChinaBtns(enabled) {
 function enableChinaFilter() {
     if (!confirm('确定开启中国IPv4访问限制吗？\n\n开启后仅中国大陆IPv4可访问已开放端口（端口转发与路由器本地放行端口），境外IPv4新建连接将被丢弃。')) return;
     setChinaBtns(false);
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_enable'})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_enable'})
     .then(r => r.text()).then(data => {
         document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         setTimeout(() => { loadChinaStatus(); setChinaBtns(true); }, 600);
@@ -605,7 +615,7 @@ function enableChinaFilter() {
 function disableChinaFilter() {
     if (!confirm('确定关闭中国IPv4访问限制吗？\n\n关闭后境外IPv4可恢复访问已开放端口。')) return;
     setChinaBtns(false);
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_disable'})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_disable'})
     .then(r => r.text()).then(data => {
         document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         setTimeout(() => { loadChinaStatus(); setChinaBtns(true); }, 400);
@@ -614,7 +624,7 @@ function disableChinaFilter() {
 
 function updateChinaFilter() {
     setChinaBtns(false);
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_update'})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_update'})
     .then(r => r.text()).then(data => {
         document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         setTimeout(() => { loadChinaStatus(); setChinaBtns(true); }, 600);
@@ -639,7 +649,7 @@ function uninstallPlugin() {
     if (!confirm(msg)) return;
     if (!confirm('⚠ 二次确认：这是最终确认，卸载后无法撤销，确定继续？')) return;
     document.getElementById('action_result').innerHTML = '<pre class="result-pre" style="color:#dc2626;">卸载进行中，请勿关闭页面...（uhttpd 重启会导致连接断开，属正常现象）</pre>';
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=uninstall&keep=' + keep})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=uninstall&keep=' + keep})
     .then(r => r.text()).then(data => {
         document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         // 3秒后uhttpd已重启，跳转首页

@@ -104,22 +104,48 @@ o.placeholder = "2400:3200::1"
 o:depends("enable", "1")
 
 -- ============================================================
--- 第四部分：操作按钮（通过自定义 HTML 模板注入）
+-- 第四部分：操作按钮（POST 化：原 GET 路由已并入 api_handler，redirect 会 404）
+-- 按钮直接执行脚本并渲染结果页（CBI 框架按钮自带 token 校验，无 CSRF 风险）
 -- ============================================================
 s = m:section(NamedSection, "actions", "actions", translate("操作"))
+
+-- 【v1.4.6】执行 DNS 脚本并返回结果：捕获输出与退出码（原 __RC__ 标记法）
+local function run_dns_script(script)
+    local out = luci.sys.exec(script .. " 2>&1; echo \"__RC__$?\"") or ""
+    local rc = tonumber(out:match("__RC__(%-?%d+)")) or -1
+    out = out:gsub("__RC__%-?%d+\n?$", "")
+    return rc, out
+end
+
+-- 【v1.4.6】输出压缩为单行消息（alert 框内换行不渲染，pcdata 只转义文本）
+local function to_one_line(s, max)
+    s = (s or ""):gsub("%c", " "):gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+    if #s > (max or 300) then s = s:sub(1, max) .. "..." end
+    return s
+end
 
 o = s:option(Button, "_apply", translate("应用配置"))
 o.inputtitle = translate("应用配置")
 o.inputstyle = "apply"
 o.write = function()
-    luci.http.redirect(luci.dispatcher.build_url("admin", "netmanager", "dns_apply"))
+    local rc, out = run_dns_script("/usr/sbin/dnssettings-apply.sh")
+    if rc == 0 then
+        m.message = "DNS 配置已应用成功，已写入 /etc/config/ 并重载网络服务（详细输出见「设置 → 运行日志」）"
+    else
+        m.message = "DNS 配置应用失败 (exit=" .. tostring(rc) .. ")：" .. to_one_line(out)
+    end
 end
 
 o = s:option(Button, "_backup", translate("备份当前系统配置"))
 o.inputtitle = translate("备份配置")
 o.inputstyle = "save"
 o.write = function()
-    luci.http.redirect(luci.dispatcher.build_url("admin", "netmanager", "dns_backup"))
+    local rc, out = run_dns_script("/usr/sbin/dnssettings-backup.sh")
+    if rc == 0 then
+        m.message = "配置已备份到 /root/backup/（保留最近 5 份）"
+    else
+        m.message = "配置备份失败 (exit=" .. tostring(rc) .. ")：" .. to_one_line(out)
+    end
 end
 
 return m

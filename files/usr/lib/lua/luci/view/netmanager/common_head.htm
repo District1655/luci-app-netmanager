@@ -72,9 +72,15 @@
 .text-info { color: #2563eb; }
 </style>
 <script>
-/* ===== 公共 JS（v1.4.5）：HTML转义 + API 调用封装 =====
+/* ===== 公共 JS（v1.4.6）：HTML转义 + API 调用封装（token/超时/会话过期） =====
    背景：命令输出（含用户可控的文件名/用户名/日志内容）此前直接拼 innerHTML，
-   构成存储型 XSS；统一走本封装消除注入面。 */
+   构成存储型 XSS；统一走本封装消除注入面。
+   v1.4.6：API 强制 CSRF Token（common_head 渲染时注入变量），apiFetch 自动携带。 */
+
+/* CSRF Token：由控制器按会话派生，所有 API 调用必须携带（跨站页面拿不到）
+   注：CBI 页面不加载本文件，其表单按钮由 LuCI 框架自身 token 机制保护 */
+<%local nm_ctrl = require "luci.controller.netmanager"%>
+var CSRF_TOKEN = '<%=nm_ctrl.csrf_token()%>';
 
 /* HTML 转义：任何要写入 innerHTML 的动态内容必须先过此函数 */
 function escapeHtml(s) {
@@ -102,15 +108,31 @@ function showResult(el, data) {
 	el.innerHTML = '<pre class="result-pre">' + lines.join('\n') + '</pre>';
 }
 
-/* API 调用封装：POST + 超时控制 + 错误提示
-   action: API 动作名；params: 参数对象；opts: {timeout, parseFn}
-   返回 Promise<response 文本>；失败时 reject Error（message 已可读） */
+/* API 调用封装：POST + CSRF Token + 超时控制 + 错误提示
+   v1.4.6 兼容三种调用形态：
+   1) apiFetch('action', {k: 'v'}, opts)   —— 常规调用（推荐）
+   2) apiFetch('action=x&k=v')              —— 兼容旧 fetch 的原始 body 字符串
+      （首参含 '=' 视为原始 body，自动追加 token）
+   3) apiFetch(null, formData)              —— FormData 上传（调用方自行 append action，
+      本函数只补 token） */
 function apiFetch(action, params, opts) {
 	opts = opts || {};
-	params = params || {};
-	var body = new URLSearchParams();
-	body.set('action', action);
-	for (var k in params) { if (params.hasOwnProperty(k)) body.set(k, params[k]); }
+	var isForm = (params instanceof FormData);
+	var body;
+	if (isForm) {
+		body = params;
+		body.append('token', CSRF_TOKEN);
+	} else if (typeof action === 'string' && action.indexOf('=') > 0) {
+		// 原始 body 字符串形态：直接追加 token
+		body = action + '&token=' + encodeURIComponent(CSRF_TOKEN);
+	} else {
+		params = params || {};
+		body = new URLSearchParams();
+		body.set('action', action);
+		body.set('token', CSRF_TOKEN);
+		for (var k in params) { if (params.hasOwnProperty(k)) body.set(k, params[k]); }
+		body = body.toString();
+	}
 
 	var ctrl = new AbortController();
 	var timer = setTimeout(function () { ctrl.abort(); }, opts.timeout || 30000);
@@ -119,14 +141,57 @@ function apiFetch(action, params, opts) {
 	var API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
 	return fetch(API_URL, {
 		method: 'POST',
-		headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
-		body: body.toString(),
+		headers: isForm ? {} : { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+		body: body,
 		signal: ctrl.signal,
 		credentials: 'same-origin'
 	}).then(function (res) {
 		clearTimeout(timer);
 		if (res.redirected && /\/login\.html|\/admin\/login/.test(res.url)) {
 			throw new Error('会话已过期，请刷新页面重新登录');
+		}
+		if (res.status === 403) {
+			return res.text().then(function (t) { throw new Error(t.replace('[ERROR] ', '') || 'CSRF 校验失败，请刷新页面'); });
+		}
+		if (!res.ok) throw new Error('服务器响应异常: HTTP ' + res.status);
+		return res.text();
+	}).catch(function (err) {
+		clearTimeout(timer);
+		if (err.name === 'AbortError') throw new Error('请求超时，请稍后重试');
+		throw err;
+	});
+}
+
+/* nmFetch：v1.4.6 兼容层——原 fetch(API_URL, {...}) 调用的零改动迁移
+   自动完成：POST + CSRF Token 附加 + 超时 + 会话过期/403 检测 + FormData 支持
+   形态1：nmFetch({method:'POST', headers:{...}, body:'action=x&k=v'})
+   形态2：nmFetch({method:'POST', body: formData})  // multipart 上传，token 附加到 FormData */
+function nmFetch(opts) {
+	opts = opts || {};
+	var isForm = (opts.body instanceof FormData);
+	if (isForm) {
+		opts.body.append('token', CSRF_TOKEN);
+	} else if (typeof opts.body === 'string') {
+		opts.body = opts.body + (opts.body ? '&' : '') + 'token=' + encodeURIComponent(CSRF_TOKEN);
+	}
+
+	var ctrl = new AbortController();
+	var timer = setTimeout(function () { ctrl.abort(); }, 90000); // 在线更新下载等长操作给足 90s
+
+	var API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
+	return fetch(API_URL, {
+		method: opts.method || 'POST',
+		headers: isForm ? {} : (opts.headers || { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' }),
+		body: opts.body,
+		signal: ctrl.signal,
+		credentials: 'same-origin'
+	}).then(function (res) {
+		clearTimeout(timer);
+		if (res.redirected && /\/login\.html|\/admin\/login/.test(res.url)) {
+			throw new Error('会话已过期，请刷新页面重新登录');
+		}
+		if (res.status === 403) {
+			return res.text().then(function (t) { throw new Error(t.replace('[ERROR] ', '') || 'CSRF 校验失败，请刷新页面'); });
 		}
 		if (!res.ok) throw new Error('服务器响应异常: HTTP ' + res.status);
 		return res.text();

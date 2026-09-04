@@ -1,5 +1,10 @@
--- 静态 IP / IPv6 分配 - v1.4.4
--- v1.4.3 更新：
+-- 静态 IP / IPv6 分配 - v1.4.6
+-- v1.4.6 更新：
+--   1. 重复 host 合并改为"仅检测、提交时执行"（原页面加载即 commit，GET 刷新就会改配置）
+--   2. DUID 误判修复：排除 DHCPv4 clientid 中的 MAC 原文型 / 01+MAC 硬件型标识
+--   3. WAN 侧过滤增强：设备名匹配 wan 前缀同时覆盖 pppoe-wan / pppoe-wan6 等命名
+--   4. odhcpd 重启改为按需（m.changed 才 restart，无改动不扰动 IPv6 分配）
+-- v1.4.3 历史：
 --   1. 在线客户端识别增强：IPv4（dnsmasq 租约 + ARP）+ IPv6（odhcpd 租约 + NDP 邻居表，覆盖 SLAAC 地址）
 --   2. 自动捕获 DUID：dnsmasq clientid / odhcpd 租约 / 主机名关联，在线设备 DUID 直接可见
 --   3. 冲突检测增强：MAC / IPv4 / 完整IPv6 / hostid 全部实时查重（修复旧版快照导致同批提交漏检）
@@ -90,12 +95,29 @@ local function get_online_devices()
                 end
                 if clientid and clientid ~= "" then
                     -- DHCPv6 客户端通常以 DUID 作为 DHCPv4 的 clientid（形如 id:00:01:...）
+                    -- 【v1.4.6 误判修复】排除两种"伪 DUID"：
+                    --   a) MAC 原文型：部分客户端直接把 MAC 塞进 clientid（dnsmasq 去掉冒号后 12 位 hex 与本条目 MAC 相同）
+                    --   b) 01+MAC 硬件型：DUID-LLT/DUID-EN 前缀形如 01:xx:xx:xx:xx:xx:xx...，其中含 MAC 的非真正 DUID
                     local cid = clientid:gsub("^id:", ""):gsub(":", "")
-                    if looks_like_duid(cid) then d.duid = cid end
+                    if looks_like_duid(cid) then
+                        local mac_nocolon = mac:gsub(":", ""):lower()
+                        local is_mac_itself = (cid:lower() == mac_nocolon)
+                        local is_01mac_type = cid:lower():sub(1, 2) == "01" and cid:lower():find(mac_nocolon, 1, true)
+                        if not is_mac_itself and not is_01mac_type then
+                            d.duid = cid
+                        end
+                    end
                 end
             end
         end
         f:close()
+    end
+
+    -- 【v1.4.6】WAN 侧设备判定：设备名或命名以 wan 结尾/包含 wan 词段（覆盖 wan / wan6 /
+    -- pppoe-wan / pppoe-wan6 / ppp0-wan / wan-eth 等），避免把 PPPoE 拨号对端误判为 LAN 设备
+    local function is_wan_side(dev)
+        if not dev or dev == "" then return false end
+        return dev:match("wan") ~= nil
     end
 
     -- 2. ARP 表: IP | HWtype | Flags | HWaddress | Mask | Device
@@ -107,11 +129,15 @@ local function get_online_devices()
                 first = false
             else
                 local ip, flags, mac, dev = line:match("^(%S+)%s+%S+%s+(%S+)%s+(%S+)%s+%S+%s+(%S+)")
-                if mac and ip and mac ~= "00:00:00:00:00:00" and dev and not dev:match("^wan") then
+                if mac and ip and mac ~= "00:00:00:00:00:00" and not is_wan_side(dev) then
                     local d = ensure(mac:upper())
                     if d.ip == "" then d.ip = ip end
                     if flags ~= "0x0" then d.online = true end
                 end
+            end
+        end
+        f:close()
+    end
             end
         end
         f:close()
@@ -142,7 +168,7 @@ local function get_online_devices()
     if f then
         for line in f:lines() do
             local addr, dev, rest = line:match("^(%S+)%s+dev%s+(%S+)%s*(.-)%s*$")
-            if addr and dev and not dev:match("^wan") and not addr:match("^fe80") then
+            if addr and dev and not is_wan_side(dev) and not addr:match("^fe80") then
                 local mac6 = rest:match("lladdr%s+(%S+)")
                 if mac6 and mac6 ~= "00:00:00:00:00:00" then
                     local d = ensure(mac6:upper())
@@ -167,9 +193,35 @@ end
 
 -- ============================================================
 -- 工具函数：合并同 MAC 的重复 host 条目
+-- 【v1.4.6】拆分为两步：
+--   1. detect_duplicate_hosts()：页面加载时只统计不写库（原实现 GET 刷新页面
+--      就会静默 commit 修改 /etc/config/dhcp）
+--   2. do_merge_duplicate_hosts()：真正执行合并，挪到 on_before_commit
+--      （仅用户点击「保存并应用」时触发）
 -- ============================================================
-local function merge_duplicate_hosts()
+local function detect_duplicate_hosts()
     local x = require "uci".cursor()
+    local mac_seen = {}
+    local count = 0
+
+    x:foreach("dhcp", "host", function(s)
+        local mac = s.mac
+        if mac and mac ~= "" then
+            mac = mac:upper()
+            if mac_seen[mac] then
+                count = count + 1
+            else
+                mac_seen[mac] = true
+            end
+        end
+    end)
+
+    return count
+end
+
+-- 提交时真正执行合并（保留首条字段较全的条目，补齐其缺失字段后删除重复项）
+local function do_merge_duplicate_hosts(uci_handle)
+    local x = uci_handle or require "uci".cursor()
     local mac_seen = {}
     local to_delete = {}
 
@@ -208,17 +260,13 @@ local function merge_duplicate_hosts()
         x:delete("dhcp", name)
     end
 
-    if #to_delete > 0 then
-        x:commit("dhcp")
-    end
-
     return #to_delete
 end
 
 -- ============================================================
--- 页面加载时执行合并 + 获取在线设备 + 已绑定 MAC
+-- 页面加载时执行：仅检测重复（只读）+ 获取在线设备 + 已绑定 MAC
 -- ============================================================
-local merged_count = merge_duplicate_hosts()
+local merged_count = detect_duplicate_hosts()
 local online_devices = get_online_devices()
 
 -- 已绑定 MAC（在线速览标记用）
@@ -281,7 +329,8 @@ local online_html = build_online_html()
 -- ============================================================
 local desc = translate("为设备绑定静态 IPv4 / IPv6 地址。IPv4 填 ip；IPv6 推荐填 hostid（地址后缀），运营商前缀变化时地址仍保持一致；ip6 填完整地址，仅适合 ULA 或前缀固定场景。")
 if merged_count > 0 then
-    desc = desc .. " \n\n" .. translate("注意") .. "：" .. translate("已自动合并") .. " " .. merged_count .. " " .. translate("个重复的 MAC 绑定条目。")
+    desc = desc .. " \n\n" .. translate("注意") .. "：" .. translate("检测到") .. " " .. merged_count .. " " ..
+        translate("个重复的 MAC 绑定条目，点击「保存并应用」时将自动合并。")
 end
 
 m = Map("dhcp", translate("静态 IP / IPv6 分配"), desc)
@@ -289,8 +338,10 @@ m = Map("dhcp", translate("静态 IP / IPv6 分配"), desc)
 -- v1.4.6 修复：CBI 页面缺少页内导航（从自绘页面进入后页签消失），注入导航模板
 m:append(Template("netmanager/cbi_nav"))
 
--- 保存前清理幽灵条目（MAC 与 DUID 均为空，避免"消失但占位"无法删除）
+-- 保存前：合并重复 MAC 条目 + 清理幽灵条目（MAC 与 DUID 均为空，避免"消失但占位"无法删除）
+-- 【v1.4.6】合并由页面加载时移入此处（仅在真实提交时写库，GET 刷新不再改配置）
 m.on_before_commit = function(self)
+    do_merge_duplicate_hosts(self.uci)
     local to_del = {}
     self.uci:foreach("dhcp", "host", function(s)
         local mac = s.mac or ""
@@ -304,9 +355,13 @@ m.on_before_commit = function(self)
     end
 end
 
--- 保存后应用配置（odhcpd 需 restart；dnsmasq 用 reload 避免 DNS 中断）
+-- 保存后应用配置（dnsmasq 用 reload 避免 DNS 中断）
+-- 【v1.4.6】odhcpd 由无条件 restart 改为按需：仅本次有实际改动（changed）才重启，
+-- 避免每次保存（甚至无改动提交）都导致 IPv6 租约重置、设备短暂掉线
 m.on_after_commit = function(self)
-    sys.call("/etc/init.d/odhcpd restart >/dev/null 2>&1")
+    if self.changed then
+        sys.call("/etc/init.d/odhcpd restart >/dev/null 2>&1")
+    end
     sys.call("/etc/init.d/dnsmasq reload >/dev/null 2>&1")
 end
 

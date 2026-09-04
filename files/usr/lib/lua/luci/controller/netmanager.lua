@@ -16,40 +16,32 @@ function index()
     entry({"admin", "netmanager", "dns_staticv6"}, cbi("netmanager/dns_staticv6"), _("静态IPv6分配"), 7)
     entry({"admin", "netmanager", "settings"}, template("netmanager/settings"), _("设置"), 8)
     entry({"admin", "netmanager", "api"}, call("api_handler"))
-    -- DNS 动作：应用配置 / 备份系统配置（由 DNS 页面按钮跳转调用）
-    entry({"admin", "netmanager", "dns_apply"}, call("action_dns_apply"), nil)
-    entry({"admin", "netmanager", "dns_backup"}, call("action_dns_backup"), nil)
+    -- 【v1.4.6】dns_apply / dns_backup 由独立 GET 路由改为 api_handler 内的 POST action
+    -- （GET 路由刷新页面即重复执行应用/备份；POST 化后由 DNS 设置页按钮主动触发）
 end
 
 -- ============================================================
--- DNS 设置：应用配置
--- 读取 /etc/config/dnssettings，写入 network/dhcp 并重载网络/dnsmasq/odhcpd
--- v1.4.5：用 exec 捕获脚本完整输出回传（含 WARN 空值防护提示）
+-- 【v1.4.6】CSRF 防护：请求级 Token
+-- 跨站 <form method=POST> 可携带登录 cookie 触发 API（POST-only 不足以防御），
+-- 要求每个请求携带服务端注入的 token。Token 由会话 ID 派生（会话失效即失效），
+-- 视图经 common_head.htm 的 apiFetch 自动携带，无需各页面单独适配。
+-- 注：本函数为模块导出（非 local），供视图渲染时计算同一 token。
 -- ============================================================
-function action_dns_apply()
-    -- ucode版LuCI的exec在无输出时可能返回nil，用 or "" 兜底
-    local out = luci.sys.exec("/usr/sbin/dnssettings-apply.sh 2>&1") or ""
-    luci.http.prepare_content("text/plain; charset=utf-8")
-    -- 通过输出内容判断成败（脚本致命错误时含 ERROR）
-    if out:match("ERROR:") then
-        luci.http.write("应用失败，详细输出：\n" .. out)
-    else
-        luci.http.write("DNS配置已应用，详细输出：\n" .. out .. "\n提示: 若有 WARN 行为空值防护跳过项，请补全对应 DNS 后重新应用\n")
-    end
+function csrf_token()
+    local sid = (luci.dispatcher.context and luci.dispatcher.context.session
+        and luci.dispatcher.context.session.id) or ""
+    if sid == "" then return "" end
+    -- sid 的 sha256 派生（不可逆，跨站者无法从第三方页面构造）
+    local tok = luci.sys.exec("printf '%s' '" .. sid .. "' | sha256sum | cut -c1-32") or ""
+    return tok:gsub("%s", "")
 end
 
--- ============================================================
--- DNS 设置：备份当前系统 network/dhcp 配置到 /root/backup/
--- v1.4.5：同样捕获完整输出回传
--- ============================================================
-function action_dns_backup()
-    local out = luci.sys.exec("/usr/sbin/dnssettings-backup.sh 2>&1") or ""
-    luci.http.prepare_content("text/plain; charset=utf-8")
-    if out:match("备份失败") or out == "" then
-        luci.http.write("备份失败，详细输出：\n" .. out)
-    else
-        luci.http.write("配置已备份，详细输出：\n" .. out)
-    end
+local function csrf_check()
+    local expected = csrf_token()
+    if expected == "" then return false end
+    local got = luci.http.formvalue("token") or ""
+    if type(got) == "table" then got = "" end
+    return (got == expected)
 end
 
 -- 安全转义，防止命令注入
@@ -72,17 +64,28 @@ local function form_str(key)
     return v or ""
 end
 
+-- 【v1.4.6 P2】命令参数包装：空值传 ''（防 shell 吞掉空参数错位），非空转义
+-- （原 arg() 在 4 个分支内重复定义，提取为模块级）
+local function arg(v)
+    if v == "" or v == nil then return "''" end
+    return shell_escape(v)
+end
+
 -- ============================================================
 -- LuCI multipart 文件上传：必须在首次 formvalue() 之前设置文件处理器
 -- 否则 formvalue() 解析 multipart 时不会保存上传的文件内容
 -- ============================================================
 local uploaded_tmp_file = nil
 local uploaded_file_size = 0
+-- 【v1.4.6 P1】multipart 上传大小上限 50MB（/tmp 是 tmpfs，无上限会 OOM）
+local MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 
 local function setup_upload_handler()
     local upload_dir = "/tmp/netmanager_upload"
     luci.sys.call("mkdir -p " .. upload_dir)
-    uploaded_tmp_file = upload_dir .. "/plugin_update_" .. os.time() .. ".tar.gz"
+    -- 【v1.4.6 P1】时间戳+随机数防同秒并发冲突（同秒两次上传会互相覆盖）
+    math.randomseed(os.time() + math.floor(os.clock() * 1000))
+    uploaded_tmp_file = upload_dir .. "/plugin_update_" .. os.time() .. "_" .. math.random(1000, 9999) .. ".tar.gz"
     uploaded_file_size = 0
     
     local fout = nil
@@ -92,6 +95,12 @@ local function setup_upload_handler()
         -- 只处理 plugin_file 字段
         if meta.name ~= "plugin_file" then return end
         
+        -- 【v1.4.6 P1】超限即丢弃后续数据（写一半也中止，plugin_update 分支按 <2000 字节拒绝）
+        if uploaded_file_size > MAX_UPLOAD_BYTES then
+            if fout then fout:close() end
+            fout = nil
+            return
+        end
         if not fout then
             fout = io.open(uploaded_tmp_file, "wb")
             if not fout then
@@ -119,12 +128,22 @@ function api_handler()
         return
     end
 
+    -- 【v1.4.6 安全】CSRF Token 校验：跨站 form POST 虽满足 POST-only，但可携带登录
+    -- cookie；token 由视图渲染时注入（common_head.htm apiFetch 自动附带），跨站页面无法获得
+    if not csrf_check() then
+        luci.http.status(403, "Forbidden")
+        luci.http.prepare_content("text/plain; charset=utf-8")
+        luci.http.write('[ERROR] CSRF 校验失败：请刷新页面后重试（会话已过期或非本站请求）')
+        return
+    end
+
     -- 【关键】先设置文件上传处理器，再读任何formvalue（包括action）
     setup_upload_handler()
     
     local action = luci.http.formvalue("action") or ""
     local result = ""
     local cmd = ""
+    local dns_action = nil
 
     if action == "overview" then
         cmd = "/usr/sbin/netmanager overview"
@@ -136,10 +155,7 @@ function api_handler()
         local target = luci.http.formvalue("target") or ""
         local ipver = luci.http.formvalue("ipver") or "both"
         local dport = luci.http.formvalue("dport") or ""
-        local function arg(v)
-            if v == "" then return "''" end
-            return shell_escape(v)
-        end
+
         -- 关键修复：target为空时不传第3参数，避免shell吞掉空参数导致错位
         -- dport为内部端口，留空传''占位（后端默认与外部端口一致）
         if target ~= "" then
@@ -161,10 +177,7 @@ function api_handler()
         local new_target = luci.http.formvalue("new_target") or ""
         local new_ipver = luci.http.formvalue("new_ipver") or "both"
         local new_dport = luci.http.formvalue("new_dport") or ""
-        local function arg(v)
-            if v == "" then return "''" end
-            return shell_escape(v)
-        end
+
         cmd = string.format("/usr/sbin/netmanager port_edit %s %s %s %s %s %s %s",
             shell_escape(old_port), shell_escape(old_proto),
             shell_escape(new_port), shell_escape(new_proto),
@@ -180,10 +193,7 @@ function api_handler()
         local target = luci.http.formvalue("target") or "ACCEPT"
         local fam = luci.http.formvalue("family") or "any"
         -- 修复：所有可能为空的参数都传 '' 空引号，防止shell吞掉空参数导致错位
-        local function arg(v)
-            if v == "" then return "''" end
-            return shell_escape(v)
-        end
+
         cmd = string.format("/usr/sbin/netmanager rule_add %s %s %s %s %s %s %s",
             arg(name), arg(src), arg(dst),
             arg(proto), arg(port), arg(target), arg(fam))
@@ -199,10 +209,7 @@ function api_handler()
         local port = luci.http.formvalue("port") or ""
         local target = luci.http.formvalue("target") or "ACCEPT"
         local fam = luci.http.formvalue("family") or "any"
-        local function arg(v)
-            if v == "" then return "''" end
-            return shell_escape(v)
-        end
+
         cmd = string.format("/usr/sbin/netmanager rule_edit %s %s %s %s %s %s %s %s",
             shell_escape(idx), arg(name), arg(src), arg(dst),
             arg(proto), arg(port), arg(target), arg(fam))
@@ -291,7 +298,8 @@ function api_handler()
             -- 确保目录存在
             os.execute("mkdir -p " .. upload_dir)
             -- 写入base64临时文件（避免shell命令行长度限制和特殊字符问题）
-            local b64file = upload_dir .. "/.b64_" .. os.time()
+            -- 【v1.4.6 P1】时间戳+随机数防同秒冲突（与 setup_upload_handler 同策略）
+            local b64file = upload_dir .. "/.b64_" .. os.time() .. "_" .. math.random(1000, 9999)
             local f = io.open(b64file, "w")
             if f then
                 f:write(filecontent)
@@ -349,8 +357,31 @@ function api_handler()
         local keep = luci.http.formvalue("keep") or "0"
         local mode = (keep == "1") and "keep" or "full"
         cmd = string.format("/usr/sbin/netmanager uninstall %s", shell_escape(mode))
+    elseif action == "dns_apply" then
+        -- 【v1.4.6】DNS 应用配置由 GET 路由并入 POST action（原路由刷新即重复执行）
+        dns_action = "apply"
+    elseif action == "dns_backup" then
+        -- 【v1.4.6】DNS 备份系统配置同上
+        dns_action = "backup"
     else
         result = '{"error":"unknown action"}'
+    end
+
+    -- 【v1.4.6】DNS 动作执行（单次调用同时捕获输出与退出码）
+    if dns_action then
+        local script = (dns_action == "apply")
+            and "/usr/sbin/dnssettings-apply.sh" or "/usr/sbin/dnssettings-backup.sh"
+        local out = luci.sys.exec(script .. " 2>&1; echo \"__RC__$?\"") or ""
+        local rc = tonumber(out:match("__RC__(%-?%d+)")) or -1
+        out = out:gsub("__RC__%-?%d+\n?$", "")
+        if rc == 0 then
+            result = "[CMD] " .. script .. " (exit=0)\n" ..
+                ((dns_action == "apply") and "DNS配置已应用" or "配置已备份") ..
+                "，详细输出：\n" .. out
+        else
+            result = "[CMD] " .. script .. " (exit=" .. tostring(rc) .. ")\n" ..
+                "执行失败，详细输出：\n" .. out
+        end
     end
 
     if cmd ~= "" then

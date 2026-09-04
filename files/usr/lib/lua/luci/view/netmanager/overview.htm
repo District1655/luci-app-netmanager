@@ -57,12 +57,12 @@
         </div>
         <div id="action_result" class="netmanager-result"></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.4.5</div>
+    <div class="footer-sign">网络管理插件 v1.4.6</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
 function loadOverview() {
-    fetch(API_URL, {
+    nmFetch({
         method: 'POST',
         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
         body: 'action=overview'
@@ -90,7 +90,7 @@ function loadOverview() {
 function fwAction(action) {
     const resultDiv = document.getElementById('action_result');
     resultDiv.innerHTML = '<span class="text-info">执行中...</span>';
-    fetch(API_URL, {
+    nmFetch({
         method: 'POST',
         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
         body: 'action=' + action

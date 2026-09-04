@@ -12,11 +12,15 @@ LOG_FILE="$LOG_DIR/run.log"
 LOG_ENABLED=0
 
 # 在线更新配置：版本号与 GitHub 仓库（发版时同步修改 PLUGIN_VERSION）
-PLUGIN_VERSION="1.4.5"
+PLUGIN_VERSION="1.4.6"
 REPO_OWNER="District1655"
 REPO_NAME="luci-app-netmanager"
 REPO_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
 REPO_API_URL="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest"
+
+# 【v1.4.6 P0 安全】更新镜像域名白名单：镜像被劫持可注入恶意 install.sh 以 root 执行，
+# 仅允许知名 GitHub 加速代理；新增镜像需维护此列表。拒绝裸 IP。
+MIRROR_HOST_ALLOWLIST="gh-proxy.com ghproxy.net gh-proxy.net mirror.ghproxy.com github.moeyy.xyz"
 
 # 确保日志目录存在（tmp每次重启会清，需要每次重建）
 mkdir -p "$LOG_DIR" 2>/dev/null
@@ -62,24 +66,25 @@ proto_match() {
     return 1
 }
 
-# tar_list_check <tar包> <列表输出文件>：返回0=安全（成员可列出且无路径穿越）
+# tar_list_check <tar包> <列表输出文件>：返回0=安全（成员可列出且无路径穿越/symlink）
 # BusyBox tar 解压时不剥离 ../ 成员，恶意包可借此覆盖系统文件（配合在线更新=远程RCE链）
-# 检查规则：列出失败（坏包）、成员含 ../ 段、或以绝对路径开头 → 全部拒绝
+# 检查规则：列出失败（坏包）、成员含 ../ 段、以绝对路径开头、或成员为 symlink → 全部拒绝
+# 【v1.4.6】新增 symlink 防护：tar 列表首字符 'l' 即符号链接成员，解压后可指向 /etc/shadow 等任意系统文件
 tar_list_check() {
     local pkg="$1" listfile="$2"
-    # 尝试列出成员（gzip 直接列失败时退回 gunzip + tar tf）
-    tar tzf "$pkg" > "$listfile" 2>/dev/null
+    # 尝试列出成员（gzip 直接列失败时退回 gunzip + tar tf；-tv 显示类型，首字符 l=链接）
+    tar tzvf "$pkg" > "$listfile" 2>/dev/null
     if [ $? -ne 0 ] && [ ! -s "$listfile" ]; then
         local ungz="${pkg%.gz}"
         if [ "$ungz" != "$pkg" ]; then
-            gunzip -c "$pkg" > "$ungz" 2>/dev/null && tar tf "$ungz" > "$listfile" 2>/dev/null
+            gunzip -c "$pkg" > "$ungz" 2>/dev/null && tar tvf "$ungz" > "$listfile" 2>/dev/null
             rm -f "$ungz" 2>/dev/null
         fi
     fi
     # 完全列不出来 = 坏包，拒绝
     [ ! -s "$listfile" ] && return 1
-    # 检查非法成员：../ 段 或 绝对路径开头
-    if grep -qE '(^|/)\.\.(/|$)|^/' "$listfile"; then
+    # 检查非法成员：../ 段、绝对路径开头、symlink 成员（-tv 首字符 l）
+    if grep -qE '(^|/)\.\.(/|$)|^/|^l' "$listfile"; then
         return 1
     fi
     return 0
@@ -139,7 +144,8 @@ cmd_overview() {
 
     # WAN口IP（通过路由获取，不写死接口名）
     wan_ip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}' | head -1)
-    [ -z "$wan_ip" ] && wan_ip=$(ip -4 addr show 2>/dev/null | grep 'inet ' | grep -v '127.0.0.1' | grep -v '172\.' | grep -v '192.168' | awk '{print $2}' | cut -d/ -f1 | head -1)
+    # 【v1.4.6 P3】私网过滤按 RFC1918 精确网段（旧 grep -v '172\.' 会误伤 172.x 公网 IP 段）
+    [ -z "$wan_ip" ] && wan_ip=$(ip -4 addr show 2>/dev/null | grep 'inet ' | grep -v '127.0.0.1' | grep -vE 'inet (10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)' | awk '{print $2}' | cut -d/ -f1 | head -1)
     [ -z "$wan_ip" ] && wan_ip="N/A"
     echo "WAN_IP=$wan_ip"
 
@@ -483,6 +489,9 @@ cmd_port_edit() {
     esac
 
     modified=0
+    # 【v1.4.6 P1】重建标志：both→单向切换时防止"补建+更新"双重处理产生重复规则
+    # rebuilt_v6=1 表示 redirect 循环已补建新 IPv6 放行（rule 循环对旧 rule 只删不更新）
+    rebuilt_v6=0
     # 生成要匹配的协议列表（处理 both/tcpudp/空值）
     match_old_protos=""
     case "$old_proto" in
@@ -519,6 +528,9 @@ cmd_port_edit() {
                         uci set firewall.@rule[-1].family="ipv6"
                         uci set firewall.@rule[-1].target="ACCEPT"
                         info "补建IPv6放行: $new_port/$new_proto -> $new_target"
+                        # 【v1.4.6 P1】both 场景：IPv6 放行已在此补建，下方 rule 循环
+                        # 遇到旧的同端口 rule 只删除（否则再更新一次会产生重复规则）
+                        rebuilt_v6=1
                     else
                         uci set firewall.@redirect[$idx].src_dport="$new_port"
                         uci set firewall.@redirect[$idx].dest_port="$new_dport"
@@ -536,6 +548,7 @@ cmd_port_edit() {
     done
 
     # 修改IPv6 rule（放宽条件，支持系统自带规则）
+    # 【v1.4.6 P1】rebuilt_v6=1 时：redirect 循环已补建新 IPv6 放行，此处旧 rule 只删除不更新
     idx=0
     while uci -q get "firewall.@rule[$idx]" >/dev/null 2>&1; do
         fam=$(uci get firewall.@rule[$idx].family 2>/dev/null)
@@ -544,6 +557,13 @@ cmd_port_edit() {
         if [ "$fam" = "ipv6" ] && [ "$dp" = "$old_port" ]; then
             for mp in $match_old_protos; do
                 if proto_match "$pr" "$mp"; then
+                    if [ "$rebuilt_v6" = "1" ]; then
+                        # 旧 IPv6 rule 已被新规则替代，删除防重复
+                        uci delete firewall.@rule[$idx]
+                        info "删除旧IPv6放行(已被替代): $old_port/$pr"
+                        modified=1
+                        break 2
+                    fi
                     if [ "$new_ipver" = "v4" ]; then
                         # 新规则只要IPv4：删除IPv6并补建IPv4 DNAT（否则新旧规则全部消失）
                         uci delete firewall.@rule[$idx]
@@ -687,6 +707,8 @@ cmd_rule_list() {
         enabled=$(uci get firewall.@rule[$idx].enabled 2>/dev/null)
         [ -z "$enabled" ] && enabled="1"
         [ -z "$fam" ] && fam="any"
+        # 【v1.4.6 P1】输出侧兜底：UCI 直接编辑塞入管道符的历史数据替换为全角，防列表错位
+        name=$(echo "$name" | tr '|' '｜')
         echo "$idx|$name|$src|$dst|$proto|$dp|$target|$fam|$enabled"
         idx=$((idx+1))
     done
@@ -694,9 +716,19 @@ cmd_rule_list() {
 }
 
 # ========== 6. 添加防火墙规则 ==========
+# 【v1.4.6 P1】name 管道符过滤：列表输出以 | 分隔，name 含 | 会错位导致前端解析混乱
+rule_name_check() {
+    case "$1" in
+        *\|*|*'('*')'*)
+            error "规则名称不允许包含 | ( ) 字符（与列表输出格式冲突）"; return 1 ;;
+    esac
+    return 0
+}
+
 cmd_rule_add() {
     name="$1"; src="$2"; dst="$3"; proto="$4"; port="$5"; target="$6"; fam="${7:-any}"
     [ -z "$name" ] && { error "用法: netmanager rule_add <名称> <源zone> <目标zone> <协议> <端口> <ACCEPT|DROP|REJECT> [ipv4|ipv6|any]"; exit 1; }
+    rule_name_check "$name" || exit 1
     # 健壮性：检测参数错位。如果 $6 不是合法动作而是 any/ipv4/ipv6，说明 dst 为空被吞了
     case "$target" in
         any|ipv4|ipv6)
@@ -735,6 +767,8 @@ cmd_rule_edit() {
     [ -z "$idx" ] && { error "用法: netmanager rule_edit <索引> <名称> <源> <目标> <协议> <端口> <动作> [IP版本]"; exit 1; }
     old_name=$(uci get firewall.@rule[$idx].name 2>/dev/null)
     [ -z "$old_name" ] && { error "规则索引 $idx 不存在"; exit 1; }
+    # 【v1.4.6 P1】name 管道符校验（同 rule_add）
+    [ -n "$name" ] && { rule_name_check "$name" || exit 1; }
     # 端口格式标准化
     port=$(echo "$port" | sed 's/:/-/g')
     # 修改字段（空值保留原值）
@@ -1080,6 +1114,9 @@ cmd_backup_delete() {
 }
 
 # ========== 文件上传与插件更新 ==========
+# 【v1.4.6】上传大小上限（50MB）：/tmp 是 tmpfs，无上限会耗尽内存导致 OOM
+MAX_UPLOAD_SIZE=$((50 * 1024 * 1024))
+
 cmd_upload_file() {
     local filename="$1"
     local b64file="$2"
@@ -1097,6 +1134,16 @@ cmd_upload_file() {
     
     local upload_dir="/tmp/netmanager_upload"
     mkdir -p "$upload_dir"
+    
+    # 【v1.4.6】大小上限校验（解码前查源文件，base64 膨胀按 2 倍估算）
+    if [ -n "$b64file" ] && [ -f "$b64file" ]; then
+        local src_size=$(wc -c < "$b64file" 2>/dev/null | tr -d ' ')
+        if [ "${src_size:-0}" -gt $((MAX_UPLOAD_SIZE * 2)) ]; then
+            rm -f "$b64file" 2>/dev/null
+            error "上传内容超过大小上限（${MAX_UPLOAD_SIZE} 字节），已拒绝（防 tmpfs OOM）"
+            exit 1
+        fi
+    fi
     
     local outfile="$upload_dir/$filename"
     
@@ -1121,8 +1168,16 @@ cmd_upload_file() {
     fi
     
     rm -f "$b64file" 2>/dev/null
-    [ -f "$outfile" ] && info "文件已保存: $outfile ($(wc -c < "$outfile" 2>/dev/null)字节)"
-    [ ! -f "$outfile" ] && { error "文件保存失败（未收到有效数据）"; exit 1; }
+    [ -f "$outfile" ] || { error "文件保存失败（未收到有效数据）"; exit 1; }
+    # 【v1.4.6】解码产物二次校验 + 权限收紧（600）
+    local out_size=$(wc -c < "$outfile" 2>/dev/null | tr -d ' ')
+    if [ "${out_size:-0}" -gt "$MAX_UPLOAD_SIZE" ]; then
+        rm -f "$outfile" 2>/dev/null
+        error "解码后文件超过大小上限（${MAX_UPLOAD_SIZE} 字节），已拒绝（防 tmpfs OOM）"
+        exit 1
+    fi
+    chmod 600 "$outfile" 2>/dev/null
+    info "文件已保存: $outfile (${out_size}字节)"
 }
 
 cmd_plugin_update() {
@@ -1367,6 +1422,14 @@ update_http_get() {
 cmd_update_check() {
     load_config
     local mirror=$(uci get netmanager.settings.update_mirror 2>/dev/null | tr -d ' ')
+    # 【v1.4.6 P0】UCI 里的镜像也过白名单（防绕过 set 命令直接 uci set 注入恶意镜像）
+    if ! mirror_check "$mirror"; then
+        echo "===UPDATE_CHECK==="
+        echo "UPDATE_AVAILABLE=unknown"
+        echo "ERROR=已配置的镜像不安全，已拒绝使用（详见上方错误）；请重新设置合法镜像或清空直连"
+        echo "===END==="
+        return 1
+    fi
     local api_url="$REPO_API_URL"
     [ -n "$mirror" ] && api_url="${mirror%/}/$REPO_API_URL"
 
@@ -1419,6 +1482,8 @@ cmd_update_check() {
     echo "LATEST_VERSION=$latest_tag"
     echo "ASSET_URL=$asset_url"
     echo "ASSET_SIZE=$asset_size"
+    # 【v1.4.6 S2】同 tag 的 sha256 校验文件 URL（CI 生成 .tar.gz.sha256 资产；旧版本无此资产时 update_apply 跳过校验）
+    echo "SHA256_URL=${asset_url}.sha256"
     echo "UPDATE_AVAILABLE=$update_available"
     if [ "$update_available" = "1" ]; then
         echo "MESSAGE=发现新版本 $latest_tag（当前 v$PLUGIN_VERSION）"
@@ -1491,8 +1556,54 @@ cmd_update_apply() {
     info "下载完成: $pkg_size 字节，完整性校验通过"
     write_log "INFO" "update_apply: 下载校验通过 size=$pkg_size"
 
+    # 【v1.4.6 S2】sha256 签名校验：供应链防护（GitHub 账号被入侵/镜像劫持时拦截恶意包）
+    # 校验文件来自同 Release 的 .sha256 资产；旧版本 Release 无此资产时 warn 跳过（向后兼容）
+    local sha_url=$(echo "$check_out" | sed -n 's/^SHA256_URL=//p')
+    if [ -n "$sha_url" ]; then
+        local sha_file="$download_dir/${dest_name}.sha256"
+        update_http_get "$sha_url" > "$sha_file" 2>/dev/null
+        if [ -s "$sha_file" ] && cat "$sha_file" | grep -qE '^[0-9a-f]{64}'; then
+            local expected=$(awk '{print $1}' "$sha_file")
+            local actual=$(sha256sum "$dest_file" 2>/dev/null | awk '{print $1}')
+            if [ -n "$expected" ] && [ -n "$actual" ] && [ "$expected" != "$actual" ]; then
+                rm -f "$dest_file" "$sha_file" 2>/dev/null
+                error "下载文件 sha256 校验失败（预期=$expected 实际=$actual），已放弃更新（可能被篡改，建议直连 GitHub 重试）"
+                write_log "ERROR" "update_apply: sha256 mismatch expected=$expected actual=$actual"
+                exit 1
+            fi
+            info "sha256 校验通过: $actual"
+            write_log "INFO" "update_apply: sha256 ok=$actual"
+        else
+            warn "未获取到有效 sha256 校验文件（旧版本 Release 或网络受限），跳过校验"
+            write_log "WARN" "update_apply: sha256 文件缺失，跳过校验 sha_url=$sha_url"
+        fi
+        rm -f "$sha_file" 2>/dev/null
+    else
+        warn "本次更新源未提供 sha256 校验（旧版本），跳过校验"
+    fi
+
     # 4. 复用 plugin_update 安装流程（解压 + install.sh + 延迟重启 uhttpd）
     cmd_plugin_update "$dest_name"
+}
+
+# 【v1.4.6 P0】镜像安全校验：非空时必须在域名白名单内（防镜像劫持注入恶意安装包）
+# 返回 0=安全/空镜像；1=不安全（已输出错误）
+mirror_check() {
+    local m="$1"
+    [ -z "$m" ] && return 0
+    local host=$(echo "$m" | sed -n 's|^https\?://\([^/:]*\).*|\1|p')
+    [ -z "$host" ] && { error "镜像 URL 格式无效（应为 http(s)://域名/...）"; return 1; }
+    # 拒绝裸 IP（含 IPv6 简写），白名单只认域名
+    case "$host" in
+        *[0-9].[0-9]*|*[0-9]:*[0-9]*|localhost)
+            error "禁止使用 IP 直连镜像: $host"; return 1 ;;
+    esac
+    local ok=0 h
+    for h in $MIRROR_HOST_ALLOWLIST; do
+        [ "$host" = "$h" ] && ok=1
+    done
+    [ "$ok" = "1" ] || { error "镜像域名 '$host' 不在允许列表（允许: $(echo $MIRROR_HOST_ALLOWLIST | tr ' ' ', ')）；如需新增请编辑 /usr/sbin/netmanager 的 MIRROR_HOST_ALLOWLIST"; return 1; }
+    return 0
 }
 
 cmd_set_update_mirror() {
@@ -1504,6 +1615,8 @@ cmd_set_update_mirror() {
             *) error "镜像前缀必须以 http:// 或 https:// 开头（留空表示直连 GitHub）"; exit 1 ;;
         esac
         m="${m%/}"
+        # 【v1.4.6 P0】域名白名单校验
+        mirror_check "$m" || exit 1
     fi
     uci set netmanager.settings.update_mirror="$m"
     uci commit netmanager
@@ -1726,7 +1839,11 @@ china_load_set() {
 
     if [ "$CHINA_SET_FLAGS" = "modern" ]; then
         # ========= 分片加载（auto-merge 允许重叠逐批加） =========
-        local batch=500 buf="" buf_n=0 line
+        # 【v1.4.6 P1】分片失败不再静默继续：部分加载的 CIDR 集合会误杀国内流量
+        # （规则语义是"不在集合内即 drop"，缺一大段 = 国内 IP 被当境外丢弃）
+        # 任何一批失败 → 记 failed_batches，循环结束后 loaded 按 0 返回，上层
+        # china_apply_rules 因 count<50 中止应用并删除表（fail-closed，安全方向）
+        local batch=500 buf="" buf_n=0 line failed_batches=0
         while IFS= read -r line; do
             [ -z "$line" ] && continue
             if [ "$buf_n" -ge "$batch" ]; then
@@ -1737,6 +1854,7 @@ china_load_set() {
                     loaded=$((loaded + buf_n))
                 else
                     nft_err=$(cat /tmp/netmanager_china_nft.err 2>/dev/null | tr '\n' ' ')
+                    failed_batches=$((failed_batches + 1))
                     write_log "WARN" "china_filter: (modern) nft batch add element failed (size=$buf_n, head=$(echo "$buf" | cut -c1-80)): $nft_err"
                 fi
                 buf="" buf_n=0
@@ -1757,8 +1875,17 @@ china_load_set() {
                 loaded=$((loaded + buf_n))
             else
                 nft_err=$(cat /tmp/netmanager_china_nft.err 2>/dev/null | tr '\n' ' ')
+                failed_batches=$((failed_batches + 1))
                 write_log "WARN" "china_filter: (modern) nft tail batch add element failed (size=$buf_n, head=$(echo "$buf" | cut -c1-80)): $nft_err"
             fi
+        fi
+        if [ "$failed_batches" -gt 0 ]; then
+            # 有失败批次 → 集合不完整，按整体失败处理（上层 count<50 会中止并删表，不会带病生效）
+            write_log "ERROR" "china_filter: (modern) $failed_batches 批分片加载失败，集合不完整，按整体失败处理（防止残缺集合误杀国内流量）"
+            error "中国IP列表分片加载有 $failed_batches 批失败，已中止应用（防止不完整集合误杀国内流量）"
+            rm -f "$clean" "$ef" /tmp/netmanager_china_nft.err 2>/dev/null
+            echo 0
+            return
         fi
     else
         # ========= 一次性原子加载（compat：无 auto-merge，全部 CIDR 一条 add element 让内核合并重叠区间） =========
@@ -1923,6 +2050,14 @@ china_cron_install() {
     [ -f "$cr" ] || touch "$cr"
     china_cron_remove
     local expr=$(china_get_cron)
+    # 【v1.4.6 P2】装载前二次校验（UCI 可能被直接编辑，绕过 set_cron 的校验）；
+    # 非法 cron 会导致 cron 服务加载整表失败，影响所有计划任务
+    local fields=$(echo "$expr" | awk '{print NF}')
+    if [ "$fields" != "5" ] || echo "$expr" | tr ' ' '\n' | grep -qE '[^0-9*,/\-]'; then
+        write_log "ERROR" "china_filter: UCI 中的 cron 表达式非法: '$expr'，跳过安装 cron（请用 set_cron 重新设置）"
+        warn "cron 表达式非法（$fields 段/含非法字符），已跳过安装，其余功能不受影响"
+        return 1
+    fi
     echo "$expr /usr/sbin/netmanager china_filter update" >> "$cr"
     /etc/init.d/cron reload 2>/dev/null
     info "已安装 cron 更新计划: $expr"
@@ -2100,10 +2235,12 @@ cmd_uninstall() {
 
     # 6. 清理临时文件与缓存
     echo "[6/8] 清理临时文件与缓存..."
+    rm -f /bin/netmanager 2>/dev/null
     rm -f /tmp/.netmanager_nft_dstnat 2>/dev/null
     rm -rf /tmp/netmanager 2>/dev/null
     rm -rf /tmp/netmanager_upload 2>/dev/null
     rm -rf /tmp/luci-indexcache /tmp/luci-modulecache 2>/dev/null
+    # 【v1.4.6】不再删除 /tmp/luci-sessions（会踢掉所有已登录用户，包括正在执行卸载的会话）
 
     # 7. 输出卸载完成摘要
     echo "[7/8] 卸载完成。"
@@ -2137,8 +2274,10 @@ cmd_uninstall() {
     (
         sleep 2
         rm -f /usr/sbin/netmanager
+        rm -f /bin/netmanager 2>/dev/null
         /etc/init.d/uhttpd restart >/dev/null 2>&1
-        rm -rf /tmp/luci-indexcache /tmp/luci-modulecache /tmp/luci-sessions 2>/dev/null
+        # 【v1.4.6】保留 /tmp/luci-sessions：删掉会踢掉所有已登录用户（含刚执行卸载的会话）
+        rm -rf /tmp/luci-indexcache /tmp/luci-modulecache 2>/dev/null
     ) >/dev/null 2>&1 &
 }
 

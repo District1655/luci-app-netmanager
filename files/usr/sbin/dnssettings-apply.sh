@@ -1,7 +1,15 @@
 #!/bin/sh
 # ============================================================
-# DNS设置插件 - 应用配置脚本 (v1.4.5)
+# DNS设置插件 - 应用配置脚本 (v1.4.6)
 # 读取 /etc/config/dnssettings，写入系统 network/dhcp 配置并重载服务
+#
+# v1.4.6 更新：
+#   1. WAN 接口自动探测（用户配置 → 默认路由反查 → 兜底 wan/wan6），
+#      不再硬编码 network.wan / network.wan6
+#   2. dhcp_option 改 delete + add_list 正确写法（list 类型）
+#   3. PPPoE 双栈 fallback 并入 wan.dns 前先 delete 全量重写去重
+#      （修复重复应用时 add_list 逐次累积）
+#   4. logger 输出过滤控制字符（防 syslog 注入转义序列）
 #
 # v1.4.5 防护逻辑（修复空值断网）：
 #   1. peerdns=0 但自定义 DNS 全空 → 拒绝写入该接口（保持现状），
@@ -16,9 +24,12 @@ CONFIG_FILE="/etc/config/dnssettings"
 LOG_TAG="dnssettings"
 BACKUP_DIR="/root/backup"
 
+# 【v1.4.6】logger 过滤控制字符：防止配置值中的转义序列污染 syslog/终端
 log() {
-    logger -t "$LOG_TAG" "$1"
-    echo "[$LOG_TAG] $1"
+    local msg
+    msg=$(printf '%s' "$1" | tr -d '\000-\010\013\014\016-\037')
+    logger -t "$LOG_TAG" "$msg"
+    echo "[$LOG_TAG] $msg"
 }
 
 # 检查配置文件是否存在
@@ -26,6 +37,55 @@ if [ ! -f "$CONFIG_FILE" ]; then
     log "ERROR: 配置文件 $CONFIG_FILE 不存在"
     exit 1
 fi
+
+# ============================================================
+# 【v1.4.6】WAN 接口自动探测
+# 优先级：1. dnssettings.wan.wan_iface / wan6_iface 用户显式配置
+#         2. 默认路由所在接口反查 network 节名
+#         3. 兜底 wan / wan6（保持旧版行为）
+# ============================================================
+iface_from_route() {
+    # $1: -4 或 -6；输出默认路由 dev 对应的 network 节名（找不到则空）
+    local rt_dev family
+    family="$1"
+    rt_dev=$(ip "$family" route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+    [ -z "$rt_dev" ] && return
+    # 遍历 network 接口节，匹配 device/ifname/name
+    local idx=0 name dev
+    while uci -q get "network.@interface[$idx]" >/dev/null 2>&1; do
+        name=$(uci -q get "network.@interface[$idx]" 2>/dev/null | awk -F. '{print $2}')
+        dev=$(uci -q get "network.@interface[$idx].device" 2>/dev/null)
+        [ -z "$dev" ] && dev=$(uci -q get "network.@interface[$idx].ifname" 2>/dev/null)
+        # device 可能是 logical 或 physical 名，任一命中即可
+        if [ "$dev" = "$rt_dev" ] || [ "$name" = "$rt_dev" ]; then
+            echo "$name"
+            return
+        fi
+        idx=$((idx+1))
+    done
+    echo "$rt_dev"
+}
+
+detect_wan_iface() {
+    # $1: 4 或 6
+    local custom rt
+    if [ "$1" = "4" ]; then
+        custom=$(uci -q get dnssettings.wan.wan_iface 2>/dev/null)
+        [ -n "$custom" ] && uci -q get "network.$custom" >/dev/null 2>&1 && { echo "$custom"; return; }
+        rt=$(iface_from_route -4)
+        [ -n "$rt" ] && { echo "$rt"; return; }
+        echo "wan"
+    else
+        custom=$(uci -q get dnssettings.wan.wan6_iface 2>/dev/null)
+        [ -n "$custom" ] && uci -q get "network.$custom" >/dev/null 2>&1 && { echo "$custom"; return; }
+        rt=$(iface_from_route -6)
+        [ -n "$rt" ] && { echo "$rt"; return; }
+        echo "wan6"
+    fi
+}
+
+WAN_IFACE=$(detect_wan_iface 4)
+WAN6_IFACE=$(detect_wan_iface 6)
 
 # ---------- 读取 WAN 配置 ----------
 WAN_PEERDNS=$(uci get dnssettings.wan.peerdns 2>/dev/null)
@@ -65,11 +125,11 @@ fi
 # ============================================================
 # 1. 配置 WAN 口 IPv4 DNS
 # ============================================================
-if uci get network.wan >/dev/null 2>&1; then
+if uci get "network.$WAN_IFACE" >/dev/null 2>&1; then
     if [ "$WAN_PEERDNS" = "1" ]; then
-        uci set network.wan.peerdns='1'
-        uci delete network.wan.dns 2>/dev/null
-        log "WAN IPv4: 使用运营商下发 DNS"
+        uci set "network.$WAN_IFACE.peerdns='1'"
+        uci delete "network.$WAN_IFACE.dns" 2>/dev/null
+        log "WAN IPv4 ($WAN_IFACE): 使用运营商下发 DNS"
     else
         # 【防护】自定义模式必须至少提供一个 DNS，否则保持现状防止断网
         WAN_V4_DNS=""
@@ -78,27 +138,27 @@ if uci get network.wan >/dev/null 2>&1; then
         if [ -z "$WAN_V4_DNS" ]; then
             log "WARN: WAN IPv4 自定义 DNS 为空，跳过该接口（保持现状，防止断网）"
         else
-            uci set network.wan.peerdns='0'
+            uci set "network.$WAN_IFACE.peerdns='0'"
             # list 字段：先清残留，再逐个 add_list（uci set 单元素是错误写法）
-            uci delete network.wan.dns 2>/dev/null
+            uci delete "network.$WAN_IFACE.dns" 2>/dev/null
             for dns in $WAN_V4_DNS; do
-                uci add_list network.wan.dns="$dns"
+                uci add_list "network.$WAN_IFACE.dns=$dns"
             done
-            log "WAN IPv4: $WAN_V4_DNS"
+            log "WAN IPv4 ($WAN_IFACE): $WAN_V4_DNS"
         fi
     fi
 else
-    log "WARN: 未找到 network.wan 接口，跳过 WAN IPv4 配置"
+    log "WARN: 未找到 network.$WAN_IFACE 接口，跳过 WAN IPv4 配置"
 fi
 
 # ============================================================
 # 2. 配置 WAN6 口 IPv6 DNS
 # ============================================================
-if uci get network.wan6 >/dev/null 2>&1; then
+if uci get "network.$WAN6_IFACE" >/dev/null 2>&1; then
     if [ "$WAN_PEERDNS" = "1" ]; then
-        uci set network.wan6.peerdns='1'
-        uci delete network.wan6.dns 2>/dev/null
-        log "WAN6 IPv6: 使用运营商下发 DNS"
+        uci set "network.$WAN6_IFACE.peerdns='1'"
+        uci delete "network.$WAN6_IFACE.dns" 2>/dev/null
+        log "WAN6 IPv6 ($WAN6_IFACE): 使用运营商下发 DNS"
     else
         WAN_V6_DNS=""
         [ -n "$WAN_DNS1_V6" ] && WAN_V6_DNS="$WAN_DNS1_V6"
@@ -106,43 +166,56 @@ if uci get network.wan6 >/dev/null 2>&1; then
         if [ -z "$WAN_V6_DNS" ]; then
             log "WARN: WAN6 IPv6 自定义 DNS 为空，跳过该接口（保持现状，防止断网）"
         else
-            uci set network.wan6.peerdns='0'
-            uci delete network.wan6.dns 2>/dev/null
+            uci set "network.$WAN6_IFACE.peerdns='0'"
+            uci delete "network.$WAN6_IFACE.dns" 2>/dev/null
             for dns in $WAN_V6_DNS; do
-                uci add_list network.wan6.dns="$dns"
+                uci add_list "network.$WAN6_IFACE.dns=$dns"
             done
-            log "WAN6 IPv6: $WAN_V6_DNS"
+            log "WAN6 IPv6 ($WAN6_IFACE): $WAN_V6_DNS"
         fi
     fi
 else
-    log "WARN: 未找到 network.wan6 接口"
+    log "WARN: 未找到 network.$WAN6_IFACE 接口"
     # PPPoE 双栈：IPv6 DNS 可并入 wan 接口的 dns list（netifd 自动区分协议）
-    if uci get network.wan >/dev/null 2>&1 && [ "$WAN_PEERDNS" != "1" ]; then
+    # 【v1.4.6 去重】并入前先 delete 整个 dns list 再重写（IPv4+IPv6 全量），
+    # 修复重复应用时 add_list 逐次累积导致 dns 列表无限增长的 bug
+    if uci get "network.$WAN_IFACE" >/dev/null 2>&1 && [ "$WAN_PEERDNS" != "1" ]; then
         WAN_V6_DNS=""
         [ -n "$WAN_DNS1_V6" ] && WAN_V6_DNS="$WAN_DNS1_V6"
         [ -n "$WAN_DNS2_V6" ] && WAN_V6_DNS="$WAN_V6_DNS $WAN_DNS2_V6"
         if [ -n "$WAN_V6_DNS" ]; then
-            for dns in $WAN_V6_DNS; do
-                uci add_list network.wan.dns="$dns"
+            # 重写全量 list：IPv4 自定义值 + IPv6 并入值，跳过重复值
+            # WAN_V4_DNS 显式初始化（第 1 节为空跳过时该变量可能未赋值）
+            [ -z "$WAN_V4_DNS" ] && WAN_V4_DNS=""
+            uci delete "network.$WAN_IFACE.dns" 2>/dev/null
+            ADDED_DNS=" "
+            for dns in $WAN_V4_DNS $WAN_V6_DNS; do
+                case "$ADDED_DNS" in
+                    *" $dns "*) ;;  # 已写入，跳过
+                    *) uci add_list "network.$WAN_IFACE.dns=$dns"; ADDED_DNS="$ADDED_DNS$dns " ;;
+                esac
             done
-            log "WAN IPv6(双栈并入 wan.dns): $WAN_V6_DNS"
+            log "WAN IPv6(双栈并入 $WAN_IFACE.dns): $WAN_V6_DNS"
         else
-            log "（IPv6 自定义 DNS 为空，不并入 wan）"
+            log "（IPv6 自定义 DNS 为空，不并入 $WAN_IFACE）"
         fi
     fi
 fi
 
 # ============================================================
 # 3. 配置 LAN 口 IPv4 DHCP 下发 DNS
+#    【v1.4.6】dhcp_option 在 OpenWrt 中是 list 类型（可多实例并存），
+#    uci set 覆盖单值会在残留旧 list 上叠加，改用 delete + add_list 正确写法
 # ============================================================
 if [ "$LAN_FORCE" = "1" ]; then
-    LAN_V4_OPTION="6"
-    [ -n "$LAN_DNS1_V4" ] && LAN_V4_OPTION="$LAN_V4_OPTION,$LAN_DNS1_V4"
-    [ -n "$LAN_DNS2_V4" ] && LAN_V4_OPTION="$LAN_V4_OPTION,$LAN_DNS2_V4"
-    if [ "$LAN_V4_OPTION" = "6" ]; then
+    if [ -z "$LAN_DNS1_V4" ] && [ -z "$LAN_DNS2_V4" ]; then
         log "WARN: 勾选强制下发但 LAN IPv4 DNS 为空，跳过（保持现状，防止设备断解析）"
     else
-        uci set dhcp.lan.dhcp_option="$LAN_V4_OPTION"
+        uci delete dhcp.lan.dhcp_option 2>/dev/null
+        LAN_V4_OPTION="6"
+        [ -n "$LAN_DNS1_V4" ] && LAN_V4_OPTION="$LAN_V4_OPTION,$LAN_DNS1_V4"
+        [ -n "$LAN_DNS2_V4" ] && LAN_V4_OPTION="$LAN_V4_OPTION,$LAN_DNS2_V4"
+        uci add_list dhcp.lan.dhcp_option="$LAN_V4_OPTION"
         log "LAN IPv4 DHCP: $LAN_V4_OPTION"
     fi
 else
