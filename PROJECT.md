@@ -1,4 +1,4 @@
-﻿# luci-app-netmanager 项目全景文档（PROJECT.md）
+# luci-app-netmanager 项目全景文档（PROJECT.md）
 
 > **基线**：v1.5.1（v1.4.6 CSRF 回归紧急修复：改用 LuCI 内建 authtoken + CBI 防御加固）· main 分支 · 更新时间 2026-09-05
 >

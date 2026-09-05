@@ -1,4 +1,4 @@
-﻿#!/bin/ash
+#!/bin/ash
 # ============================================================
 # 网络管理插件 (luci-app-netmanager) - 一键安装脚本 v1.5.1
 # 由 luci-app-fwmanager (防火墙管理) 与 luci-app-dnssettings (DNS设置) 合并而成

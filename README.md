@@ -1,4 +1,4 @@
-﻿# 网络管理插件 (luci-app-netmanager)
+# 网络管理插件 (luci-app-netmanager)
 
 > 版本：v1.5.1
 >
