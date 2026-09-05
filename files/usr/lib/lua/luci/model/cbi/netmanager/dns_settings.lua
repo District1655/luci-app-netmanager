@@ -128,7 +128,13 @@ o = s:option(Button, "_apply", translate("应用配置"))
 o.inputtitle = translate("应用配置")
 o.inputstyle = "apply"
 o.write = function()
-    local rc, out = run_dns_script("/usr/sbin/dnssettings-apply.sh")
+    -- 【v1.4.7 防御】脚本执行异常（如环境差异）不再炸整个 POST 请求，
+    -- 错误文本透传到页面消息，便于定位
+    local ok, rc, out = pcall(run_dns_script, "/usr/sbin/dnssettings-apply.sh")
+    if not ok then
+        m.message = "DNS 配置应用执行异常：" .. to_one_line(tostring(rc))
+        return
+    end
     if rc == 0 then
         m.message = "DNS 配置已应用成功，已写入 /etc/config/ 并重载网络服务（详细输出见「设置 → 运行日志」）"
     else
@@ -140,7 +146,11 @@ o = s:option(Button, "_backup", translate("备份当前系统配置"))
 o.inputtitle = translate("备份配置")
 o.inputstyle = "save"
 o.write = function()
-    local rc, out = run_dns_script("/usr/sbin/dnssettings-backup.sh")
+    local ok, rc, out = pcall(run_dns_script, "/usr/sbin/dnssettings-backup.sh")
+    if not ok then
+        m.message = "配置备份执行异常：" .. to_one_line(tostring(rc))
+        return
+    end
     if rc == 0 then
         m.message = "配置已备份到 /root/backup/（保留最近 5 份）"
     else

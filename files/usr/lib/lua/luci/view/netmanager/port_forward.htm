@@ -1,4 +1,4 @@
-<%+header%>
+﻿<%+header%>
 <%+netmanager/common_head%>
 <div class="netmanager-container">
     <div class="netmanager-header">
@@ -74,7 +74,7 @@
         </table>
         <div id="action_result" class="netmanager-result"></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.4.6</div>
+    <div class="footer-sign">网络管理插件 v1.4.8</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -100,7 +100,7 @@ function loadPortList() {
                     const [idx, name, proto, sp, dip, dp, enabled, pkts] = parts;
                     const status = enabled === '1' ? '<span class="badge badge-green">启用</span>' : '<span class="badge badge-gray">禁用</span>';
                     const protoBadge = proto === 'tcp' ? '<span class="badge badge-blue">TCP</span>' : proto === 'udp' ? '<span class="badge badge-purple">UDP</span>' : '<span class="badge badge-blue">TCP+UDP</span>';
-                    // 【安全 v1.4.6 P1-2】delPort 改数组下标传参（escapeHtml 在 onclick 属性上下文
+                    // 【安全 v1.4.7 P1-2】delPort 改数组下标传参（escapeHtml 在 onclick 属性上下文
                     // 可被 &#39; 实体还原绕过，自由文本入 onclick 仍可注入）
                     const rowId = window.PORT_ROWS.push({sp: sp, proto: proto, dip: dip, dp: dp}) - 1;
                     ipv4Html += `<tr><td>${escapeHtml(name)}</td><td>${protoBadge}</td><td><b>${escapeHtml(sp)}</b></td><td>${escapeHtml(dip)}:${escapeHtml(dp)}</td><td>${escapeHtml(pkts)}</td><td>${status}</td><td><button class="btn btn-primary btn-sm" onclick="editPort(${rowId})">编辑</button> <button class="btn btn-danger btn-sm" onclick="delPort(${rowId})">删除</button></td></tr>`;
@@ -135,7 +135,7 @@ function addPortForward() {
     });
 }
 function delPort(rowId) {
-    // 【安全 v1.4.6 P1-2】由 onclick 传入数组下标，再从 window.PORT_ROWS 取端口/协议
+    // 【安全 v1.4.7 P1-2】由 onclick 传入数组下标，再从 window.PORT_ROWS 取端口/协议
     const r = (window.PORT_ROWS && window.PORT_ROWS[rowId]) || {};
     const port = r.sp, proto = r.proto;
     if (!port || !proto) return;

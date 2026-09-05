@@ -1,4 +1,7 @@
--- 静态 IP / IPv6 分配 - v1.4.6
+-- 静态 IP / IPv6 分配 - v1.4.7
+-- v1.4.7 更新：
+--   on_before_commit 以 pcall 包裹：重复条目合并/幽灵清理异常不再中断保存，
+--   错误文本透传到页面消息（ucode LuCI 环境差异导致的问题可被用户直接看到）
 -- v1.4.6 更新：
 --   1. 重复 host 合并改为"仅检测、提交时执行"（原页面加载即 commit，GET 刷新就会改配置）
 --   2. DUID 误判修复：排除 DHCPv4 clientid 中的 MAC 原文型 / 01+MAC 硬件型标识
@@ -337,18 +340,24 @@ m:append(Template("netmanager/cbi_nav"))
 
 -- 保存前：合并重复 MAC 条目 + 清理幽灵条目（MAC 与 DUID 均为空，避免"消失但占位"无法删除）
 -- 【v1.4.6】合并由页面加载时移入此处（仅在真实提交时写库，GET 刷新不再改配置）
+-- 【v1.4.7 防御】pcall 包裹：合并/清理异常不阻断用户保存，错误透传到页面消息
 m.on_before_commit = function(self)
-    do_merge_duplicate_hosts(self.uci)
-    local to_del = {}
-    self.uci:foreach("dhcp", "host", function(s)
-        local mac = s.mac or ""
-        local duid = s.duid or ""
-        if mac == "" and duid == "" then
-            table.insert(to_del, s[".name"])
+    local ok, err = pcall(function()
+        do_merge_duplicate_hosts(self.uci)
+        local to_del = {}
+        self.uci:foreach("dhcp", "host", function(s)
+            local mac = s.mac or ""
+            local duid = s.duid or ""
+            if mac == "" and duid == "" then
+                table.insert(to_del, s[".name"])
+            end
+        end)
+        for _, n in ipairs(to_del) do
+            self.uci:delete("dhcp", n)
         end
     end)
-    for _, n in ipairs(to_del) do
-        self.uci:delete("dhcp", n)
+    if not ok then
+        self.message = "重复条目合并/幽灵清理失败（保存仍已继续）：" .. tostring(err)
     end
 end
 

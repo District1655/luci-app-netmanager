@@ -1,4 +1,4 @@
-<%+header%>
+﻿<%+header%>
 <%+netmanager/common_head%>
 <div class="netmanager-container">
     <div class="netmanager-header">
@@ -98,7 +98,7 @@
             <table class="netmanager-table" style="margin-bottom:10px;">
                 <tr>
                     <td width="30%">当前版本</td>
-                    <td><b id="online_cur_version">v1.4.6</b></td>
+                    <td><b id="online_cur_version">v1.4.8</b></td>
                 </tr>
                 <tr>
                     <td>最新版本</td>
@@ -199,7 +199,7 @@
         <h3>关于插件</h3>
         <table class="netmanager-table">
             <tr><td width="30%">插件名称</td><td>网络管理 (luci-app-netmanager)</td></tr>
-            <tr><td>版本</td><td id="plugin_version">v1.4.6</td></tr>
+            <tr><td>版本</td><td id="plugin_version">v1.4.8</td></tr>
             <tr><td>作者</td><td><b>Network Manager</b></td></tr>
             <tr><td>适配系统</td><td>iStoreOS / OpenWrt (fw4/nftables)</td></tr>
             <tr><td>功能模块</td><td>系统概览 / 端口转发 / 规则管理 / SSH日志 / 访问日志</td></tr>
@@ -231,7 +231,7 @@
             </div>
         </div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.4.6<br><span style="font-size:10px;">适配 iStoreOS / OpenWrt | 基于 fw4/nftables</span></div>
+    <div class="footer-sign">网络管理插件 v1.4.8<br><span style="font-size:10px;">适配 iStoreOS / OpenWrt | 基于 fw4/nftables</span></div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -417,7 +417,7 @@ function listBackups() {
             html = '<div class="text-muted" style="padding:10px;">暂无备份文件</div>';
         } else {
             html = `<table class="netmanager-table"><thead><tr><th>备份文件名</th><th>大小</th><th>操作</th></tr></thead><tbody>`;
-            // 【安全 v1.4.6】行数据存入 JS 数组，onclick 只传纯数字下标，
+            // 【安全 v1.4.7】行数据存入 JS 数组，onclick 只传纯数字下标，
             // 杜绝备份文件名（用户可控内容）注入 onclick；文件名展示统一转义
             window.BACKUP_ROWS = [];
             backups.forEach(b => {
@@ -445,7 +445,7 @@ function formatSize(bytes) {
 }
 
 function restoreBackup(rowId) {
-    // 【安全 v1.4.6】onclick 传数组下标，从 window.BACKUP_ROWS 取文件名（避免自由文本入 onclick）
+    // 【安全 v1.4.7】onclick 传数组下标，从 window.BACKUP_ROWS 取文件名（避免自由文本入 onclick）
     const filename = (window.BACKUP_ROWS && window.BACKUP_ROWS[rowId]) || '';
     if (!filename) return;
     if (!confirm(`确定要从备份 ${filename} 恢复配置吗？\n\n⚠️ 恢复前会自动备份当前配置！`)) return;
@@ -541,7 +541,7 @@ function loadChinaStatus() {
         const statusBadge = en === '1' ? '<span class="badge badge-green">已启用</span>' + ruleBadge : '<span class="badge badge-gray">已关闭</span>';
         document.getElementById('china_status_cell').innerHTML = statusBadge;
         document.getElementById('china_url').value = url;
-        // 【安全 v1.4.6】lu/cnt/devs 来自后端命令输出（WAN_DEVS 含接口名），写入前必须转义
+        // 【安全 v1.4.7】lu/cnt/devs 来自后端命令输出（WAN_DEVS 含接口名），写入前必须转义
         document.getElementById('china_update_cell').innerHTML = '上次更新: ' + escapeHtml(lu || '未更新') + ' | CIDR条数: <b>' + escapeHtml(cnt) + '</b>';
         document.getElementById('china_wan_cell').innerHTML = 'WAN设备: <code>' + escapeHtml(devs || '(未探测到)') + '</code> | 规则: ' + (active === '1' ? '<span class="text-success">生效中</span>' : '<span class="text-muted">未生效</span>');
         // cron 预设回填

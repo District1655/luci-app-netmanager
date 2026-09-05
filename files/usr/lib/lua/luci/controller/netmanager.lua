@@ -16,28 +16,34 @@ function index()
     entry({"admin", "netmanager", "dns_staticv6"}, cbi("netmanager/dns_staticv6"), _("静态IPv6分配"), 7)
     entry({"admin", "netmanager", "settings"}, template("netmanager/settings"), _("设置"), 8)
     entry({"admin", "netmanager", "api"}, call("api_handler"))
-    -- 【v1.4.6】dns_apply / dns_backup 由独立 GET 路由改为 api_handler 内的 POST action
-    -- （GET 路由刷新页面即重复执行应用/备份；POST 化后由 DNS 设置页按钮主动触发）
+    -- 【v1.4.6】dns_apply / dns_backup 原 GET 路由已改为 api_handler 内 POST action
+    -- 【v1.4.7】保留两个兼容路由重定向到 DNS 设置页（v1.4.5 的书签/浏览器缓存仍
+    --  指向旧 GET 路由会 404；仅重定向不执行脚本，不复活"刷新即重复执行"问题）
+    entry({"admin", "netmanager", "dns_apply"}, call("dns_legacy_redirect"))
+    entry({"admin", "netmanager", "dns_backup"}, call("dns_legacy_redirect"))
+end
+
+-- 【v1.4.7】v1.4.5 旧 GET 路由兼容：重定向到 DNS 设置页（不执行任何脚本）
+function dns_legacy_redirect()
+    luci.http.redirect(luci.dispatcher.build_url("admin", "netmanager", "dns"))
 end
 
 -- ============================================================
--- 【v1.4.6】CSRF 防护：请求级 Token
--- 跨站 <form method=POST> 可携带登录 cookie 触发 API（POST-only 不足以防御），
--- 要求每个请求携带服务端注入的 token。Token 由会话 ID 派生（会话失效即失效），
--- 视图经 common_head.htm 的 apiFetch 自动携带，无需各页面单独适配。
--- 注：本函数为模块导出（非 local），供视图渲染时计算同一 token。
+-- 【v1.4.7】CSRF 防护：对齐 LuCI 内建 authtoken 机制
+-- v1.4.6 曾用 luci.dispatcher.context.session.id 自派生 token——ucode 版 LuCI
+-- 的 context 没有 session.id（会话 ID 实际存于 context.authsession，框架内建
+-- CSRF token 存于 context.authtoken），导致 sid 取空 → 所有 API 被 fail-closed
+-- 拒绝 403。现改为直接比对框架 authtoken（与 CBI 表单 token 同源，由 ucode
+-- 分发器为每个已认证会话生成，跨站页面无法获得）。
 -- ============================================================
 function csrf_token()
-    local sid = (luci.dispatcher.context and luci.dispatcher.context.session
-        and luci.dispatcher.context.session.id) or ""
-    if sid == "" then return "" end
-    -- sid 的 sha256 派生（不可逆，跨站者无法从第三方页面构造）
-    local tok = luci.sys.exec("printf '%s' '" .. sid .. "' | sha256sum | cut -c1-32") or ""
-    return tok:gsub("%s", "")
+    local ctx = luci.dispatcher.context
+    return (ctx and ctx.authtoken) and tostring(ctx.authtoken) or ""
 end
 
 local function csrf_check()
     local expected = csrf_token()
+    -- authtoken 缺失说明未通过认证（正常到不了这里，防御性 fail-closed）
     if expected == "" then return false end
     local got = luci.http.formvalue("token") or ""
     if type(got) == "table" then got = "" end

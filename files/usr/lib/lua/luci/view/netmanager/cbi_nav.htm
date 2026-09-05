@@ -1,10 +1,11 @@
-<%--
+<%#
     netmanager/cbi_nav.htm - CBI 页面专用页内导航条
     用途：DNS设置 / 静态IPv6分配 两个 CBI 表单页面无自绘视图的 nav.htm 页内导航，
          从自绘页面进入后页签消失（bug2），本模板以 CBI Template 节点注入补齐。
     特点：自带内联样式（CBI 页面不加载 common_head.htm，不能依赖外部样式类）；
          active 判断与 nav.htm 一致（requestpath[3]）。
---%>
+    注意：LuCI 模板注释必须用 <%# %>，不可用 <%-- --%>（JSP 风格，解析器报 unexpected symbol near '-'）
+%>
 <%
 local path = luci.dispatcher.context.requestpath
 local cur = (type(path) == "table") and (path[3] or "") or ""

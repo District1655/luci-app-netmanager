@@ -1,6 +1,6 @@
-# luci-app-netmanager 项目全景文档（PROJECT.md）
+﻿# luci-app-netmanager 项目全景文档（PROJECT.md）
 
-> **基线**：v1.4.6（阶段一 P0 安全加固 + 逻辑修复全量落地）· 待提交 commit（见 6.1）· main 分支 · 更新时间 2026-09-05
+> **基线**：v1.4.8（v1.4.6 CSRF 回归紧急修复：改用 LuCI 内建 authtoken + CBI 防御加固）· main 分支 · 更新时间 2026-09-05
 >
 > **用途**：本文件是项目的**单一查阅入口**——文件架构、全部源码、维护历史、开发计划、注意事项集中一处，供后续开发、排错与交接时快速定位。
 >
@@ -35,7 +35,7 @@
 | 形态 | LuCI 插件（Lua 控制器 + CBI 模型 + 自绘视图 + shell 后端） |
 | 目标平台 | iStoreOS / OpenWrt 23.05+（fw4 / nftables） |
 | 安装形态 | tar.gz + install.sh（非 ipk，原因见 8.1） |
-| 当前版本 | v1.4.6（2026-09-05，安全加固版） |
+| 当前版本 | v1.4.8（2026-09-05，CSRF 回归修复版） |
 | 许可证 | MIT（仓库根目录 LICENSE 文件，v1.4.6 补齐） |
 | 前身 | luci-app-fwmanager v1.3.33 + luci-app-dnssettings v1.2.1，v1.4.0 合并 |
 

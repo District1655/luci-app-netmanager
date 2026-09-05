@@ -1,6 +1,6 @@
-# 网络管理插件 (luci-app-netmanager)
+﻿# 网络管理插件 (luci-app-netmanager)
 
-> 版本：v1.4.6
+> 版本：v1.4.8
 >
 > 适配：iStoreOS / OpenWrt (fw4/nftables, Lua LuCI)
 >
@@ -225,6 +225,21 @@ config actions 'actions'  # 操作按钮占位
 5. 更新前建议先备份配置；只支持 `.tar.gz` 或 `.tgz` 格式
 
 ## 更新日志
+
+### v1.4.8 (2026-09-05)
+
+**紧急修复：v1.4.7 两处线上崩溃回归**
+
+- **修复 DNS 设置 / 静态 IPv6 页面 Runtime error 崩溃**：`cbi_nav.htm` 文件头部误用 JSP 风格注释 `<%-- --%>`，LuCI 模板解析器不支持该语法（`<%` 后遇单个 `-` 报 `unexpected symbol near '-'`），导致两个 CBI 页面加载即崩溃；现改为 LuCI 标准注释 `<%# %>`
+- **修复 CSRF Token 在 ucode 版 LuCI 上仍可能全部 403**：v1.4.7 视图端改用框架模板变量 `<%=token%>`，但部分 ucode LuCI 版本的 include 子模板（common_head.htm）上下文中 `token` 变量未传递，导致 `CSRF_TOKEN` 恒为空字符串；现改为在 common_head.htm 内联 Lua 代码直接从 `luci.dispatcher.context.authtoken` 取值（与控制器 `csrf_token()` 完全同源），不再依赖模板变量传递链
+
+### v1.4.7 (2026-09-04)
+
+**紧急修复：v1.4.6 CSRF 机制在 ucode 版 LuCI 上全部 API 403 的回归**
+
+- **修复 CSRF Token 全量失效**：v1.4.6 的 token 由 `luci.dispatcher.context.session.id` 派生——**ucode 版 LuCI（iStoreOS 24.10）的 context 没有 `session` 字段**（会话 ID 实际存于 `context.authsession`，框架内建 CSRF token 存于 `context.authtoken`），导致 token 恒为空、`csrf_check` fail-closed 将**所有 API 请求拒绝 403**（页面可打开但全部数据加载失败）。现改为直接使用 **LuCI 内建 `authtoken`**（与 CBI 表单 token 同源，由分发器为每个已认证会话生成），视图端同步改用框架模板变量 `<%=token%>`，不再 require 控制器模块
+- **修复旧版 DNS 页签 404**：v1.4.5 书签/浏览器缓存指向的 `dns_apply`/`dns_backup` GET 路由已被删除；现恢复为**安全重定向**（仅跳转到 DNS 设置页，不执行脚本，不复活"刷新即重复执行"问题）
+- **CBI 操作按钮防御加固**：「应用配置」「备份配置」与静态 IPv6「保存并应用」的脚本执行/条目合并环节以 `pcall` 包裹，异常不再中断整个请求，错误文本透传到页面消息（便于精确反馈问题）
 
 ### v1.4.6 (2026-09-04)
 

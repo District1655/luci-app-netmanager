@@ -72,15 +72,20 @@
 .text-info { color: #2563eb; }
 </style>
 <script>
-/* ===== 公共 JS（v1.4.6）：HTML转义 + API 调用封装（token/超时/会话过期） =====
+/* ===== 公共 JS（v1.4.7）：HTML转义 + API 调用封装（token/超时/会话过期） =====
    背景：命令输出（含用户可控的文件名/用户名/日志内容）此前直接拼 innerHTML，
    构成存储型 XSS；统一走本封装消除注入面。
-   v1.4.6：API 强制 CSRF Token（common_head 渲染时注入变量），apiFetch 自动携带。 */
+   v1.4.6：API 强制 CSRF Token（渲染时注入变量），apiFetch 自动携带。
+   v1.4.7：改用 LuCI 框架内建模板变量 token（= context.authtoken，与 CBI 表单
+   同源），不再 require controller 模块（v1.4.6 的自派生 token 在 ucode LuCI
+   下因 context.session.id 不存在而恒为空，导致全部 API 403）。 */
 
-/* CSRF Token：由控制器按会话派生，所有 API 调用必须携带（跨站页面拿不到）
-   注：CBI 页面不加载本文件，其表单按钮由 LuCI 框架自身 token 机制保护 */
-<%local nm_ctrl = require "luci.controller.netmanager"%>
-var CSRF_TOKEN = '<%=nm_ctrl.csrf_token()%>';
+/* CSRF Token：框架 authtoken，所有 API 调用必须携带（跨站页面拿不到）
+   注：CBI 页面不加载本文件，其表单按钮由 LuCI 框架自身 token 机制保护
+   v1.4.7 修复：不依赖模板变量 token（ucode LuCI 中该变量可能为空导致全部 API 403），
+   直接从 luci.dispatcher.context.authtoken 获取，与控制器 csrf_token() 同源 */
+<% local _nm_authtok = (luci.dispatcher.context and luci.dispatcher.context.authtoken) and tostring(luci.dispatcher.context.authtoken) or "" %>
+var CSRF_TOKEN = '<%=pcdata(_nm_authtok)%>';
 
 /* HTML 转义：任何要写入 innerHTML 的动态内容必须先过此函数 */
 function escapeHtml(s) {
