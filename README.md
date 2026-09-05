@@ -1,6 +1,6 @@
 ﻿# 网络管理插件 (luci-app-netmanager)
 
-> 版本：v1.4.9
+> 版本：v1.4.10
 >
 > 适配：iStoreOS / OpenWrt (fw4/nftables, Lua LuCI)
 >
@@ -225,6 +225,12 @@ config actions 'actions'  # 操作按钮占位
 5. 更新前建议先备份配置；只支持 `.tar.gz` 或 `.tgz` 格式
 
 ## 更新日志
+
+### v1.4.10 (2026-09-05)
+
+**修复：DNS 设置页面表单空白（CBI NamedSection type 不匹配）**
+
+- **修复 DNS 设置页面表单内容空白**：CBI 模型中 4 个 `NamedSection` 的 type 参数误写为节名（`"wan"`/`"lan"`/`"dnsmasq"`/`"actions"`），但 `/etc/config/dnssettings` 中实际节类型为 `"dnssettings"`（`config dnssettings 'wan'`）；ucode 版 LuCI 对 type 匹配严格，找不到对应节即跳过渲染，导致页面只有标题和导航、表单区域完全空白。现全部改为 `NamedSection(name, "dnssettings", ...)`，WAN/LAN/dnsmasq/操作 四个区块恢复正常显示
 
 ### v1.4.9 (2026-09-05)
 

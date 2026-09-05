@@ -15,7 +15,7 @@ m:append(Template("netmanager/cbi_nav"))
 -- ============================================================
 -- 第一部分：WAN 口 DNS（上游 DNS，路由器自己用）
 -- ============================================================
-s = m:section(NamedSection, "wan", "wan", translate("WAN 口上游 DNS"),
+s = m:section(NamedSection, "wan", "dnssettings", translate("WAN 口上游 DNS"),
     translate("路由器本身解析域名使用的 DNS，PPPoE/DHCP 拨号时生效。"))
 
 o = s:option(Flag, "peerdns", translate("使用运营商下发的 DNS"),
@@ -50,7 +50,7 @@ o:depends("peerdns", "0")
 -- ============================================================
 -- 第二部分：LAN 口 DNS（下发给设备的 DNS）
 -- ============================================================
-s = m:section(NamedSection, "lan", "lan", translate("LAN 口设备 DNS"),
+s = m:section(NamedSection, "lan", "dnssettings", translate("LAN 口设备 DNS"),
     translate("通过 DHCP/RA 下发给手机、电脑等局域网设备的 DNS 服务器。"))
 
 o = s:option(Flag, "force_dns", translate("强制下发自定义 DNS 给设备"),
@@ -85,7 +85,7 @@ o:depends("force_dns", "1")
 -- ============================================================
 -- 第三部分：dnsmasq 全局转发
 -- ============================================================
-s = m:section(NamedSection, "dnsmasq", "dnsmasq", translate("dnsmasq 全局转发"),
+s = m:section(NamedSection, "dnsmasq", "dnssettings", translate("dnsmasq 全局转发"),
     translate("dnsmasq 上游解析服务器，设备走路由器缓存时实际使用的 DNS。"))
 
 o = s:option(Flag, "enable", translate("启用全局转发"),
@@ -107,7 +107,7 @@ o:depends("enable", "1")
 -- 第四部分：操作按钮（POST 化：原 GET 路由已并入 api_handler，redirect 会 404）
 -- 按钮直接执行脚本并渲染结果页（CBI 框架按钮自带 token 校验，无 CSRF 风险）
 -- ============================================================
-s = m:section(NamedSection, "actions", "actions", translate("操作"))
+s = m:section(NamedSection, "actions", "dnssettings", translate("操作"))
 
 -- 【v1.4.6】执行 DNS 脚本并返回结果：捕获输出与退出码（原 __RC__ 标记法）
 local function run_dns_script(script)
