@@ -292,32 +292,87 @@ for mac, d in pairs(online_devices) do
 end
 table.sort(ov_rows, function(a, b) return a.mac < b.mac end)
 
--- 生成在线客户端速览 HTML
+-- 生成在线客户端速览 HTML（v1.5.0 优化：IPv6 地址折叠、彩色徽章、在线状态、DUID 显示）
 local function build_online_html()
     local out = {}
     if #ov_rows == 0 then
-        table.insert(out, '<em style="color:#999">' .. translate("未发现任何在线客户端") .. '</em>')
+        table.insert(out, '<div style="padding:20px;text-align:center;color:#9ca3af;font-size:13px;">' .. translate("未发现任何在线客户端") .. '</div>')
         return table.concat(out, "\n")
     end
-    table.insert(out, '<table class="table" style="width:auto;min-width:70%;margin-bottom:0;font-size:13px;">')
-    table.insert(out, '<tr><th>MAC</th><th>' .. translate("主机名") .. '</th><th>IPv4</th><th>IPv6</th><th>' .. translate("绑定状态") .. '</th></tr>')
+
+    -- 内联样式 + JS（IPv6 折叠展开）
+    table.insert(out, '<style>')
+    table.insert(out, '.nm-ov-table { width:100%; border-collapse:collapse; font-size:13px; margin-bottom:0; }')
+    table.insert(out, '.nm-ov-table th { background:#f9fafb; padding:10px 12px; text-align:left; font-weight:600; color:#6b7280; font-size:12px; border-bottom:2px solid #e5e7eb; }')
+    table.insert(out, '.nm-ov-table td { padding:9px 12px; border-bottom:1px solid #f3f4f6; vertical-align:top; }')
+    table.insert(out, '.nm-ov-table tr:hover td { background:#f9fafb; }')
+    table.insert(out, '.nm-ov-mono { font-family:"Consolas","Monaco",monospace; font-size:12px; }')
+    table.insert(out, '.nm-ov-v6-main { color:#2563eb; font-family:"Consolas","Monaco",monospace; font-size:12px; word-break:break-all; }')
+    table.insert(out, '.nm-ov-v6-more { color:#6b7280; font-size:11px; cursor:pointer; text-decoration:underline; margin-left:4px; }')
+    table.insert(out, '.nm-ov-v6-all { display:none; margin-top:4px; }')
+    table.insert(out, '.nm-ov-v6-all span { display:block; color:#2563eb; font-family:"Consolas","Monaco",monospace; font-size:11px; word-break:break-all; margin-bottom:2px; }')
+    table.insert(out, '.nm-ov-badge { display:inline-block; padding:2px 10px; border-radius:10px; font-size:11px; font-weight:600; }')
+    table.insert(out, '.nm-ov-badge-bound { background:#d1fae5; color:#059669; }')
+    table.insert(out, '.nm-ov-badge-unbound { background:#fef3c7; color:#d97706; }')
+    table.insert(out, '.nm-ov-online { display:inline-block; width:8px; height:8px; border-radius:50%; background:#10b981; margin-right:5px; box-shadow:0 0 4px #10b981; }')
+    table.insert(out, '.nm-ov-offline { display:inline-block; width:8px; height:8px; border-radius:50%; background:#d1d5db; margin-right:5px; }')
+    table.insert(out, '.nm-ov-duid { color:#9ca3af; font-size:10px; font-family:"Consolas",monospace; word-break:break-all; max-width:160px; }')
+    table.insert(out, '</style>')
+
+    table.insert(out, '<script>')
+    table.insert(out, 'function nmToggleV6(id){var el=document.getElementById(id);var btn=document.getElementById(id+"_btn");if(el.style.display==="block"){el.style.display="none";btn.textContent=btn.getAttribute("data-more");}else{el.style.display="block";btn.textContent="收起";}}')
+    table.insert(out, '</script>')
+
+    table.insert(out, '<table class="nm-ov-table">')
+    table.insert(out, '<tr><th style="width:130px">' .. translate("状态") .. '</th><th style="width:140px">MAC</th><th>' .. translate("主机名") .. '</th><th style="width:130px">IPv4</th><th>IPv6</th><th style="width:90px">' .. translate("绑定") .. '</th></tr>')
+
+    local row_idx = 0
     for _, r in ipairs(ov_rows) do
-        local v4 = r.ip ~= "" and esc(r.ip) or '-'
-        local v6s = {}
+        row_idx = row_idx + 1
+        local v4 = r.ip ~= "" and esc(r.ip) or '<span style="color:#d1d5db">—</span>'
+        local name = r.name ~= "" and esc(r.name) or '<span style="color:#d1d5db">—</span>'
+
+        -- IPv6 地址折叠：过滤掉链路本地地址(fe80)，全局地址第一个显示，其余折叠
+        local global_v6 = {}
         for _, a in ipairs(r.ip6s) do
-            table.insert(v6s, '<span style="color:#2471a3">' .. esc(a) .. '</span>')
+            if not a:match("^fe80") then
+                table.insert(global_v6, a)
+            end
         end
-        local v6 = (#v6s > 0) and table.concat(v6s, '<br>') or '-'
-        local name = r.name ~= "" and esc(r.name) or '-'
+
+        local v6_html = ""
+        if #global_v6 == 0 then
+            v6_html = '<span style="color:#d1d5db">—</span>'
+        else
+            v6_html = '<span class="nm-ov-v6-main">' .. esc(global_v6[1]) .. '</span>'
+            if #global_v6 > 1 then
+                local more_count = #global_v6 - 1
+                local all_id = 'nm_v6_all_' .. row_idx
+                local btn_id = all_id .. '_btn'
+                v6_html = v6_html .. '<span class="nm-ov-v6-more" id="' .. btn_id .. '" data-more="+' .. more_count .. ' 个" onclick="nmToggleV6(\'' .. all_id .. '\')">+' .. more_count .. ' 个</span>'
+                v6_html = v6_html .. '<div class="nm-ov-v6-all" id="' .. all_id .. '">'
+                for i = 2, #global_v6 do
+                    v6_html = v6_html .. '<span>' .. esc(global_v6[i]) .. '</span>'
+                end
+                v6_html = v6_html .. '</div>'
+            end
+        end
+
+        -- 绑定状态徽章
         local badge = r.bound
-            and '<span style="color:#2ecc71">●</span> ' .. translate("已绑定")
-            or '<span style="color:#e67e22">○</span> ' .. translate("未绑定")
+            and '<span class="nm-ov-badge nm-ov-badge-bound">' .. translate("已绑定") .. '</span>'
+            or '<span class="nm-ov-badge nm-ov-badge-unbound">' .. translate("未绑定") .. '</span>'
+
+        -- 在线状态 + DUID
+        local status_html = '<span class="nm-ov-online"></span><span style="color:#059669;font-size:11px;font-weight:600;">在线</span>'
+        if r.duid and r.duid ~= "" then
+            status_html = status_html .. '<br><span class="nm-ov-duid" title="DUID: ' .. esc(r.duid) .. '">DUID: ' .. esc(r.duid:sub(1, 16)) .. '...</span>'
+        end
+
         table.insert(out, string.format(
-            '<tr><td style="font-family:monospace">%s</td><td>%s</td>' ..
-            '<td style="font-family:monospace">%s</td>' ..
-            '<td style="font-family:monospace;word-break:break-all;max-width:280px">%s</td>' ..
-            '<td>%s</td></tr>',
-            esc(r.mac), name, v4, v6, badge))
+            '<tr><td>%s</td><td class="nm-ov-mono">%s</td><td>%s</td>' ..
+            '<td class="nm-ov-mono">%s</td><td>%s</td><td>%s</td></tr>',
+            status_html, esc(r.mac), name, v4, v6_html, badge))
     end
     table.insert(out, '</table>')
     return table.concat(out, "\n")
@@ -430,31 +485,52 @@ function o_mac.validate(self, value, section)
     return value
 end
 
--- ---------- 当前在线 IP（只读，IPv4 + IPv6） ----------
+-- ---------- 当前在线 IP（只读，IPv4 + IPv6 折叠显示） ----------
 o_cur_ip = s:option(DummyValue, "_current_ip", translate("当前在线IP"))
 o_cur_ip.rawhtml = true
+local cur_ip_row = 0
 function o_cur_ip.cfgvalue(self, section)
+    cur_ip_row = cur_ip_row + 1
     local mac_val = m.uci:get("dhcp", section, "mac")
     if mac_val then
         local dev = online_devices[mac_val:upper()]
         if dev then
             local parts = {}
             if dev.ip and dev.ip ~= "" then
-                table.insert(parts, '<span style="font-family:monospace">' .. esc(dev.ip) .. '</span>')
+                table.insert(parts, '<span style="font-family:monospace;font-size:12px;color:#111827">' .. esc(dev.ip) .. '</span>')
             end
+            -- IPv6 全局地址折叠（过滤 fe80 链路本地）
+            local global_v6 = {}
             for _, a in ipairs(dev.ip6s) do
-                table.insert(parts, '<span style="font-family:monospace;color:#2471a3;word-break:break-all">' .. esc(a) .. '</span>')
+                if not a:match("^fe80") then
+                    table.insert(global_v6, a)
+                end
+            end
+            if #global_v6 > 0 then
+                local v6_html = '<span style="font-family:monospace;font-size:11px;color:#2563eb;word-break:break-all">' .. esc(global_v6[1]) .. '</span>'
+                if #global_v6 > 1 then
+                    local more = #global_v6 - 1
+                    local aid = 'nm_cur_v6_' .. cur_ip_row
+                    v6_html = v6_html .. '<span class="nm-ov-v6-more" id="' .. aid .. '_btn" data-more="+' .. more .. '" onclick="nmToggleV6(\'' .. aid .. '\')">+' .. more .. '</span>'
+                    v6_html = v6_html .. '<div class="nm-ov-v6-all" id="' .. aid .. '">'
+                    for i = 2, #global_v6 do
+                        v6_html = v6_html .. '<span>' .. esc(global_v6[i]) .. '</span>'
+                    end
+                    v6_html = v6_html .. '</div>'
+                end
+                table.insert(parts, v6_html)
             end
             if dev.duid and dev.duid ~= "" then
-                table.insert(parts, '<span style="color:#e67e22;font-family:monospace;font-size:10px">DUID: ' .. esc(dev.duid) .. '</span>')
+                table.insert(parts, '<span style="color:#9ca3af;font-family:monospace;font-size:10px" title="DUID: ' .. esc(dev.duid) .. '">DUID: ' .. esc(dev.duid:sub(1, 12)) .. '…</span>')
             end
             if #parts > 0 then
-                local dot = dev.online and '<span style="color:#2ecc71">●</span>' or '<span style="color:#999">○</span>'
-                return dot .. ' ' .. table.concat(parts, '<br>')
+                local dot = dev.online and '<span class="nm-ov-online"></span>' or '<span class="nm-ov-offline"></span>'
+                local label = dev.online and '<span style="color:#059669;font-size:10px;font-weight:600">在线</span>' or '<span style="color:#9ca3af;font-size:10px">离线</span>'
+                return dot .. label .. '<br>' .. table.concat(parts, '<br>')
             end
         end
     end
-    return '<span style="color:#999">○ ' .. translate("离线/未发现") .. '</span>'
+    return '<span class="nm-ov-offline"></span><span style="color:#9ca3af;font-size:11px">' .. translate("离线/未发现") .. '</span>'
 end
 
 -- ---------- IPv4 静态地址 ----------

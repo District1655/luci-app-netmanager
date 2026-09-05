@@ -12,7 +12,7 @@ LOG_FILE="$LOG_DIR/run.log"
 LOG_ENABLED=0
 
 # 在线更新配置：版本号与 GitHub 仓库（发版时同步修改 PLUGIN_VERSION）
-PLUGIN_VERSION="1.4.10"
+PLUGIN_VERSION="1.5.0"
 REPO_OWNER="District1655"
 REPO_NAME="luci-app-netmanager"
 REPO_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
@@ -1044,73 +1044,248 @@ cmd_reload() {
     info "防火墙已重载"
 }
 cmd_backup() {
-    backup_file="/root/firewall-$(date +%Y%m%d-%H%M%S).bak"
-    cp /etc/config/firewall "$backup_file"
-    info "已备份到 $backup_file"
+    # v1.5.0 增强：全配置备份（firewall/network/dhcp/dnssettings/netmanager），统一目录 /root/backup
+    local backup_dir="/root/backup"
+    mkdir -p "$backup_dir" 2>/dev/null
+    local ts=$(date +%Y%m%d-%H%M%S)
+    local backup_file="$backup_dir/netmanager-full-${ts}.tar.gz"
+    local work_dir="/tmp/netmanager_backup_$$"
+    mkdir -p "$work_dir" 2>/dev/null
+
+    # 收集存在的配置文件
+    local configs="firewall network dhcp dnssettings netmanager"
+    local copied=0
+    for cfg in $configs; do
+        if [ -f "/etc/config/$cfg" ]; then
+            cp "/etc/config/$cfg" "$work_dir/$cfg" 2>/dev/null && copied=$((copied+1))
+        fi
+    done
+
+    # 写入元信息
+    cat > "$work_dir/MANIFEST.txt" <<EOF
+BACKUP_TIME=$(date '+%Y-%m-%d %H:%M:%S')
+BACKUP_VERSION=v$PLUGIN_VERSION
+CONFIG_FILES=$(ls "$work_dir" 2>/dev/null | grep -v MANIFEST | tr '\n' ' ')
+CONFIG_COUNT=$copied
+HOSTNAME=$(cat /proc/sys/kernel/hostname 2>/dev/null || echo unknown)
+EOF
+
+    # 打包
+    tar czf "$backup_file" -C "$work_dir" . 2>/dev/null
+    local rc=$?
+    rm -rf "$work_dir" 2>/dev/null
+
+    if [ $rc -ne 0 ] || [ ! -s "$backup_file" ]; then
+        error "备份失败（tar 打包错误）"
+        rm -f "$backup_file" 2>/dev/null
+        return 1
+    fi
+
+    local size=$(wc -c < "$backup_file" 2>/dev/null || echo 0)
+    info "已创建全配置备份: $backup_file (${size}字节, ${copied}个配置文件)"
     echo "$backup_file"
+
+    # v1.5.0 自动保留策略：超过 20 个自动清理最旧的
+    local count=$(ls -1 "$backup_dir"/netmanager-full-*.tar.gz 2>/dev/null | wc -l)
+    if [ "${count:-0}" -gt 20 ]; then
+        local to_remove=$((count - 20))
+        ls -1t "$backup_dir"/netmanager-full-*.tar.gz 2>/dev/null | tail -n "$to_remove" | xargs rm -f 2>/dev/null
+        info "自动清理旧备份: 保留最近20个，已删除${to_remove}个"
+    fi
 }
 
 # ========== 备份恢复 ==========
 cmd_backup_list() {
     echo "===BACKUP_LIST==="
     echo "---BACKUPS---"
-    backup_dir="/root"
-    count=0
-    for f in "$backup_dir"/firewall-*.bak; do
+    local backup_dir="/root/backup"
+    local count=0
+
+    # v1.5.0 同时列出新格式（/root/backup/netmanager-full-*.tar.gz）和旧格式（/root/firewall-*.bak）
+    if [ -d "$backup_dir" ]; then
+        for f in "$backup_dir"/netmanager-full-*.tar.gz; do
+            [ -f "$f" ] || continue
+            local fname=$(basename "$f")
+            local size=$(wc -c < "$f" 2>/dev/null || echo 0)
+            local mtime=$(date -r "$f" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo unknown)
+            # 从 MANIFEST 读取配置数量
+            local cfg_count=$(tar xzf "$f" -O MANIFEST.txt 2>/dev/null | grep '^CONFIG_COUNT=' | cut -d= -f2)
+            [ -z "$cfg_count" ] && cfg_count="?"
+            echo "${fname}|${size}|${mtime}|full|${cfg_count}"
+            count=$((count+1))
+        done
+    fi
+
+    # 兼容旧格式（/root/firewall-*.bak）
+    for f in /root/firewall-*.bak; do
         [ -f "$f" ] || continue
-        fname=$(basename "$f")
-        size=$(wc -c < "$f" 2>/dev/null)
-        echo "${fname}|${size}"
+        local fname=$(basename "$f")
+        local size=$(wc -c < "$f" 2>/dev/null || echo 0)
+        local mtime=$(date -r "$f" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo unknown)
+        echo "${fname}|${size}|${mtime}|legacy|1"
         count=$((count+1))
     done
+
     echo "BACKUP_COUNT=$count"
+    echo "BACKUP_DIR=$backup_dir"
     echo "===END==="
 }
 
 cmd_backup_restore() {
     backup_name="$1"
     [ -z "$backup_name" ] && { error "用法: netmanager backup_restore <备份文件名>"; exit 1; }
-    
-    backup_file="/root/$backup_name"
-    [ ! -f "$backup_file" ] && { error "备份文件不存在: $backup_file"; exit 1; }
-    
-    # 安全检查：确保文件在 /root/ 目录下
-    case "$backup_file" in
-        /root/firewall-*.bak) ;;
+
+    # v1.5.0 支持两种格式：新格式 tar.gz（/root/backup/）和旧格式 .bak（/root/）
+    local backup_file=""
+    local backup_type=""
+
+    if [ -f "/root/backup/$backup_name" ]; then
+        backup_file="/root/backup/$backup_name"
+        backup_type="full"
+    elif [ -f "/root/$backup_name" ]; then
+        backup_file="/root/$backup_name"
+        backup_type="legacy"
+    else
+        error "备份文件不存在: $backup_name"
+        exit 1
+    fi
+
+    # 安全检查：文件名白名单
+    case "$backup_name" in
+        netmanager-full-*.tar.gz|firewall-*.bak) ;;
         *) error "非法的备份文件名"; exit 1 ;;
     esac
-    
-    # 先备份当前配置
-    pre_backup="/root/firewall-pre-restore-$(date +%Y%m%d-%H%M%S).bak"
-    cp /etc/config/firewall "$pre_backup"
-    
-    # 恢复备份
-    cp "$backup_file" /etc/config/firewall
-    uci commit firewall
-    rm -f /tmp/.uci/firewall 2>/dev/null
-    
-    # 重载防火墙
-    /etc/init.d/firewall reload > /dev/null 2>&1
-    
-    info "已从 $backup_name 恢复配置"
+
+    # 恢复前自动备份当前配置（全配置）
+    local pre_backup
+    pre_backup=$(cmd_backup 2>/dev/null | tail -1)
+    info "恢复前已自动备份当前配置: $pre_backup"
+
+    if [ "$backup_type" = "full" ]; then
+        # v1.5.0 全配置恢复：解压 tar.gz，逐个恢复配置文件
+        local work_dir="/tmp/netmanager_restore_$$"
+        mkdir -p "$work_dir" 2>/dev/null
+        tar xzf "$backup_file" -C "$work_dir" 2>/dev/null
+        if [ $? -ne 0 ]; then
+            error "备份文件解压失败（可能已损坏）"
+            rm -rf "$work_dir" 2>/dev/null
+            exit 1
+        fi
+
+        local restored=0
+        for cfg in firewall network dhcp dnssettings netmanager; do
+            if [ -f "$work_dir/$cfg" ]; then
+                cp "$work_dir/$cfg" "/etc/config/$cfg" 2>/dev/null && restored=$((restored+1))
+            fi
+        done
+        rm -rf "$work_dir" 2>/dev/null
+
+        # 提交所有配置
+        uci commit firewall 2>/dev/null
+        uci commit network 2>/dev/null
+        uci commit dhcp 2>/dev/null
+        uci commit dnssettings 2>/dev/null
+        uci commit netmanager 2>/dev/null
+        rm -f /tmp/.uci/firewall /tmp/.uci/network /tmp/.uci/dhcp /tmp/.uci/dnssettings /tmp/.uci/netmanager 2>/dev/null
+
+        # 重载相关服务
+        /etc/init.d/firewall reload > /dev/null 2>&1
+        /etc/init.d/dnsmasq reload > /dev/null 2>&1
+        /etc/init.d/odhcpd restart > /dev/null 2>&1
+
+        info "已从全配置备份 $backup_name 恢复 ${restored} 个配置文件"
+    else
+        # 旧格式：仅 firewall 配置
+        cp "$backup_file" /etc/config/firewall
+        uci commit firewall
+        rm -f /tmp/.uci/firewall 2>/dev/null
+        /etc/init.d/firewall reload > /dev/null 2>&1
+        info "已从 $backup_name 恢复 firewall 配置（旧格式）"
+    fi
+
     info "恢复前的配置已备份到: $pre_backup"
 }
 
 cmd_backup_delete() {
     backup_name="$1"
     [ -z "$backup_name" ] && { error "用法: netmanager backup_delete <备份文件名>"; exit 1; }
-    
-    backup_file="/root/$backup_name"
-    [ ! -f "$backup_file" ] && { error "备份文件不存在: $backup_file"; exit 1; }
-    
+
+    # v1.5.0 支持两种位置
+    local backup_file=""
+    if [ -f "/root/backup/$backup_name" ]; then
+        backup_file="/root/backup/$backup_name"
+    elif [ -f "/root/$backup_name" ]; then
+        backup_file="/root/$backup_name"
+    else
+        error "备份文件不存在: $backup_name"
+        exit 1
+    fi
+
     # 安全检查
-    case "$backup_file" in
-        /root/firewall-*.bak) ;;
+    case "$backup_name" in
+        netmanager-full-*.tar.gz|firewall-*.bak) ;;
         *) error "非法的备份文件名"; exit 1 ;;
     esac
-    
+
     rm -f "$backup_file"
     info "已删除备份: $backup_name"
+}
+
+# ========== v1.5.0 新增：备份导入（从上传的 tar.gz 导入到备份目录） ==========
+cmd_backup_import() {
+    local filename="$1"
+    [ -z "$filename" ] && { error "用法: netmanager backup_import <上传的tar.gz文件名>"; exit 1; }
+
+    local upload_dir="/tmp/netmanager_upload"
+    local src_file="$upload_dir/$filename"
+    [ ! -f "$src_file" ] && { error "上传的备份文件不存在: $src_file"; exit 1; }
+
+    # 校验是有效的 tar.gz 且包含 MANIFEST.txt 或 firewall 配置
+    if ! tar tzf "$src_file" >/dev/null 2>&1; then
+        error "文件不是有效的 tar.gz 备份包"
+        exit 1
+    fi
+    local has_manifest=$(tar tzf "$src_file" 2>/dev/null | grep -c 'MANIFEST.txt')
+    local has_firewall=$(tar tzf "$src_file" 2>/dev/null | grep -c 'firewall')
+    if [ "$has_manifest" -eq 0 ] && [ "$has_firewall" -eq 0 ]; then
+        error "备份包中未找到有效配置文件（需要 MANIFEST.txt 或 firewall 配置）"
+        exit 1
+    fi
+
+    local backup_dir="/root/backup"
+    mkdir -p "$backup_dir" 2>/dev/null
+    local ts=$(date +%Y%m%d-%H%M%S)
+    local dest_file="$backup_dir/netmanager-imported-${ts}.tar.gz"
+    cp "$src_file" "$dest_file" 2>/dev/null
+
+    if [ ! -s "$dest_file" ]; then
+        error "备份导入失败"
+        exit 1
+    fi
+
+    local size=$(wc -c < "$dest_file" 2>/dev/null || echo 0)
+    info "备份已导入: $dest_file (${size}字节)"
+    echo "$dest_file"
+}
+
+# ========== v1.5.0 新增：备份清理（按保留数量） ==========
+cmd_backup_prune() {
+    local keep="${1:-20}"
+    local backup_dir="/root/backup"
+    [ ! -d "$backup_dir" ] && { info "备份目录不存在，无需清理"; return 0; }
+
+    local count=$(ls -1 "$backup_dir"/netmanager-*.tar.gz 2>/dev/null | wc -l)
+    if [ "${count:-0}" -le "$keep" ]; then
+        info "当前备份数量 ${count}，未超过保留上限 ${keep}，无需清理"
+        return 0
+    fi
+
+    local to_remove=$((count - keep))
+    local removed=0
+    ls -1t "$backup_dir"/netmanager-*.tar.gz 2>/dev/null | tail -n "$to_remove" | while read f; do
+        rm -f "$f" 2>/dev/null && removed=$((removed+1))
+    done
+    info "已清理 ${to_remove} 个旧备份（保留最近 ${keep} 个）"
 }
 
 # ========== 文件上传与插件更新 ==========
@@ -1683,6 +1858,98 @@ cmd_log_clear() {
     else
         info "日志文件不存在，无需清理"
     fi
+}
+
+# ========== v1.5.0 增强：日志查询（级别过滤 + 关键词搜索 + 统计） ==========
+# 用法: netmanager log_query [级别] [关键词] [行数]
+#   级别: ALL|INFO|WARN|ERROR|DEBUG（默认 ALL）
+#   关键词: 任意字符串（grep 模糊匹配，空=不过滤）
+#   行数: 返回最后 N 行（默认 200）
+cmd_log_query() {
+    local level="${1:-ALL}"
+    local keyword="${2:-}"
+    local lines="${3:-200}"
+    mkdir -p "$LOG_DIR" 2>/dev/null
+
+    echo "===LOG_QUERY==="
+    echo "LOG_ENABLED=$LOG_ENABLED"
+    echo "LOG_FILE=$LOG_FILE"
+    echo "FILTER_LEVEL=$level"
+    echo "FILTER_KEYWORD=$keyword"
+
+    if [ ! -f "$LOG_FILE" ]; then
+        echo "TOTAL_LINES=0"
+        echo "COUNT_INFO=0"
+        echo "COUNT_WARN=0"
+        echo "COUNT_ERROR=0"
+        echo "COUNT_DEBUG=0"
+        echo "---CONTENT---"
+        echo "===END==="
+        return 0
+    fi
+
+    # 全量统计（不受过滤影响）
+    local total=$(wc -l < "$LOG_FILE" 2>/dev/null || echo 0)
+    local cnt_info=$(grep -c '\[INFO\]' "$LOG_FILE" 2>/dev/null || echo 0)
+    local cnt_warn=$(grep -c '\[WARN\]' "$LOG_FILE" 2>/dev/null || echo 0)
+    local cnt_error=$(grep -c '\[ERROR\]' "$LOG_FILE" 2>/dev/null || echo 0)
+    local cnt_debug=$(grep -c '\[DEBUG\]' "$LOG_FILE" 2>/dev/null || echo 0)
+    echo "TOTAL_LINES=$total"
+    echo "COUNT_INFO=$cnt_info"
+    echo "COUNT_WARN=$cnt_warn"
+    echo "COUNT_ERROR=$cnt_error"
+    echo "COUNT_DEBUG=$cnt_debug"
+
+    # 构建过滤管道
+    local filtered="$LOG_FILE"
+    local tmp_filter="/tmp/netmanager_log_filter_$$"
+    local need_tmp=0
+
+    if [ "$level" != "ALL" ]; then
+        grep "\[${level}\]" "$LOG_FILE" > "$tmp_filter" 2>/dev/null
+        filtered="$tmp_filter"
+        need_tmp=1
+    fi
+
+    if [ -n "$keyword" ]; then
+        if [ $need_tmp -eq 1 ]; then
+            grep -i -- "$keyword" "$filtered" > "${tmp_filter}_2" 2>/dev/null
+            mv "${tmp_filter}_2" "$filtered" 2>/dev/null
+        else
+            grep -i -- "$keyword" "$LOG_FILE" > "$tmp_filter" 2>/dev/null
+            filtered="$tmp_filter"
+            need_tmp=1
+        fi
+    fi
+
+    echo "MATCHED_LINES=$(wc -l < "$filtered" 2>/dev/null || echo 0)"
+    echo "---CONTENT---"
+    tail -n "$lines" "$filtered" 2>/dev/null
+    echo "===END==="
+
+    [ -f "$tmp_filter" ] && rm -f "$tmp_filter" 2>/dev/null
+    return 0
+}
+
+# ========== v1.5.0 增强：日志导出（下载完整日志文件） ==========
+# 用法: netmanager log_export
+# 输出: 日志文件路径 + base64 内容（前端解码下载）
+cmd_log_export() {
+    mkdir -p "$LOG_DIR" 2>/dev/null
+    echo "===LOG_EXPORT==="
+    if [ -f "$LOG_FILE" ]; then
+        echo "LOG_FILE=$LOG_FILE"
+        echo "LOG_SIZE=$(wc -c < "$LOG_FILE" 2>/dev/null || echo 0)"
+        echo "LOG_LINES=$(wc -l < "$LOG_FILE" 2>/dev/null || echo 0)"
+        echo "---BASE64---"
+        base64 "$LOG_FILE" 2>/dev/null
+    else
+        echo "LOG_FILE=$LOG_FILE"
+        echo "LOG_SIZE=0"
+        echo "LOG_LINES=0"
+        echo "---BASE64---"
+    fi
+    echo "===END==="
 }
 
 cmd_settings() {
@@ -2292,7 +2559,7 @@ usage() {
     echo "防火墙规则: rule_list | rule_add | rule_del | rule_edit"
     echo "日志: ssh_log [行数] | access_log [端口] [行数] | log_set 0/1 | log_get [行数] | log_clear"
     echo "操作: restart | reload"
-    echo "备份: backup | backup_list | backup_restore <文件> | backup_delete <文件>"
+    echo "备份: backup | backup_list | backup_restore <文件> | backup_delete <文件> | backup_import <文件> | backup_prune [保留数]"
     echo "插件: upload_file <文件名> <b64文件> | plugin_update <文件> | plugin_version <文件> | cleanup_uploads"
     echo "在线更新: update_check | update_apply | set_update_mirror <url|''>"
     echo "中国IPv4过滤: china_filter status | enable | disable | update | set_url <url> | set_cron <expr>"
@@ -2316,6 +2583,8 @@ case "$1" in
     access_log)         shift; cmd_access_log "$@" ;;
     log_set)            shift; cmd_log_set "$@" ;;
     log_get)            shift; cmd_log_get "$@" ;;
+    log_query)          shift; cmd_log_query "$@" ;;
+    log_export)         cmd_log_export ;;
     log_clear)          cmd_log_clear ;;
     restart)            cmd_restart ;;
     reload)             cmd_reload ;;
@@ -2323,6 +2592,8 @@ case "$1" in
     backup_list)        cmd_backup_list ;;
     backup_restore)     shift; cmd_backup_restore "$@" ;;
     backup_delete)      shift; cmd_backup_delete "$@" ;;
+    backup_import)      shift; cmd_backup_import "$@" ;;
+    backup_prune)       shift; cmd_backup_prune "$@" ;;
     upload_file)        shift; cmd_upload_file "$@" ;;
     plugin_update)      shift; cmd_plugin_update "$@" ;;
     plugin_version)     shift; cmd_plugin_version "$@" ;;

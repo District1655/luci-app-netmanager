@@ -89,37 +89,60 @@ local MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 local function setup_upload_handler()
     local upload_dir = "/tmp/netmanager_upload"
     luci.sys.call("mkdir -p " .. upload_dir)
-    -- 【v1.4.6 P1】时间戳+随机数防同秒并发冲突（同秒两次上传会互相覆盖）
     math.randomseed(os.time() + math.floor(os.clock() * 1000))
     uploaded_tmp_file = upload_dir .. "/plugin_update_" .. os.time() .. "_" .. math.random(1000, 9999) .. ".tar.gz"
     uploaded_file_size = 0
-    
+    -- v1.5.0 备份文件上传临时路径
+    backup_tmp_file = upload_dir .. "/backup_import_" .. os.time() .. "_" .. math.random(1000, 9999) .. ".tar.gz"
+    backup_file_size = 0
+
     local fout = nil
+    local backup_fout = nil
     luci.http.setfilehandler(function(meta, chunk, eof)
-        -- meta: {name=表单字段名, file=原始文件名}
         if not meta or not meta.name then return end
-        -- 只处理 plugin_file 字段
-        if meta.name ~= "plugin_file" then return end
-        
-        -- 【v1.4.6 P1】超限即丢弃后续数据（写一半也中止，plugin_update 分支按 <2000 字节拒绝）
-        if uploaded_file_size > MAX_UPLOAD_BYTES then
-            if fout then fout:close() end
-            fout = nil
-            return
-        end
-        if not fout then
-            fout = io.open(uploaded_tmp_file, "wb")
-            if not fout then
-                uploaded_tmp_file = nil
+        -- 处理 plugin_file 字段（插件更新）
+        if meta.name == "plugin_file" then
+            if uploaded_file_size > MAX_UPLOAD_BYTES then
+                if fout then fout:close() end
+                fout = nil
                 return
             end
+            if not fout then
+                fout = io.open(uploaded_tmp_file, "wb")
+                if not fout then
+                    uploaded_tmp_file = nil
+                    return
+                end
+            end
+            if fout and chunk and #chunk > 0 then
+                fout:write(chunk)
+                uploaded_file_size = uploaded_file_size + #chunk
+            end
+            if eof and fout then
+                fout:close()
+            end
         end
-        if fout and chunk and #chunk > 0 then
-            fout:write(chunk)
-            uploaded_file_size = uploaded_file_size + #chunk
-        end
-        if eof and fout then
-            fout:close()
+        -- v1.5.0 处理 backup_file 字段（备份导入）
+        if meta.name == "backup_file" then
+            if backup_file_size > MAX_UPLOAD_BYTES then
+                if backup_fout then backup_fout:close() end
+                backup_fout = nil
+                return
+            end
+            if not backup_fout then
+                backup_fout = io.open(backup_tmp_file, "wb")
+                if not backup_fout then
+                    backup_tmp_file = nil
+                    return
+                end
+            end
+            if backup_fout and chunk and #chunk > 0 then
+                backup_fout:write(chunk)
+                backup_file_size = backup_file_size + #chunk
+            end
+            if eof and backup_fout then
+                backup_fout:close()
+            end
         end
     end)
 end
@@ -244,6 +267,48 @@ function api_handler()
     elseif action == "backup_delete" then
         local filename = luci.http.formvalue("filename") or ""
         cmd = string.format("/usr/sbin/netmanager backup_delete %s", shell_escape(filename))
+    elseif action == "backup_import" then
+        local filename = luci.http.formvalue("filename") or ""
+        cmd = string.format("/usr/sbin/netmanager backup_import %s", shell_escape(filename))
+    elseif action == "backup_prune" then
+        local keep = luci.http.formvalue("keep") or "20"
+        cmd = string.format("/usr/sbin/netmanager backup_prune %s", shell_escape(keep))
+    elseif action == "backup_import_upload" then
+        -- v1.5.0 备份文件上传导入
+        local upload_dir = "/tmp/netmanager_upload"
+        local dest_file = upload_dir .. "/backup_import.tar.gz"
+        luci.sys.call("mkdir -p " .. upload_dir)
+        local src = backup_tmp_file
+        local got_file = false
+        if src and luci.sys.call("test -f " .. shell_escape(src) .. " && test -s " .. shell_escape(src)) == 0 then
+            got_file = true
+        end
+        if not got_file then
+            local alt_path = form_str("backup_file")
+            if alt_path ~= "" and alt_path ~= "backup_file" and luci.sys.call("test -f " .. shell_escape(alt_path)) == 0 then
+                src = alt_path
+                got_file = true
+            end
+        end
+        if not got_file then
+            result = '{"error":"未接收到上传的备份文件，请重新选择 .tar.gz 文件"}'
+        else
+            luci.sys.call("cp -f " .. shell_escape(src) .. " " .. shell_escape(dest_file) .. " 2>/dev/null || mv -f " .. shell_escape(src) .. " " .. shell_escape(dest_file) .. " 2>/dev/null")
+            if luci.sys.call("test -f " .. shell_escape(dest_file) .. " && test -s " .. shell_escape(dest_file)) == 0 then
+                local sz_str = luci.sys.exec("ls -nl " .. shell_escape(dest_file) .. " 2>/dev/null | awk '{print $5}'") or ""
+                local sz_num = tonumber(sz_str) or 0
+                if sz_num < 100 then
+                    result = '{"error":"上传的文件太小（' .. sz_num .. '字节），可能不是有效的备份文件"}'
+                else
+                    local import_cmd = "/usr/sbin/netmanager backup_import backup_import.tar.gz"
+                    result = "[CMD] " .. import_cmd .. "\n"
+                        .. "[DEBUG] dest_file=" .. dest_file .. " size=" .. sz_num .. "字节\n"
+                        .. (luci.sys.exec(import_cmd) or "")
+                end
+            else
+                result = '{"error":"备份文件保存失败"}'
+            end
+        end
     elseif action == "plugin_upload_update" then
         -- 文件已通过 setfilehandler() 在读取formvalue时自动保存
         local upload_dir = "/tmp/netmanager_upload"
@@ -337,6 +402,14 @@ function api_handler()
         cmd = string.format("/usr/sbin/netmanager log_get %s", shell_escape(lines))
     elseif action == "log_clear" then
         cmd = "/usr/sbin/netmanager log_clear"
+    elseif action == "log_query" then
+        local level = luci.http.formvalue("level") or "ALL"
+        local keyword = luci.http.formvalue("keyword") or ""
+        local lines = luci.http.formvalue("lines") or "200"
+        cmd = string.format("/usr/sbin/netmanager log_query %s %s %s",
+            shell_escape(level), shell_escape(keyword), shell_escape(lines))
+    elseif action == "log_export" then
+        cmd = "/usr/sbin/netmanager log_export"
     elseif action == "china_filter_status" then
         cmd = "/usr/sbin/netmanager china_filter status"
     elseif action == "china_filter_enable" then
