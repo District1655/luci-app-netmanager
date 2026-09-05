@@ -1,6 +1,6 @@
 ﻿# 网络管理插件 (luci-app-netmanager)
 
-> 版本：v1.5.0
+> 版本：v1.5.1
 >
 > 适配：iStoreOS / OpenWrt (fw4/nftables, Lua LuCI)
 >
@@ -226,33 +226,20 @@ config actions 'actions'  # 操作按钮占位
 
 ## 更新日志
 
-### v1.5.0 (2026-09-05)
+### v1.5.1 (2026-09-05)
 
-**功能优化：IPv6 页面显示 + 运行日志体系 + 配置备份体系三大增强**
+**紧急修复：作者信息 + 日志筛选参数错位 + DNS页面BOM头 + 全量操作日志**
 
-**① 静态 IPv6 分配页面显示优化**
-- 在线客户端列表：IPv6 地址折叠显示（仅展示第一个全局地址，其余以「+N 个」标签点击展开），过滤 fe80 链路本地地址避免干扰；绑定状态改为彩色徽章（已绑定绿色 / 未绑定橙色）；新增在线状态指示灯与 DUID 紧凑显示；表格样式全面优化（斑马纹、悬停高亮、等宽字体）
-- 设备列表「当前在线IP」列：IPv6 地址同样折叠显示，在线/离线状态用彩色圆点+文字标签，DUID 截断显示（hover 查看完整），整体列宽更紧凑
+- **修正作者名字**：所有页面头部与「关于插件」栏的作者从 "Network Manager" 修正为 **吾爱破解liyu0828**
+- **关于插件栏新增仓库地址**：添加 GitHub 仓库链接 `https://github.com/District1655/luci-app-netmanager`
+- **修复日志筛选等级及行数均出错**：控制器 `log_query` 路由中 keyword 参数用 `shell_escape("")` 包装空值返回空字符串，导致 shell 命令参数错位（lines 的值被当作 keyword，行数恒为空）；现改用 `arg()` 函数包装空参数传 `''`，级别/关键词/行数三维过滤全部正常工作
+- **修复 DNS 设置页面仍看不到内容**：`cbi_nav.htm`、`common_head.htm`、`nav.htm` 三个公共模板文件带 UTF-8 BOM 头（`EF BB BF`），ucode 版 LuCI 模板解析器将 BOM 当作内容输出导致 CBI 表单渲染异常；现全部去除 BOM 头
+- **全量操作日志记录**：在 13 个用户操作命令入口增加 `write_log "INFO"` 记录（rule_add/rule_edit/rule_del、backup/backup_restore/backup_delete、set_default_target、china_enable/china_disable/china_update、restart/reload、log_clear），每条操作记录完整参数，便于 BUG 定位与审计追溯
 
-**② 运行日志体系完善**
-- 新增级别过滤（全部 / INFO / WARN / ERROR / DEBUG）与关键词搜索（回车触发，不区分大小写）
-- 新增日志统计栏（实时显示各级别条数与匹配数）
-- 日志显示从纯文本 textarea 改为彩色渲染 div（INFO 蓝色 / WARN 黄色 / ERROR 红色 / DEBUG 紫色，时间戳灰色），支持自动滚动到底部
-- 新增「导出下载」按钮（base64 传输 → 前端解码为 .log 文件下载，文件名含时间戳）
-- 后端新增 `log_query`（级别+关键词+行数三维过滤与统计）与 `log_export`（base64 导出）命令
-
-**③ 配置备份体系完善**
-- 备份从仅 firewall 单文件升级为**全配置备份**（firewall / network / dhcp / dnssettings / netmanager 五个配置打包为 tar.gz，含 MANIFEST 元信息）
-- 统一备份目录 `/root/backup/`（旧版散落在 `/root/` 的 firewall-*.bak 仍兼容显示与恢复）
-- 备份列表新增详情列：创建时间、类型标签（全配置 / 旧版）、包含配置文件数量、大小
-- 新增「导入备份」功能（上传 tar.gz 备份文件 → 校验有效性 → 存入备份目录，可在列表中恢复）
-- 新增「清理旧备份」功能（可配置保留数量，默认 20，自动删除最旧的）
-- 自动保留策略：每次备份后自动检查，超过 20 个自动清理最旧的
-- 恢复前自动备份当前配置（全配置），防止恢复失误无法回滚
-- 后端新增 `backup_import`（导入校验）与 `backup_prune`（按保留数清理）命令
-
-**修复：DNS 设置页面表单空白（CBI NamedSection type 不匹配）**
-- CBI 模型中 4 个 `NamedSection` 的 type 参数误写为节名（`"wan"`/`"lan"`/`"dnsmasq"`/`"actions"`），但 `/etc/config/dnssettings` 中实际节类型为 `"dnssettings"`；ucode 版 LuCI 对 type 匹配严格，找不到对应节即跳过渲染。现全部改为 `NamedSection(name, "dnssettings", ...)`
+**（继承 v1.5.0 三大优化）**
+① 静态 IPv6 分配页面显示优化（IPv6 地址折叠/彩色徽章/在线状态/DUID 紧凑显示）
+② 运行日志体系完善（级别过滤/关键词搜索/统计栏/彩色渲染/导出下载）
+③ 配置备份体系完善（全配置备份/统一目录/详情列/导入/清理/自动保留策略）
 
 ### v1.4.9 (2026-09-05)
 

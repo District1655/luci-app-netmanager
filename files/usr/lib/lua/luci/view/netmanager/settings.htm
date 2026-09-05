@@ -3,7 +3,7 @@
 <div class="netmanager-container">
     <div class="netmanager-header">
         <h1>网络管理</h1>
-        <span class="netmanager-author">Network Manager</span>
+        <span class="netmanager-author">吾爱破解liyu0828</span>
     </div>
     <%+netmanager/nav%>
     <div class="netmanager-content">
@@ -83,7 +83,7 @@
         <div class="netmanager-form" style="border-left:3px solid #10b981;">
             <div style="margin-bottom:10px;">
                 <b>配置备份</b>
-                <span class="text-muted" style="margin-left:8px;">v1.5.0 全配置备份（firewall/network/dhcp/dnssettings/netmanager），支持导入导出与自动保留</span>
+                <span class="text-muted" style="margin-left:8px;">v1.5.1 全配置备份（firewall/network/dhcp/dnssettings/netmanager），支持导入导出与自动保留</span>
             </div>
             <div class="netmanager-toolbar">
                 <button class="btn btn-success btn-sm" onclick="doBackup()">立即备份</button>
@@ -103,7 +103,7 @@
             <table class="netmanager-table" style="margin-bottom:10px;">
                 <tr>
                     <td width="30%">当前版本</td>
-                    <td><b id="online_cur_version">v1.5.0</b></td>
+                    <td><b id="online_cur_version">v1.5.1</b></td>
                 </tr>
                 <tr>
                     <td>最新版本</td>
@@ -187,7 +187,7 @@
                     <td id="log_path" colspan="2"><span class="text-muted">加载中...</span></td>
                 </tr>
             </table>
-            <!-- v1.5.0 日志过滤工具栏 -->
+            <!-- v1.5.1 日志过滤工具栏 -->
             <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;padding:8px 10px;background:#f9fafb;border-radius:4px;border:1px solid #e5e7eb;">
                 <label style="font-size:12px;color:#6b7280;">级别：
                     <select id="log_level" onchange="loadRunLog()" style="padding:2px 6px;font-size:12px;">
@@ -215,15 +215,16 @@
                 <!-- 日志统计 -->
                 <span id="log_stats" style="font-size:11px;color:#9ca3af;"></span>
             </div>
-            <!-- v1.5.0 彩色日志显示区 -->
+            <!-- v1.5.1 彩色日志显示区 -->
             <div id="run_log_box" style="width:100%;height:280px;overflow-y:auto;background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:4px;padding:8px;font-family:Consolas,'Courier New',monospace;font-size:12px;line-height:1.6;"></div>
         </div>
 
         <h3>关于插件</h3>
         <table class="netmanager-table">
             <tr><td width="30%">插件名称</td><td>网络管理 (luci-app-netmanager)</td></tr>
-            <tr><td>版本</td><td id="plugin_version">v1.5.0</td></tr>
-            <tr><td>作者</td><td><b>Network Manager</b></td></tr>
+            <tr><td>版本</td><td id="plugin_version">v1.5.1</td></tr>
+            <tr><td>作者</td><td><b>吾爱破解liyu0828</b></td></tr>
+            <tr><td>仓库地址</td><td><a href="https://github.com/District1655/luci-app-netmanager" target="_blank" style="color:#2563eb;">https://github.com/District1655/luci-app-netmanager</a></td></tr>
             <tr><td>适配系统</td><td>iStoreOS / OpenWrt (fw4/nftables)</td></tr>
             <tr><td>功能模块</td><td>系统概览 / 端口转发 / 规则管理 / SSH日志 / 访问日志</td></tr>
             <tr><td>后端脚本</td><td>/usr/sbin/netmanager</td></tr>
@@ -254,7 +255,7 @@
             </div>
         </div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.5.0<br><span style="font-size:10px;">适配 iStoreOS / OpenWrt | 基于 fw4/nftables</span></div>
+    <div class="footer-sign">网络管理插件 v1.5.1<br><span style="font-size:10px;">适配 iStoreOS / OpenWrt | 基于 fw4/nftables</span></div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -345,7 +346,7 @@ function saveUpdateMirror() {
     });
 }
 
-// ========== 运行日志功能（v1.5.0 增强：级别过滤/关键词搜索/统计/彩色渲染/导出） ==========
+// ========== 运行日志功能（v1.5.1 增强：级别过滤/关键词搜索/统计/彩色渲染/导出） ==========
 function saveLogSetting() {
     const en = document.getElementById('log_enable').checked ? '1' : '0';
     nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=log_set&enable=' + en})
@@ -442,7 +443,7 @@ function clearRunLog() {
     });
 }
 
-// v1.5.0 日志导出下载
+// v1.5.1 日志导出下载
 function exportLog() {
     nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=log_export'})
     .then(r => r.text()).then(data => {
@@ -499,7 +500,7 @@ function runAction(action) {
     });
 }
 
-// 备份功能（v1.5.0 增强：全配置备份、导入、清理、详情显示）
+// 备份功能（v1.5.1 增强：全配置备份、导入、清理、详情显示）
 function doBackup() {
     if (!confirm('确定要创建全配置备份吗？\n\n将备份：firewall / network / dhcp / dnssettings / netmanager')) return;
     nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=backup'})
@@ -520,7 +521,7 @@ function listBackups() {
         lines.forEach(line => {
             if (line.includes('|') && !line.startsWith('=')) {
                 const parts = line.split('|');
-                // v1.5.0 新格式：文件名|大小|时间|类型|配置数；旧格式：文件名|大小
+                // v1.5.1 新格式：文件名|大小|时间|类型|配置数；旧格式：文件名|大小
                 if (parts.length >= 5 && (parts[0].startsWith('netmanager-') || parts[0].startsWith('firewall-'))) {
                     backups.push({name: parts[0], size: parseInt(parts[1]) || 0, time: parts[2], type: parts[3], cfgCount: parts[4]});
                 } else if (parts.length >= 2 && parts[0].startsWith('firewall-')) {
@@ -562,7 +563,7 @@ function listBackups() {
     });
 }
 
-// v1.5.0 备份导入
+// v1.5.1 备份导入
 function importBackup(input) {
     const file = input.files[0];
     if (!file) return;
@@ -589,7 +590,7 @@ function importBackup(input) {
     });
 }
 
-// v1.5.0 清理旧备份
+// v1.5.1 清理旧备份
 function pruneBackups() {
     const keep = prompt('保留最近多少个备份？（默认 20）', '20');
     if (keep === null) return;

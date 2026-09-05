@@ -1,4 +1,4 @@
--- 静态 IP / IPv6 分配 - v1.4.7
+﻿-- 静态 IP / IPv6 分配 - v1.4.7
 -- v1.4.7 更新：
 --   on_before_commit 以 pcall 包裹：重复条目合并/幽灵清理异常不再中断保存，
 --   错误文本透传到页面消息（ucode LuCI 环境差异导致的问题可被用户直接看到）
@@ -292,7 +292,7 @@ for mac, d in pairs(online_devices) do
 end
 table.sort(ov_rows, function(a, b) return a.mac < b.mac end)
 
--- 生成在线客户端速览 HTML（v1.5.0 优化：IPv6 地址折叠、彩色徽章、在线状态、DUID 显示）
+-- 生成在线客户端速览 HTML（v1.5.1 优化：IPv6 地址折叠、彩色徽章、在线状态、DUID 显示）
 local function build_online_html()
     local out = {}
     if #ov_rows == 0 then

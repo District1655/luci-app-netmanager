@@ -12,7 +12,7 @@ LOG_FILE="$LOG_DIR/run.log"
 LOG_ENABLED=0
 
 # 在线更新配置：版本号与 GitHub 仓库（发版时同步修改 PLUGIN_VERSION）
-PLUGIN_VERSION="1.5.0"
+PLUGIN_VERSION="1.5.1"
 REPO_OWNER="District1655"
 REPO_NAME="luci-app-netmanager"
 REPO_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
@@ -727,6 +727,7 @@ rule_name_check() {
 
 cmd_rule_add() {
     name="$1"; src="$2"; dst="$3"; proto="$4"; port="$5"; target="$6"; fam="${7:-any}"
+    write_log "INFO" "rule_add: 请求添加 名称=$name 源=$src 目标=$dst 协议=$proto 端口=$port 动作=$target IP版本=$fam"
     [ -z "$name" ] && { error "用法: netmanager rule_add <名称> <源zone> <目标zone> <协议> <端口> <ACCEPT|DROP|REJECT> [ipv4|ipv6|any]"; exit 1; }
     rule_name_check "$name" || exit 1
     # 健壮性：检测参数错位。如果 $6 不是合法动作而是 any/ipv4/ipv6，说明 dst 为空被吞了
@@ -764,6 +765,7 @@ cmd_rule_add() {
 # ========== 7. 编辑防火墙规则 ==========
 cmd_rule_edit() {
     idx="$1"; name="$2"; src="$3"; dst="$4"; proto="$5"; port="$6"; target="$7"; fam="${8:-any}"
+    write_log "INFO" "rule_edit: 请求编辑 索引=$idx 名称=$name 源=$src 目标=$dst 协议=$proto 端口=$port 动作=$target IP版本=$fam"
     [ -z "$idx" ] && { error "用法: netmanager rule_edit <索引> <名称> <源> <目标> <协议> <端口> <动作> [IP版本]"; exit 1; }
     old_name=$(uci get firewall.@rule[$idx].name 2>/dev/null)
     [ -z "$old_name" ] && { error "规则索引 $idx 不存在"; exit 1; }
@@ -792,6 +794,7 @@ cmd_rule_edit() {
 # ========== 8. 删除防火墙规则 ==========
 cmd_rule_del() {
     idx="$1"
+    write_log "INFO" "rule_del: 请求删除 索引=$idx"
     [ -z "$idx" ] && { error "用法: netmanager rule_del <规则索引>"; exit 1; }
     name=$(uci get firewall.@rule[$idx].name 2>/dev/null)
     if [ -n "$name" ]; then
@@ -1036,14 +1039,17 @@ cmd_access_log() {
 
 # ========== 10. 防火墙操作 ==========
 cmd_restart() {
+    write_log "INFO" "firewall_restart: 用户请求重启防火墙"
     /etc/init.d/firewall restart 2>&1
     info "防火墙已重启"
 }
 cmd_reload() {
+    write_log "INFO" "firewall_reload: 用户请求重载防火墙"
     /etc/init.d/firewall reload 2>&1
     info "防火墙已重载"
 }
 cmd_backup() {
+    write_log "INFO" "backup: 用户请求创建全配置备份"
     # v1.5.0 增强：全配置备份（firewall/network/dhcp/dnssettings/netmanager），统一目录 /root/backup
     local backup_dir="/root/backup"
     mkdir -p "$backup_dir" 2>/dev/null
@@ -1133,6 +1139,7 @@ cmd_backup_list() {
 
 cmd_backup_restore() {
     backup_name="$1"
+    write_log "INFO" "backup_restore: 用户请求恢复备份 $backup_name"
     [ -z "$backup_name" ] && { error "用法: netmanager backup_restore <备份文件名>"; exit 1; }
 
     # v1.5.0 支持两种格式：新格式 tar.gz（/root/backup/）和旧格式 .bak（/root/）
@@ -1208,6 +1215,7 @@ cmd_backup_restore() {
 
 cmd_backup_delete() {
     backup_name="$1"
+    write_log "INFO" "backup_delete: 用户请求删除备份 $backup_name"
     [ -z "$backup_name" ] && { error "用法: netmanager backup_delete <备份文件名>"; exit 1; }
 
     # v1.5.0 支持两种位置
@@ -1805,6 +1813,7 @@ cmd_set_update_mirror() {
 # ========== 11. 设置管理 ==========
 cmd_set_default_target() {
     ip="$1"
+    write_log "INFO" "set_default_target: 用户设置默认目标IP=$ip"
     [ -z "$ip" ] && { error "用法: netmanager set_default_target <IP>"; exit 1; }
     load_config
     uci set netmanager.settings.default_target="$ip"
@@ -1852,6 +1861,7 @@ cmd_log_get() {
 }
 
 cmd_log_clear() {
+    write_log "INFO" "log_clear: 用户请求清空运行日志"
     if [ -f "$LOG_FILE" ]; then
         rm -f "$LOG_FILE" 2>/dev/null
         info "运行日志已清空"
@@ -2388,6 +2398,7 @@ cmd_china_set_cron() {
 }
 
 cmd_china_enable() {
+    write_log "INFO" "china_enable: 用户请求启用中国IPv4访问限制"
     load_config
     if [ ! -f "$CHINA_LIST_FILE" ]; then
         china_download || { error "启用失败：无法获取中国IP列表"; exit 1; }
@@ -2406,6 +2417,7 @@ cmd_china_enable() {
 }
 
 cmd_china_disable() {
+    write_log "INFO" "china_disable: 用户请求关闭中国IPv4访问限制"
     load_config
     china_clear_kernel
     uci set netmanager.settings.china_filter_enable='0'
@@ -2415,6 +2427,7 @@ cmd_china_disable() {
 }
 
 cmd_china_update() {
+    write_log "INFO" "china_update: 用户请求更新中国IPv4列表"
     load_config
     if ! china_download; then
         error "更新失败：下载未成功，保留旧列表"
