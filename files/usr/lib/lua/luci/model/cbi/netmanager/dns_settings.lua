@@ -12,34 +12,47 @@ m = Map("dnssettings", translate("DNS设置"),
 -- v1.4.6 修复：CBI 页面缺少页内导航（从自绘页面进入后页签消失），注入导航模板
 m:append(Template("netmanager/cbi_nav"))
 
--- v1.5.2 修复：/etc/config/dnssettings 为空或缺失节时，自动初始化默认节，
+-- v1.5.3 修复：/etc/config/dnssettings 为空或缺失节时，自动初始化默认节，
 -- 确保 NamedSection 能找到对应节并渲染表单（否则页面只有标题+导航，表单区域空白）
+-- 用 luci.sys.exec 调用 uci 命令行，不依赖 m.uci:add_list（该方法在 ucode LuCI 中不存在）
 local function _ensure_dns_defaults()
-    local uci = m.uci
-    local changed = false
-    local function _sec(name, values)
-        if not uci:get("dnssettings", name) then
-            uci:section("dnssettings", "dnssettings", name, values or {})
-            changed = true
-            return true
+    local need_init = false
+    for _, sec in ipairs({"wan", "lan", "dnsmasq", "actions"}) do
+        if not m.uci:get("dnssettings", sec) then
+            need_init = true
+            break
         end
-        return false
     end
-    _sec("wan", {peerdns="0", dns1_v4="223.5.5.5", dns2_v4="119.29.29.29",
-        dns1_v6="2400:3200::1", dns2_v6="2402:4e00::"})
-    _sec("lan", {force_dns="1", dns1_v4="223.5.5.5", dns2_v4="119.29.29.29",
-        dns1_v6="2400:3200::1", dns2_v6="2402:4e00::"})
-    if _sec("dnsmasq", {enable="1"}) then
-        -- DynamicList 需逐个 add_list
-        uci:add_list("dnssettings", "dnsmasq", "forward_v4", "223.5.5.5")
-        uci:add_list("dnssettings", "dnsmasq", "forward_v4", "119.29.29.29")
-        uci:add_list("dnssettings", "dnsmasq", "forward_v6", "2400:3200::1")
-        uci:add_list("dnssettings", "dnsmasq", "forward_v6", "2402:4e00::")
+    if not need_init then return end
+
+    -- 用 uci 命令行创建默认配置（兼容 list 类型）
+    local cmds = {
+        "uci set dnssettings.wan=dnssettings",
+        "uci set dnssettings.wan.peerdns='0'",
+        "uci set dnssettings.wan.dns1_v4='223.5.5.5'",
+        "uci set dnssettings.wan.dns2_v4='119.29.29.29'",
+        "uci set dnssettings.wan.dns1_v6='2400:3200::1'",
+        "uci set dnssettings.wan.dns2_v6='2402:4e00::'",
+        "uci set dnssettings.lan=dnssettings",
+        "uci set dnssettings.lan.force_dns='1'",
+        "uci set dnssettings.lan.dns1_v4='223.5.5.5'",
+        "uci set dnssettings.lan.dns2_v4='119.29.29.29'",
+        "uci set dnssettings.lan.dns1_v6='2400:3200::1'",
+        "uci set dnssettings.lan.dns2_v6='2402:4e00::'",
+        "uci set dnssettings.dnsmasq=dnssettings",
+        "uci set dnssettings.dnsmasq.enable='1'",
+        "uci add_list dnssettings.dnsmasq.forward_v4='223.5.5.5'",
+        "uci add_list dnssettings.dnsmasq.forward_v4='119.29.29.29'",
+        "uci add_list dnssettings.dnsmasq.forward_v6='2400:3200::1'",
+        "uci add_list dnssettings.dnsmasq.forward_v6='2402:4e00::'",
+        "uci set dnssettings.actions=dnssettings",
+        "uci commit dnssettings",
+    }
+    for _, cmd in ipairs(cmds) do
+        luci.sys.exec(cmd)
     end
-    _sec("actions", {})
-    if changed then
-        uci:commit("dnssettings")
-    end
+    -- 重新加载 UCI 配置，让 m.uci 缓存同步
+    m.uci:load("dnssettings")
 end
 _ensure_dns_defaults()
 
