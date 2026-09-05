@@ -92,7 +92,7 @@ local function setup_upload_handler()
     math.randomseed(os.time() + math.floor(os.clock() * 1000))
     uploaded_tmp_file = upload_dir .. "/plugin_update_" .. os.time() .. "_" .. math.random(1000, 9999) .. ".tar.gz"
     uploaded_file_size = 0
-    -- v1.5.1 备份文件上传临时路径
+    -- v1.5.2 备份文件上传临时路径
     backup_tmp_file = upload_dir .. "/backup_import_" .. os.time() .. "_" .. math.random(1000, 9999) .. ".tar.gz"
     backup_file_size = 0
 
@@ -122,7 +122,7 @@ local function setup_upload_handler()
                 fout:close()
             end
         end
-        -- v1.5.1 处理 backup_file 字段（备份导入）
+        -- v1.5.2 处理 backup_file 字段（备份导入）
         if meta.name == "backup_file" then
             if backup_file_size > MAX_UPLOAD_BYTES then
                 if backup_fout then backup_fout:close() end
@@ -274,7 +274,7 @@ function api_handler()
         local keep = luci.http.formvalue("keep") or "20"
         cmd = string.format("/usr/sbin/netmanager backup_prune %s", shell_escape(keep))
     elseif action == "backup_import_upload" then
-        -- v1.5.1 备份文件上传导入
+        -- v1.5.2 备份文件上传导入
         local upload_dir = "/tmp/netmanager_upload"
         local dest_file = upload_dir .. "/backup_import.tar.gz"
         luci.sys.call("mkdir -p " .. upload_dir)
@@ -406,7 +406,7 @@ function api_handler()
         local level = luci.http.formvalue("level") or "ALL"
         local keyword = luci.http.formvalue("keyword") or ""
         local lines = luci.http.formvalue("lines") or "200"
-        -- 【v1.5.1 修复】keyword 可能为空，必须用 arg() 包装传 ''，
+        -- 【v1.5.2 修复】keyword 可能为空，必须用 arg() 包装传 ''，
         -- 否则 shell_escape("") 返回空字符串导致参数错位（lines 的值被当作 keyword）
         cmd = string.format("/usr/sbin/netmanager log_query %s %s %s",
             shell_escape(level), arg(keyword), shell_escape(lines))

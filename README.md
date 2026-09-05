@@ -1,6 +1,6 @@
 # 网络管理插件 (luci-app-netmanager)
 
-> 版本：v1.5.1
+> 版本：v1.5.2
 >
 > 适配：iStoreOS / OpenWrt (fw4/nftables, Lua LuCI)
 >
@@ -226,7 +226,7 @@ config actions 'actions'  # 操作按钮占位
 
 ## 更新日志
 
-### v1.5.1 (2026-09-05)
+### v1.5.2 (2026-09-05)
 
 **紧急修复：作者信息 + 日志筛选参数错位 + DNS页面BOM头 + 全量操作日志**
 
