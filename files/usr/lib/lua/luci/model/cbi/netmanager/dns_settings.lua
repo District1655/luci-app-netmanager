@@ -1,13 +1,14 @@
 -- 上网设置插件 - CBI 表单模型
--- 原 DNS 设置模块，v1.6.0 扩展为上网设置：WAN口上网方式 + LAN口地址 + DNS设置
+-- 原 DNS 设置模块，v1.6.1 扩展为上网设置：WAN口上网方式 + LAN口地址 + DNS设置
 -- 绑定 /etc/config/network + /etc/config/dnssettings
 
 local m, s, o
 
 -- ============================================================
 -- 第一部分：上网设置（WAN口 + LAN口，绑定 network 配置）
+-- v1.6.1：隐藏 Map 级别标题栏，统一用 section 级别标题（灰色标题栏）
 -- ============================================================
-m = Map("network", translate("上网设置"),
+m = Map("network", nil,
     translate("统一管理 WAN 口上网方式、LAN 口地址与 DNS 服务器。修改后点击「应用配置」生效。")
     .. "<br><em style='color:#6b7280;font-size:12px;'>"
     .. translate("修改 WAN/LAN 口设置会重启网络服务，期间短暂断网；DNS 配置应用前自动备份到 /root/backup/。")
@@ -75,9 +76,9 @@ o.rmempty = false
 
 -- ============================================================
 -- 第二部分：DNS 设置（绑定 dnssettings 配置）
+-- v1.6.1：隐藏 Map 级别标题栏，统一用 section 级别标题（灰色标题栏）
 -- ============================================================
-local m2 = Map("dnssettings", translate("DNS 设置"),
-    translate("统一管理 WAN/LAN 的 IPv4 和 IPv6 DNS 服务器。"))
+local m2 = Map("dnssettings", nil, nil)
 
 -- ---------- WAN 口上游 DNS ----------
 s = m2:section(NamedSection, "wan", "dnssettings", translate("WAN 口上游 DNS"),
@@ -164,7 +165,7 @@ o.datatype = "ip6addr"
 o.placeholder = "2400:3200::1"
 o:depends("enable", "1")
 
--- ---------- 操作按钮（v1.6.0 移除备份按钮，统一由设置页面备份模块管理） ----------
+-- ---------- 操作按钮（v1.6.1 移除备份按钮，统一由设置页面备份模块管理） ----------
 s = m2:section(NamedSection, "actions", "dnssettings", translate("操作"))
 
 -- 执行 DNS 脚本并返回结果
@@ -208,7 +209,7 @@ o.write = function()
     end
 end
 
--- v1.6.0 修复：/etc/config/dnssettings 为空或缺失节时，自动初始化默认节
+-- v1.6.1 修复：/etc/config/dnssettings 为空或缺失节时，自动初始化默认节
 local function _ensure_dns_defaults()
     local need_init = false
     for _, sec in ipairs({"wan", "lan", "dnsmasq", "actions"}) do

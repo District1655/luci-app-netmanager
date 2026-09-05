@@ -1,6 +1,6 @@
 # 网络管理插件 (luci-app-netmanager)
 
-> 版本：v1.6.0
+> 版本：v1.6.1
 >
 > 适配：iStoreOS / OpenWrt (fw4/nftables, Lua LuCI)
 >
@@ -226,7 +226,7 @@ config actions 'actions'  # 操作按钮占位
 
 ## 更新日志
 
-### v1.6.0 (2026-09-05)
+### v1.6.1 (2026-09-05)
 
 **功能重构：DNS设置模块升级为「上网设置」，新增WAN口上网方式 + LAN口地址设置，备份功能统一管理**
 
