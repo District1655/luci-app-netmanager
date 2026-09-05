@@ -12,9 +12,10 @@ m = Map("dnssettings", translate("DNS设置"),
 -- v1.4.6 修复：CBI 页面缺少页内导航（从自绘页面进入后页签消失），注入导航模板
 m:append(Template("netmanager/cbi_nav"))
 
--- v1.5.3 修复：/etc/config/dnssettings 为空或缺失节时，自动初始化默认节，
+-- v1.5.4 修复：/etc/config/dnssettings 为空或缺失节时，自动初始化默认节，
 -- 确保 NamedSection 能找到对应节并渲染表单（否则页面只有标题+导航，表单区域空白）
 -- 用 luci.sys.exec 调用 uci 命令行，不依赖 m.uci:add_list（该方法在 ucode LuCI 中不存在）
+-- 创建 list 前先 delete 旧值，确保 forward_v4/forward_v6 是 list 类型而非 option
 local function _ensure_dns_defaults()
     local need_init = false
     for _, sec in ipairs({"wan", "lan", "dnsmasq", "actions"}) do
@@ -41,6 +42,9 @@ local function _ensure_dns_defaults()
         "uci set dnssettings.lan.dns2_v6='2402:4e00::'",
         "uci set dnssettings.dnsmasq=dnssettings",
         "uci set dnssettings.dnsmasq.enable='1'",
+        -- 先 delete 再 add_list，确保是 list 类型（否则可能存成 option 单值导致 DynamicList 异常）
+        "uci delete dnssettings.dnsmasq.forward_v4",
+        "uci delete dnssettings.dnsmasq.forward_v6",
         "uci add_list dnssettings.dnsmasq.forward_v4='223.5.5.5'",
         "uci add_list dnssettings.dnsmasq.forward_v4='119.29.29.29'",
         "uci add_list dnssettings.dnsmasq.forward_v6='2400:3200::1'",
@@ -51,8 +55,6 @@ local function _ensure_dns_defaults()
     for _, cmd in ipairs(cmds) do
         luci.sys.exec(cmd)
     end
-    -- 重新加载 UCI 配置，让 m.uci 缓存同步
-    m.uci:load("dnssettings")
 end
 _ensure_dns_defaults()
 
