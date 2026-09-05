@@ -1,6 +1,6 @@
 ﻿# 网络管理插件 (luci-app-netmanager)
 
-> 版本：v1.4.8
+> 版本：v1.4.9
 >
 > 适配：iStoreOS / OpenWrt (fw4/nftables, Lua LuCI)
 >
@@ -225,6 +225,13 @@ config actions 'actions'  # 操作按钮占位
 5. 更新前建议先备份配置；只支持 `.tar.gz` 或 `.tgz` 格式
 
 ## 更新日志
+
+### v1.4.9 (2026-09-05)
+
+**紧急修复：v1.4.8 两处回归导致插件完全不可用**
+
+- **修复全部页面 API 调用失败 `r.text is not a function`**：v1.4.6 引入的 `nmFetch` 兼容层内部已 `.then(res => res.text())` 返回**字符串**，但全部 30+ 处调用方仍按原生 fetch 习惯写 `.then(r => r.text())`，对字符串调用 `.text()` 报 `is not a function`，导致系统概览/端口转发/规则/日志/设置/在线更新/中国IP过滤**所有页面数据加载全部失败**。现 `nmFetch` 改为返回 Response 对象（与原生 fetch 一致），调用方零改动即可正常工作
+- **修复 DNS设置 / 静态IPv6 页面 Runtime error 崩溃**：v1.4.8 修复 `cbi_nav.htm` 注释语法时，注释内容中包含了 `%>` 字符（用于说明正确/错误语法），LuCI 模板解析器在注释块内扫描到 `%>` 即**提前结束注释**，后续内容被当 Lua 代码解析报 `unexpected symbol near '-'`；现注释内容改写为不含 `%>` 组合的描述，两个 CBI 页面恢复正常
 
 ### v1.4.8 (2026-09-05)
 

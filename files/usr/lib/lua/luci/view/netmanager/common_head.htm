@@ -1,4 +1,4 @@
-<style>
+﻿<style>
 /* 网络管理 - 简洁风格 v1.1 */
 .netmanager-container { max-width: 1200px; margin: 0 auto; padding: 16px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif; color: #1f2937; }
 .netmanager-header { display: flex; justify-content: space-between; align-items: center; padding: 14px 20px; background: #fff; border-radius: 8px; margin-bottom: 12px; box-shadow: 0 1px 2px rgba(0,0,0,0.06); border: 1px solid #e5e7eb; }
@@ -170,7 +170,9 @@ function apiFetch(action, params, opts) {
 /* nmFetch：v1.4.6 兼容层——原 fetch(API_URL, {...}) 调用的零改动迁移
    自动完成：POST + CSRF Token 附加 + 超时 + 会话过期/403 检测 + FormData 支持
    形态1：nmFetch({method:'POST', headers:{...}, body:'action=x&k=v'})
-   形态2：nmFetch({method:'POST', body: formData})  // multipart 上传，token 附加到 FormData */
+   形态2：nmFetch({method:'POST', body: formData})  // multipart 上传，token 附加到 FormData
+   v1.4.9 修复：返回 Response 对象（与原生 fetch 一致），此前内部已 res.text() 返回字符串，
+   但调用方仍写 .then(r => r.text()) 导致 "r.text is not a function" 全部 API 失败 */
 function nmFetch(opts) {
 	opts = opts || {};
 	var isForm = (opts.body instanceof FormData);
@@ -199,7 +201,7 @@ function nmFetch(opts) {
 			return res.text().then(function (t) { throw new Error(t.replace('[ERROR] ', '') || 'CSRF 校验失败，请刷新页面'); });
 		}
 		if (!res.ok) throw new Error('服务器响应异常: HTTP ' + res.status);
-		return res.text();
+		return res;  // v1.4.9：返回 Response 对象，调用方自行 .text() / .json()
 	}).catch(function (err) {
 		clearTimeout(timer);
 		if (err.name === 'AbortError') throw new Error('请求超时，请稍后重试');
