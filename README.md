@@ -1,6 +1,6 @@
 # 网络管理插件 (luci-app-netmanager)
 
-> 版本：v1.5.4
+> 版本：v1.6.0
 >
 > 适配：iStoreOS / OpenWrt (fw4/nftables, Lua LuCI)
 >
@@ -226,20 +226,43 @@ config actions 'actions'  # 操作按钮占位
 
 ## 更新日志
 
-### v1.5.4 (2026-09-05)
+### v1.6.0 (2026-09-05)
 
-**紧急修复：作者信息 + 日志筛选参数错位 + DNS页面BOM头 + 全量操作日志**
+**功能重构：DNS设置模块升级为「上网设置」，新增WAN口上网方式 + LAN口地址设置，备份功能统一管理**
 
-- **修正作者名字**：所有页面头部与「关于插件」栏的作者从 "Network Manager" 修正为 **吾爱破解liyu0828**
-- **关于插件栏新增仓库地址**：添加 GitHub 仓库链接 `https://github.com/District1655/luci-app-netmanager`
-- **修复日志筛选等级及行数均出错**：控制器 `log_query` 路由中 keyword 参数用 `shell_escape("")` 包装空值返回空字符串，导致 shell 命令参数错位（lines 的值被当作 keyword，行数恒为空）；现改用 `arg()` 函数包装空参数传 `''`，级别/关键词/行数三维过滤全部正常工作
-- **修复 DNS 设置页面仍看不到内容**：`cbi_nav.htm`、`common_head.htm`、`nav.htm` 三个公共模板文件带 UTF-8 BOM 头（`EF BB BF`），ucode 版 LuCI 模板解析器将 BOM 当作内容输出导致 CBI 表单渲染异常；现全部去除 BOM 头
-- **全量操作日志记录**：在 13 个用户操作命令入口增加 `write_log "INFO"` 记录（rule_add/rule_edit/rule_del、backup/backup_restore/backup_delete、set_default_target、china_enable/china_disable/china_update、restart/reload、log_clear），每条操作记录完整参数，便于 BUG 定位与审计追溯
+**① 模块改名与扩展**
+- 原「DNS设置」模块改名为**「上网设置」**（菜单/导航/页面标题同步更新）
+- 页面从单一 DNS 配置扩展为三大区块：WAN 口上网方式 + LAN 口地址 + DNS 设置
+- 参考小米路由器上网设置交互，统一在一个页面管理路由器上网相关配置
 
-**（继承 v1.5.0 三大优化）**
-① 静态 IPv6 分配页面显示优化（IPv6 地址折叠/彩色徽章/在线状态/DUID 紧凑显示）
-② 运行日志体系完善（级别过滤/关键词搜索/统计栏/彩色渲染/导出下载）
-③ 配置备份体系完善（全配置备份/统一目录/详情列/导入/清理/自动保留策略）
+**② 新增 WAN 口上网方式设置**
+- 支持三种上网方式：**PPPoE 拨号** / **DHCP 自动获取** / **静态 IP**
+- PPPoE 模式：账号、密码输入框（密码字段隐藏显示）
+- 静态 IP 模式：IP 地址、子网掩码、网关、WAN 口 DNS（支持多个，DynamicList）
+- 上网方式切换时自动显示/隐藏对应字段（depends 联动）
+- 绑定 `/etc/config/network` 的 wan 接口
+
+**③ 新增 LAN 口地址设置**
+- LAN 口 IP 地址、子网掩码配置
+- 绑定 `/etc/config/network` 的 lan 接口
+- 修改后需用新地址重新登录管理页面（页面有提示）
+
+**④ DNS 设置保留并优化**
+- WAN 口上游 DNS（运营商下发 / 自定义 IPv4+IPv6）
+- LAN 口设备 DNS（强制下发 / 路由器缓存）
+- dnsmasq 全局转发（DynamicList 支持多个 DNS）
+- 自动初始化：配置文件为空时自动创建默认配置，确保表单正常渲染
+
+**⑤ 备份功能统一管理**
+- 移除「上网设置」页面的「备份当前系统配置」按钮
+- 所有备份功能统一由「设置 → 备份管理」模块管理（全配置备份/恢复/删除/导入/清理）
+- 应用配置时仍自动备份到 `/root/backup/`（防误操作回滚）
+
+**⑥ 应用配置统一生效**
+- 「应用配置」按钮同时保存 network（WAN/LAN口）和 dnssettings（DNS）配置
+- 执行 `dnssettings-apply.sh` 应用 DNS 配置
+- 重启 network 服务使 WAN/LAN 口设置生效
+- 成功/失败结果显示在页面顶部消息栏
 
 ### v1.4.9 (2026-09-05)
 

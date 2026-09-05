@@ -25,7 +25,7 @@ local function cls(id) return (cur == id) and ' class="active"' or '' end
     <a href="<%=url('firewall_rules')%>"<%=cls('firewall_rules')%>>📋 规则管理</a>
     <a href="<%=url('ssh_log')%>"<%=cls('ssh_log')%>>🔐 SSH登录日志</a>
     <a href="<%=url('access_log')%>"<%=cls('access_log')%>>🌐 端口访问日志</a>
-    <a href="<%=url('dns')%>"<%=cls('dns')%>>🧭 DNS设置</a>
+    <a href="<%=url('dns')%>"<%=cls('dns')%>>🌐 上网设置</a>
     <a href="<%=url('dns_staticv6')%>"<%=cls('dns_staticv6')%>>📮 静态IPv6分配</a>
     <a href="<%=url('settings')%>"<%=cls('settings')%>>⚙️ 设置</a>
 </div>

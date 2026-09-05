@@ -292,7 +292,7 @@ for mac, d in pairs(online_devices) do
 end
 table.sort(ov_rows, function(a, b) return a.mac < b.mac end)
 
--- 生成在线客户端速览 HTML（v1.5.4 优化：IPv6 地址折叠、彩色徽章、在线状态、DUID 显示）
+-- 生成在线客户端速览 HTML（v1.6.0 优化：IPv6 地址折叠、彩色徽章、在线状态、DUID 显示）
 local function build_online_html()
     local out = {}
     if #ov_rows == 0 then

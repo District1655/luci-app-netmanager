@@ -1,67 +1,86 @@
--- DNS设置插件 - CBI 表单模型
--- 绑定 /etc/config/dnssettings
+-- 上网设置插件 - CBI 表单模型
+-- 原 DNS 设置模块，v1.6.0 扩展为上网设置：WAN口上网方式 + LAN口地址 + DNS设置
+-- 绑定 /etc/config/network + /etc/config/dnssettings
 
 local m, s, o
 
-m = Map("dnssettings", translate("DNS设置"),
-    translate("统一管理 WAN/LAN 的 IPv4 和 IPv6 DNS 服务器。修改后点击「应用配置」生效。")
+-- ============================================================
+-- 第一部分：上网设置（WAN口 + LAN口，绑定 network 配置）
+-- ============================================================
+m = Map("network", translate("上网设置"),
+    translate("统一管理 WAN 口上网方式、LAN 口地址与 DNS 服务器。修改后点击「应用配置」生效。")
     .. "<br><em style='color:#6b7280;font-size:12px;'>"
-    .. translate("防护说明：自定义 DNS 模式下若 DNS 留空，应用时将跳过该接口保持现状（防止断网）；每次应用前自动备份到 /root/backup/。")
+    .. translate("修改 WAN/LAN 口设置会重启网络服务，期间短暂断网；DNS 配置应用前自动备份到 /root/backup/。")
     .. "</em>")
 
--- v1.4.6 修复：CBI 页面缺少页内导航（从自绘页面进入后页签消失），注入导航模板
+-- v1.4.6 修复：CBI 页面缺少页内导航，注入导航模板
 m:append(Template("netmanager/cbi_nav"))
 
--- v1.5.4 修复：/etc/config/dnssettings 为空或缺失节时，自动初始化默认节，
--- 确保 NamedSection 能找到对应节并渲染表单（否则页面只有标题+导航，表单区域空白）
--- 用 luci.sys.exec 调用 uci 命令行，不依赖 m.uci:add_list（该方法在 ucode LuCI 中不存在）
--- 创建 list 前先 delete 旧值，确保 forward_v4/forward_v6 是 list 类型而非 option
-local function _ensure_dns_defaults()
-    local need_init = false
-    for _, sec in ipairs({"wan", "lan", "dnsmasq", "actions"}) do
-        if not m.uci:get("dnssettings", sec) then
-            need_init = true
-            break
-        end
-    end
-    if not need_init then return end
+-- ---------- WAN 口上网方式 ----------
+s = m:section(NamedSection, "wan", "interface", translate("WAN 口上网方式"),
+    translate("路由器接入互联网的方式，PPPoE 拨号 / DHCP 自动获取 / 静态 IP。"))
 
-    -- 用 uci 命令行创建默认配置（兼容 list 类型）
-    local cmds = {
-        "uci set dnssettings.wan=dnssettings",
-        "uci set dnssettings.wan.peerdns='0'",
-        "uci set dnssettings.wan.dns1_v4='223.5.5.5'",
-        "uci set dnssettings.wan.dns2_v4='119.29.29.29'",
-        "uci set dnssettings.wan.dns1_v6='2400:3200::1'",
-        "uci set dnssettings.wan.dns2_v6='2402:4e00::'",
-        "uci set dnssettings.lan=dnssettings",
-        "uci set dnssettings.lan.force_dns='1'",
-        "uci set dnssettings.lan.dns1_v4='223.5.5.5'",
-        "uci set dnssettings.lan.dns2_v4='119.29.29.29'",
-        "uci set dnssettings.lan.dns1_v6='2400:3200::1'",
-        "uci set dnssettings.lan.dns2_v6='2402:4e00::'",
-        "uci set dnssettings.dnsmasq=dnssettings",
-        "uci set dnssettings.dnsmasq.enable='1'",
-        -- 先 delete 再 add_list，确保是 list 类型（否则可能存成 option 单值导致 DynamicList 异常）
-        "uci delete dnssettings.dnsmasq.forward_v4",
-        "uci delete dnssettings.dnsmasq.forward_v6",
-        "uci add_list dnssettings.dnsmasq.forward_v4='223.5.5.5'",
-        "uci add_list dnssettings.dnsmasq.forward_v4='119.29.29.29'",
-        "uci add_list dnssettings.dnsmasq.forward_v6='2400:3200::1'",
-        "uci add_list dnssettings.dnsmasq.forward_v6='2402:4e00::'",
-        "uci set dnssettings.actions=dnssettings",
-        "uci commit dnssettings",
-    }
-    for _, cmd in ipairs(cmds) do
-        luci.sys.exec(cmd)
-    end
-end
-_ensure_dns_defaults()
+o = s:option(ListValue, "proto", translate("上网方式"))
+o:value("pppoe", translate("PPPoE 拨号"))
+o:value("dhcp", translate("DHCP 自动获取"))
+o:value("static", translate("静态 IP"))
+o.default = "dhcp"
+o.rmempty = false
+
+-- PPPoE 拨号
+o = s:option(Value, "username", translate("PPPoE 账号"))
+o:depends("proto", "pppoe")
+o.placeholder = "宽带账号"
+
+o = s:option(Value, "password", translate("PPPoE 密码"))
+o:depends("proto", "pppoe")
+o.password = true
+o.placeholder = "宽带密码"
+
+-- 静态 IP
+o = s:option(Value, "ipaddr", translate("IP 地址"))
+o:depends("proto", "static")
+o.datatype = "ip4addr"
+o.placeholder = "192.168.1.100"
+
+o = s:option(Value, "netmask", translate("子网掩码"))
+o:depends("proto", "static")
+o.datatype = "ip4addr"
+o.placeholder = "255.255.255.0"
+
+o = s:option(Value, "gateway", translate("网关"))
+o:depends("proto", "static")
+o.datatype = "ip4addr"
+o.placeholder = "192.168.1.1"
+
+o = s:option(DynamicList, "dns", translate("WAN 口 DNS"))
+o:depends("proto", "static")
+o.datatype = "ip4addr"
+o.placeholder = "223.5.5.5"
+o.description = translate("静态 IP 模式下手动指定 DNS，可添加多个")
+
+-- ---------- LAN 口地址设置 ----------
+s = m:section(NamedSection, "lan", "interface", translate("LAN 口地址"),
+    translate("路由器局域网管理地址与子网掩码，修改后需用新地址登录管理页面。"))
+
+o = s:option(Value, "ipaddr", translate("LAN 口 IP 地址"))
+o.datatype = "ip4addr"
+o.placeholder = "192.168.1.1"
+o.rmempty = false
+
+o = s:option(Value, "netmask", translate("子网掩码"))
+o.datatype = "ip4addr"
+o.placeholder = "255.255.255.0"
+o.rmempty = false
 
 -- ============================================================
--- 第一部分：WAN 口 DNS（上游 DNS，路由器自己用）
+-- 第二部分：DNS 设置（绑定 dnssettings 配置）
 -- ============================================================
-s = m:section(NamedSection, "wan", "dnssettings", translate("WAN 口上游 DNS"),
+local m2 = Map("dnssettings", translate("DNS 设置"),
+    translate("统一管理 WAN/LAN 的 IPv4 和 IPv6 DNS 服务器。"))
+
+-- ---------- WAN 口上游 DNS ----------
+s = m2:section(NamedSection, "wan", "dnssettings", translate("WAN 口上游 DNS"),
     translate("路由器本身解析域名使用的 DNS，PPPoE/DHCP 拨号时生效。"))
 
 o = s:option(Flag, "peerdns", translate("使用运营商下发的 DNS"),
@@ -93,10 +112,8 @@ o.placeholder = "2402:4e00::"
 o.default = "2402:4e00::"
 o:depends("peerdns", "0")
 
--- ============================================================
--- 第二部分：LAN 口 DNS（下发给设备的 DNS）
--- ============================================================
-s = m:section(NamedSection, "lan", "dnssettings", translate("LAN 口设备 DNS"),
+-- ---------- LAN 口设备 DNS ----------
+s = m2:section(NamedSection, "lan", "dnssettings", translate("LAN 口设备 DNS"),
     translate("通过 DHCP/RA 下发给手机、电脑等局域网设备的 DNS 服务器。"))
 
 o = s:option(Flag, "force_dns", translate("强制下发自定义 DNS 给设备"),
@@ -128,10 +145,8 @@ o.placeholder = "2402:4e00::"
 o.default = "2402:4e00::"
 o:depends("force_dns", "1")
 
--- ============================================================
--- 第三部分：dnsmasq 全局转发
--- ============================================================
-s = m:section(NamedSection, "dnsmasq", "dnssettings", translate("dnsmasq 全局转发"),
+-- ---------- dnsmasq 全局转发 ----------
+s = m2:section(NamedSection, "dnsmasq", "dnssettings", translate("dnsmasq 全局转发"),
     translate("dnsmasq 上游解析服务器，设备走路由器缓存时实际使用的 DNS。"))
 
 o = s:option(Flag, "enable", translate("启用全局转发"),
@@ -149,13 +164,10 @@ o.datatype = "ip6addr"
 o.placeholder = "2400:3200::1"
 o:depends("enable", "1")
 
--- ============================================================
--- 第四部分：操作按钮（POST 化：原 GET 路由已并入 api_handler，redirect 会 404）
--- 按钮直接执行脚本并渲染结果页（CBI 框架按钮自带 token 校验，无 CSRF 风险）
--- ============================================================
-s = m:section(NamedSection, "actions", "dnssettings", translate("操作"))
+-- ---------- 操作按钮（v1.6.0 移除备份按钮，统一由设置页面备份模块管理） ----------
+s = m2:section(NamedSection, "actions", "dnssettings", translate("操作"))
 
--- 【v1.4.6】执行 DNS 脚本并返回结果：捕获输出与退出码（原 __RC__ 标记法）
+-- 执行 DNS 脚本并返回结果
 local function run_dns_script(script)
     local out = luci.sys.exec(script .. " 2>&1; echo \"__RC__$?\"") or ""
     local rc = tonumber(out:match("__RC__(%-?%d+)")) or -1
@@ -163,45 +175,78 @@ local function run_dns_script(script)
     return rc, out
 end
 
--- 【v1.4.6】输出压缩为单行消息（alert 框内换行不渲染，pcdata 只转义文本）
-local function to_one_line(s, max)
-    s = (s or ""):gsub("%c", " "):gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
-    if #s > (max or 300) then s = s:sub(1, max) .. "..." end
-    return s
+-- 输出压缩为单行消息
+local function to_one_line(str, max)
+    str = (str or ""):gsub("%c", " "):gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+    if #str > (max or 300) then str = str:sub(1, max) .. "..." end
+    return str
 end
 
 o = s:option(Button, "_apply", translate("应用配置"))
 o.inputtitle = translate("应用配置")
 o.inputstyle = "apply"
 o.write = function()
-    -- 【v1.4.7 防御】脚本执行异常（如环境差异）不再炸整个 POST 请求，
-    -- 错误文本透传到页面消息，便于定位
+    -- 先保存 network 配置（WAN/LAN 口设置）
+    m.uci:commit("network")
+    -- 再保存 dnssettings 配置
+    m2.uci:commit("dnssettings")
+
+    -- 执行 DNS 应用脚本
     local ok, rc, out = pcall(run_dns_script, "/usr/sbin/dnssettings-apply.sh")
     if not ok then
-        m.message = "DNS 配置应用执行异常：" .. to_one_line(tostring(rc))
+        m2.message = "DNS 配置应用执行异常：" .. to_one_line(tostring(rc))
         return
     end
+
+    -- 重启网络服务（应用 WAN/LAN 口设置）
+    luci.sys.exec("/etc/init.d/network restart >/dev/null 2>&1")
+
     if rc == 0 then
-        m.message = "DNS 配置已应用成功，已写入 /etc/config/ 并重载网络服务（详细输出见「设置 → 运行日志」）"
+        m2.message = "配置已应用成功，已写入 /etc/config/ 并重启网络服务（详细输出见「设置 → 运行日志」）"
     else
-        m.message = "DNS 配置应用失败 (exit=" .. tostring(rc) .. ")：" .. to_one_line(out)
+        m2.message = "配置应用失败 (exit=" .. tostring(rc) .. ")：" .. to_one_line(out)
     end
 end
 
-o = s:option(Button, "_backup", translate("备份当前系统配置"))
-o.inputtitle = translate("备份配置")
-o.inputstyle = "save"
-o.write = function()
-    local ok, rc, out = pcall(run_dns_script, "/usr/sbin/dnssettings-backup.sh")
-    if not ok then
-        m.message = "配置备份执行异常：" .. to_one_line(tostring(rc))
-        return
+-- v1.6.0 修复：/etc/config/dnssettings 为空或缺失节时，自动初始化默认节
+local function _ensure_dns_defaults()
+    local need_init = false
+    for _, sec in ipairs({"wan", "lan", "dnsmasq", "actions"}) do
+        if not m2.uci:get("dnssettings", sec) then
+            need_init = true
+            break
+        end
     end
-    if rc == 0 then
-        m.message = "配置已备份到 /root/backup/（保留最近 5 份）"
-    else
-        m.message = "配置备份失败 (exit=" .. tostring(rc) .. ")：" .. to_one_line(out)
+    if not need_init then return end
+
+    local cmds = {
+        "uci set dnssettings.wan=dnssettings",
+        "uci set dnssettings.wan.peerdns='0'",
+        "uci set dnssettings.wan.dns1_v4='223.5.5.5'",
+        "uci set dnssettings.wan.dns2_v4='119.29.29.29'",
+        "uci set dnssettings.wan.dns1_v6='2400:3200::1'",
+        "uci set dnssettings.wan.dns2_v6='2402:4e00::'",
+        "uci set dnssettings.lan=dnssettings",
+        "uci set dnssettings.lan.force_dns='1'",
+        "uci set dnssettings.lan.dns1_v4='223.5.5.5'",
+        "uci set dnssettings.lan.dns2_v4='119.29.29.29'",
+        "uci set dnssettings.lan.dns1_v6='2400:3200::1'",
+        "uci set dnssettings.lan.dns2_v6='2402:4e00::'",
+        "uci set dnssettings.dnsmasq=dnssettings",
+        "uci set dnssettings.dnsmasq.enable='1'",
+        "uci delete dnssettings.dnsmasq.forward_v4",
+        "uci delete dnssettings.dnsmasq.forward_v6",
+        "uci add_list dnssettings.dnsmasq.forward_v4='223.5.5.5'",
+        "uci add_list dnssettings.dnsmasq.forward_v4='119.29.29.29'",
+        "uci add_list dnssettings.dnsmasq.forward_v6='2400:3200::1'",
+        "uci add_list dnssettings.dnsmasq.forward_v6='2402:4e00::'",
+        "uci set dnssettings.actions=dnssettings",
+        "uci commit dnssettings",
+    }
+    for _, cmd in ipairs(cmds) do
+        luci.sys.exec(cmd)
     end
 end
+_ensure_dns_defaults()
 
-return m
+return m, m2

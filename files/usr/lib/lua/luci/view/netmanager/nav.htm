@@ -4,7 +4,7 @@
     <a href="<%=luci.dispatcher.build_url("admin/netmanager/firewall_rules")%>" class="<% if luci.dispatcher.context.requestpath[3] == 'firewall_rules' then %>active<% end %>">📋 规则管理</a>
     <a href="<%=luci.dispatcher.build_url("admin/netmanager/ssh_log")%>" class="<% if luci.dispatcher.context.requestpath[3] == 'ssh_log' then %>active<% end %>">🔐 SSH登录日志</a>
     <a href="<%=luci.dispatcher.build_url("admin/netmanager/access_log")%>" class="<% if luci.dispatcher.context.requestpath[3] == 'access_log' then %>active<% end %>">🌐 端口访问日志</a>
-    <a href="<%=luci.dispatcher.build_url("admin/netmanager/dns")%>" class="<% if luci.dispatcher.context.requestpath[3] == 'dns' then %>active<% end %>">🧭 DNS设置</a>
+    <a href="<%=luci.dispatcher.build_url("admin/netmanager/dns")%>" class="<% if luci.dispatcher.context.requestpath[3] == 'dns' then %>active<% end %>">🌐 上网设置</a>
     <a href="<%=luci.dispatcher.build_url("admin/netmanager/dns_staticv6")%>" class="<% if luci.dispatcher.context.requestpath[3] == 'dns_staticv6' then %>active<% end %>">📮 静态IPv6分配</a>
     <a href="<%=luci.dispatcher.build_url("admin/netmanager/settings")%>" class="<% if luci.dispatcher.context.requestpath[3] == 'settings' then %>active<% end %>">⚙️ 设置</a>
 </div>
