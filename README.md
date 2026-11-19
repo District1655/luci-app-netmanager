@@ -1,12 +1,12 @@
 # 网络管理插件 (luci-app-netmanager)
 
-> 版本：v1.6.1
+> 版本：v1.7.0
 >
 > 适配：iStoreOS / OpenWrt (fw4/nftables, Lua LuCI)
 >
 > 由 **luci-app-fwmanager**（防火墙管理）与 **luci-app-dnssettings**（DNS设置）合并而成的网络管理一体化 LuCI 插件。
 
-一站式管理路由器网络：端口转发、防火墙规则、SSH/访问日志、中国 IPv4 访问限制、WAN/LAN 双栈 DNS 统一管理、静态 IPv6 分配、配置备份恢复、插件在线更新、一键卸载。
+一站式管理路由器网络：端口转发、防火墙规则、SSH/访问日志、中国 IPv4/IPv6 访问限制、手动黑名单、WAN/LAN 双栈 DNS 统一管理、静态 IPv6 分配、配置备份恢复、插件在线更新、一键卸载。
 
 ---
 
@@ -20,17 +20,19 @@
 4. **SSH 登录日志**：成功/失败记录 + 失败 IP 排行 Top 10 + 自动刷新
 5. **端口访问日志**：活跃连接 / 入站出站计数 / 拦截统计
 6. **中国 IPv4 访问限制**：仅允许中国大陆 IPv4 访问已开放端口，境外 IPv4 新建连接丢弃；独立 nft 表 `inet netmanager`（fw4 reload 不影响）；订阅链接与 cron 更新计划可自定义；开机 init + WAN hotplug 自愈；旧版 nft 自动降级兼容
-7. **设置**：默认目标 IP / 配置备份 / 插件在线更新 / 运行日志排错 / 一键卸载
+7. **中国 IPv6 访问限制（v1.7.0 新增）**：与 IPv4 版本对称，仅允许中国大陆 IPv6 访问已开放端口；独立 nft 表 `inet netmanager6`（与 IPv4/ fw4 互不影响）；订阅链接与 cron 更新计划可自定义；默认订阅 `https://ispip.clang.cn/all_cn_ipv6.txt`；开机 init + WAN hotplug 自愈
+8. **手动黑名单（v1.7.0 新增）**：支持 IPv4/IPv6 单个 IP 与 CIDR 网段（如 `1.2.3.0/24`、`2001:db8::/32`）手动拉黑，入站与转发流量直接丢弃；独立 nft 表 `inet netmanager_ban`（fw4 reload 不影响），条目持久化并开机/WAN 重连自动恢复
+9. **设置**：默认目标 IP / 配置备份 / 插件在线更新 / 运行日志排错 / 一键卸载
 
 ### DNS 设置（原 luci-app-dnssettings，CBI 标准表单）
 
-8. **DNS 设置**：
+10. **DNS 设置**：
    - WAN 口上游 DNS：PPPoE/DHCP 拨号自定义 IPv4/IPv6 DNS，或使用运营商下发（peerdns）
    - LAN 口设备 DNS：通过 DHCP option 6 与 RA 强制下发自定义 DNS，或走路由器缓存
    - dnsmasq 全局转发：统一配置上游解析服务器
    - 配置备份：一键备份当前系统 network/dhcp 配置到 `/root/backup/`
    - 应用配置：一键写入系统并重启 network/dnsmasq/odhcpd
-9. **静态 IPv6 分配**：基于 MAC 绑定 hostid/ip6/DUID，自动合并重复条目、在线状态显示、hostid 冲突检测
+11. **静态 IPv6 分配**：基于 MAC 绑定 hostid/ip6/DUID，自动合并重复条目、在线状态显示、hostid 冲突检测
 
 ### 默认 DNS
 
@@ -67,7 +69,7 @@ luci-app-netmanager/
 │   ├── etc/config/
 │   │   ├── netmanager                        # 防火墙模块配置
 │   │   └── dnssettings                       # DNS 模块配置（独立保留）
-│   ├── etc/init.d/netmanager-china           # 中国IPv4过滤开机自启
+│   ├── etc/init.d/netmanager-china           # 中国IPv4/IPv6过滤 + 黑名单 开机自启
 │   └── etc/hotplug.d/iface/95-netmanager-china # WAN上线重应用
 ├── .github/workflows/build.yml               # GitHub Actions 自动打包
 ├── install.sh                                # 一键安装脚本（支持 SKIP_UHTTPD_RESTART）
@@ -163,6 +165,21 @@ netmanager china_filter update                 # 更新IP库并重应用规则
 netmanager china_filter set_url <url>          # 自定义订阅链接
 netmanager china_filter set_cron "0 4 * * *"   # 自定义更新计划cron
 
+# 中国IPv6访问限制（v1.7.0+）
+netmanager china6_filter status                # 查看状态
+netmanager china6_filter enable                # 开启（应用规则 + 装cron + 自启）
+netmanager china6_filter disable               # 关闭（清规则 + 移cron，保留列表与设置）
+netmanager china6_filter update                # 更新IPv6 IP库并重应用规则
+netmanager china6_filter set_url <url>         # 自定义IPv6订阅链接
+netmanager china6_filter set_cron "0 4 * * *"  # 自定义IPv6更新计划cron
+
+# 手动黑名单（v1.7.0+，支持单IP与CIDR网段）
+netmanager blacklist list                      # 查看黑名单条目与规则状态
+netmanager blacklist add <IP|CIDR>             # 添加拉黑，如 1.2.3.4 / 10.0.0.0/8 / 2001:db8::/32
+netmanager blacklist del <IP|CIDR>             # 移除条目
+netmanager blacklist clear [v4|v6|all]         # 清空黑名单
+netmanager blacklist apply                     # 重建黑名单 nft 规则
+
 # DNS 设置（命令行方式应用，等价于页面「应用配置」按钮）
 /usr/sbin/dnssettings-apply.sh                 # 应用 /etc/config/dnssettings 到系统
 /usr/sbin/dnssettings-backup.sh                # 备份 network/dhcp 配置到 /root/backup/
@@ -190,7 +207,14 @@ config netmanager 'settings'
     option china_filter_cron '0 3 * * 0'      # 更新计划cron表达式：默认每周日3点
     option china_filter_last_update ''        # 上次成功下载时间
     option china_filter_count '0'             # 当前列表CIDR条数
+    option china6_filter_enable '0'           # 中国IPv6过滤开关：0关闭 / 1开启
+    option china6_filter_url 'https://ispip.clang.cn/all_cn_ipv6.txt'  # IPv6 IP库订阅链接
+    option china6_filter_cron '0 3 * * 0'     # IPv6 更新计划cron表达式
+    option china6_filter_last_update ''       # IPv6 上次成功下载时间
+    option china6_filter_count '0'            # IPv6 当前列表CIDR条数
 ```
+
+> **手动黑名单存储**：条目持久化在 `/etc/netmanager/blacklist_v4.list` 与 `/etc/netmanager/blacklist_v6.list`（每行一个 IP 或 CIDR），无需 UCI 配置，页面增删即时生效。
 
 ### DNS 模块：`/etc/config/dnssettings`
 
@@ -204,6 +228,28 @@ config actions 'actions'  # 操作按钮占位
 > **DNS 应用原理**：点击「应用配置」后，`dnssettings-apply.sh` 将上述配置写入 `network.wan/wan6`（peerdns/dns/dns6）、`dhcp.lan`（dhcp_option/dns/ra/dhcpv6）与 `dhcp.@dnsmasq[0].server`，然后重启 network/dnsmasq/odhcpd。局域网设备需断开重连网络才能获取新 DNS。
 
 > **中国IPv4过滤原理**：独立 nft 表 `inet netmanager`（与 fw4 分离，fw4 reload 不影响）含 `china_v4` CIDR 集合 + input/forward 两条 base chain(priority -50)，规则 `iifname {wan} ct state new {tcp,udp} ip saddr != @china_v4 drop`。CIDR 列表存 `/etc/netmanager/china_v4.list`，开机 init + WAN 上线 hotplug 自动重应用。兼容新旧 nft：modern(`flags interval, auto-merge` 分片加载) / compat(`flags interval` 单次原子加载 + 逐行回退)。
+
+> **中国IPv6过滤原理（v1.7.0）**：与 IPv4 完全对称，独立 nft 表 `inet netmanager6` 含 `china_v6` 集合 + `china6_input`/`china6_forward` 两条 base chain，规则 `iifname {wan} ct state new {tcp,udp} ip6 saddr != @china_v6 drop`。列表存 `/etc/netmanager/china_v6.list`，默认订阅 `https://ispip.clang.cn/all_cn_ipv6.txt`，同样支持 modern/compat 两种 nft 加载模式。
+
+> **手动黑名单原理（v1.7.0）**：独立 nft 表 `inet netmanager_ban`，`ban_v4`/`ban_v6` 两个 interval 集合支持单 IP 与 CIDR 网段，input/forward 两条 base chain 上分别以 `ip saddr @ban_v4 drop`、`ip6 saddr @ban_v6 drop` 丢弃入站与转发流量。条目持久化在 `/etc/netmanager/blacklist_v4.list`、`blacklist_v6.list`，重启与 WAN 重连后由 init/hotplug 自动恢复。
+
+### 中国 IP 订阅参考源
+
+IPv6（每行一个 CIDR）：
+
+| 源 | 地址 | 说明 |
+|----|------|------|
+| ispip.clang.cn（默认） | `https://ispip.clang.cn/all_cn_ipv6.txt` | 中国大陆全部 IPv6 地址段，国内直连 |
+| china-operator-ip | `https://raw.githubusercontent.com/gaoyifan/china-operator-ip/ip-lists/china6.txt` | 按国内运营商 ASN 自动生成，更新频繁（GitHub raw 直连受限时需镜像） |
+| APNIC 原始数据 | `https://ftp.apnic.net/apnic/stats/apnic/delegated-apnic-latest` | 官方分配数据，需自行转换为 CIDR |
+
+IPv4（每行一个 CIDR）：
+
+| 源 | 地址 | 说明 |
+|----|------|------|
+| metowolf/iplist（默认） | `https://metowolf.github.io/iplist/data/special/china.txt` | 社区维护，格式与插件一致 |
+| ispip.clang.cn | `https://ispip.clang.cn/all_cn.txt` | 中国大陆全部 IPv4 地址段，国内直连 |
+| china-operator-ip | `https://raw.githubusercontent.com/gaoyifan/china-operator-ip/ip-lists/china.txt` | 按国内运营商 ASN 自动生成 |
 
 ---
 
@@ -225,6 +271,32 @@ config actions 'actions'  # 操作按钮占位
 5. 更新前建议先备份配置；只支持 `.tar.gz` 或 `.tgz` 格式
 
 ## 更新日志
+
+### v1.7.0 (2026-11-19)
+
+**新增：中国 IPv6 白名单订阅 + IPv4/IPv6 手动黑名单（支持网段）**
+
+**① 中国 IPv6 访问限制（参考 IPv4 白名单实现）**
+- 独立 nft 表 `inet netmanager6`：`china_v6` interval 集合 + `china6_input`/`china6_forward` 两条 base chain(priority -50)
+- 规则 `iifname {wan} ct state new {tcp,udp} ip6 saddr != @china_v6 counter drop`，仅拦截境外 IPv6 新建 TCP/UDP 连接
+- 默认订阅 `https://ispip.clang.cn/all_cn_ipv6.txt`（中国大陆全部 IPv6 地址段，国内可直连），支持自定义订阅链接与 cron 更新计划
+- 下载后严格过滤为合法 IPv6 CIDR（BOM/CR/注释/空行自动清理），条数过少拒绝保存，防止空列表误杀
+- 与 IPv4 版本相同的 nft 兼容策略：modern(`flags interval, auto-merge` 分片加载) / compat(`flags interval` 单次原子加载 + 逐行回退)
+- 开机 init + WAN hotplug 自愈；`netmanager china6_filter status|enable|disable|update|set_url|set_cron`
+- 设置页新增「中国IPv6访问限制」区块，与 IPv4 区块并列独立开关
+
+**② 手动黑名单（IPv4 / IPv6，支持单 IP 与 CIDR 网段）**
+- 独立 nft 表 `inet netmanager_ban`，`ban_v4`/`ban_v6` 两个 interval 集合，支持 `1.2.3.4`、`1.2.3.0/24`、`2001:db8::1`、`2001:db8::/32`
+- input/forward 两条 base chain 分别以 `ip saddr @ban_v4 drop`、`ip6 saddr @ban_v6 drop` 丢弃入站与转发流量
+- 条目持久化到 `/etc/netmanager/blacklist_v4.list`、`/etc/netmanager/blacklist_v6.list`，重启/WAN 重连自动恢复
+- 格式校验：IPv4 校验每段 0-255 且拒绝前导零，IPv6 校验分组数量/位数/前缀长度（0-32 / 0-128）
+- 设置页新增「手动黑名单」区块：输入框一键添加、条目徽标逐个删除、IPv4/IPv6 分别清空
+- 命令行 `netmanager blacklist list|add <ip/cidr>|del <ip/cidr>|clear [v4|v6|all]|apply`
+
+**③ 其他**
+- WAN 设备探测同时参考 IPv4/IPv6 默认路由，纯 IPv6 上联场景也能正确安装规则
+- 卸载流程清理 `inet netmanager6`、`inet netmanager_ban` 与两类 cron 任务
+- 热插拔脚本改为「任一过滤启用或存在黑名单条目」即恢复规则
 
 ### v1.6.1 (2026-09-05)
 

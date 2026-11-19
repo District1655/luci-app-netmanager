@@ -164,6 +164,8 @@ jobs:
             - **静态IPv6分配（v1.4.0 新增）**：基于MAC绑定 hostid/ip6/DUID，自动合并重复条目与 hostid 冲突检测
             - 设置（默认目标IP/安全建议/系统工具/配置备份/插件在线更新/运行日志排错）
             - **中国IPv4访问限制（继承自 v1.3.33）**：仅允许中国大陆 IPv4 访问已开放端口（DNAT+路由器本地开放端口），境外 IPv4 新建连接丢弃；默认订阅 `https://metowolf.github.io/iplist/data/special/china.txt`，支持自定义订阅链接与自定义 cron 更新计划；开机 init + WAN hotplug 自愈；**旧版 nft 自动降级兼容**（modern `flags interval, auto-merge` 分片加载 / compat `flags interval` 单次原子加载 + 逐行回退）
+            - **中国IPv6访问限制（v1.7.0 新增）**：与 IPv4 对称，独立 nft 表 `inet netmanager6`，仅允许中国大陆 IPv6 访问已开放端口；默认订阅 `https://ispip.clang.cn/all_cn_ipv6.txt`，订阅与 cron 可自定义；开机/WAN hotplug 自愈
+            - **手动黑名单（v1.7.0 新增）**：IPv4/IPv6 单 IP 与 CIDR 网段拉黑，独立 nft 表 `inet netmanager_ban`，条目持久化并自动恢复
 
             ### 安装方法（iStoreOS 推荐脚本安装）
             1. 下载 `luci-app-netmanager-install_*.tar.gz` 上传到路由器 `/tmp`
@@ -201,6 +203,19 @@ jobs:
             netmanager china_filter update                 # 更新IP库并重应用规则
             netmanager china_filter set_url <url>          # 自定义订阅链接
             netmanager china_filter set_cron "0 4 * * *"   # 自定义更新计划cron
+
+            # 中国IPv6访问限制（v1.7.0+）
+            netmanager china6_filter status                # 查看状态
+            netmanager china6_filter enable                # 开启
+            netmanager china6_filter disable               # 关闭
+            netmanager china6_filter update                # 更新IPv6 IP库
+
+            # 手动黑名单（v1.7.0+，支持单IP与CIDR）
+            netmanager blacklist list
+            netmanager blacklist add 10.0.0.0/8
+            netmanager blacklist add 2001:db8::/32
+            netmanager blacklist del 10.0.0.0/8
+            netmanager blacklist clear v4|v6|all
 
             # 卸载插件
             netmanager uninstall                # 全删（含 DNS 配置与脚本）

@@ -78,6 +78,86 @@
             </div>
         </div>
 
+        <!-- 中国IPv6访问限制 -->
+        <h3>中国IPv6访问限制</h3>
+        <div class="netmanager-form" style="border-left:3px solid #8b5cf6;">
+            <div style="margin-bottom:10px;">
+                <b>仅允许中国大陆 IPv6 访问已开放端口</b>
+                <span class="text-muted" style="margin-left:8px;">境外IPv6新建TCP/UDP连接将被丢弃；已建立连接/出站/局域网间转发不受影响；与IPv4过滤相互独立</span>
+            </div>
+            <table class="netmanager-table" style="margin-bottom:10px;">
+                <tr>
+                    <td width="35%">当前状态</td>
+                    <td id="china6_status_cell"><span class="text-muted">加载中...</span></td>
+                </tr>
+                <tr>
+                    <td>IP库订阅链接</td>
+                    <td>
+                        <input type="text" id="china6_url" style="width:70%;" placeholder="以 http:// 或 https:// 开头，每行一个 IPv6 CIDR 的纯文本订阅">
+                        <button class="btn btn-secondary btn-sm" onclick="saveChina6Url()">保存链接</button>
+                    </td>
+                </tr>
+                <tr>
+                    <td>更新计划</td>
+                    <td>
+                        <select id="china6_cron_preset" onchange="onCronPresetChangeFor('china6_cron_preset','china6_cron_custom')" style="padding:2px 5px;">
+                            <option value="0 3 * * *">每天凌晨3点</option>
+                            <option value="0 3 * * 0">每周日凌晨3点(默认)</option>
+                            <option value="0 3 1 * *">每月1日凌晨3点</option>
+                            <option value="0 */12 * * *">每12小时</option>
+                            <option value="__custom__">自定义...</option>
+                        </select>
+                        <input type="text" id="china6_cron_custom" placeholder="5段cron: 分 时 日 月 周" style="width:200px; display:none; margin-left:8px;">
+                        <button class="btn btn-secondary btn-sm" onclick="saveChina6Cron()">保存计划</button>
+                        <span class="text-muted" style="margin-left:8px; font-size:12px;">仅允许 0-9 * / , - 字符</span>
+                    </td>
+                </tr>
+                <tr>
+                    <td>上次更新 / 条数</td>
+                    <td id="china6_update_cell"><span class="text-muted">—</span></td>
+                </tr>
+                <tr>
+                    <td>生效WAN口 / 规则</td>
+                    <td id="china6_wan_cell"><span class="text-muted">—</span></td>
+                </tr>
+            </table>
+            <div class="netmanager-toolbar">
+                <button class="btn btn-success btn-sm" id="btn_china6_enable" onclick="enableChina6Filter()">立即启用</button>
+                <button class="btn btn-warning btn-sm" id="btn_china6_disable" onclick="disableChina6Filter()">关闭</button>
+                <button class="btn btn-primary btn-sm" id="btn_china6_update" onclick="updateChina6Filter()">更新IP库</button>
+                <button class="btn btn-secondary btn-sm" onclick="loadChina6Status()">刷新状态</button>
+            </div>
+        </div>
+
+        <!-- 手动黑名单（IPv4/IPv6） -->
+        <h3>手动黑名单（IPv4 / IPv6）</h3>
+        <div class="netmanager-form" style="border-left:3px solid #ef4444;">
+            <div style="margin-bottom:10px;">
+                <b>手动拉黑 IP / IP段</b>
+                <span class="text-muted" style="margin-left:8px;">支持单个 IP 与 CIDR 网段（如 1.2.3.4、1.2.3.0/24、2001:db8::1、2001:db8::/32）；入站与转发流量直接丢弃，独立 nft 表 inet netmanager_ban，fw4 重载不影响</span>
+            </div>
+            <div class="netmanager-toolbar" style="margin-bottom:10px;">
+                <input type="text" id="ban_input" placeholder="输入 IP 或 CIDR，如 10.0.0.0/8 或 2001:db8::/32" style="width:45%;">
+                <button class="btn btn-danger btn-sm" onclick="addBlacklistEntry()">添加拉黑</button>
+                <button class="btn btn-secondary btn-sm" onclick="loadBlacklist()">刷新</button>
+                <button class="btn btn-warning btn-sm" onclick="clearBlacklist('v4')">清空IPv4</button>
+                <button class="btn btn-warning btn-sm" onclick="clearBlacklist('v6')">清空IPv6</button>
+            </div>
+            <table class="netmanager-table">
+                <tr>
+                    <td width="22%">IPv4 黑名单 (<span id="ban_v4_count">0</span>)</td>
+                    <td id="ban_v4_list"><span class="text-muted">—</span></td>
+                </tr>
+                <tr>
+                    <td>IPv6 黑名单 (<span id="ban_v6_count">0</span>)</td>
+                    <td id="ban_v6_list"><span class="text-muted">—</span></td>
+                </tr>
+            </table>
+            <div class="text-muted" style="margin-top:6px;font-size:11px;">
+                规则状态: <span id="ban_active_cell">—</span> | 条目持久化于 <code>/etc/netmanager/blacklist_v4.list</code> / <code>blacklist_v6.list</code>，重启或WAN重连后自动恢复
+            </div>
+        </div>
+
         <!-- 备份管理 -->
         <h3>备份管理</h3>
         <div class="netmanager-form" style="border-left:3px solid #10b981;">
@@ -103,7 +183,7 @@
             <table class="netmanager-table" style="margin-bottom:10px;">
                 <tr>
                     <td width="30%">当前版本</td>
-                    <td><b id="online_cur_version">v1.6.1</b></td>
+                    <td><b id="online_cur_version">v1.7.0</b></td>
                 </tr>
                 <tr>
                     <td>最新版本</td>
@@ -222,7 +302,7 @@
         <h3>关于插件</h3>
         <table class="netmanager-table">
             <tr><td width="30%">插件名称</td><td>网络管理 (luci-app-netmanager)</td></tr>
-            <tr><td>版本</td><td id="plugin_version">v1.6.1</td></tr>
+            <tr><td>版本</td><td id="plugin_version">v1.7.0</td></tr>
             <tr><td>作者</td><td><b>吾爱破解liyu0828</b></td></tr>
             <tr><td>仓库地址</td><td><a href="https://github.com/District1655/luci-app-netmanager" target="_blank" style="color:#2563eb;">https://github.com/District1655/luci-app-netmanager</a></td></tr>
             <tr><td>适配系统</td><td>iStoreOS / OpenWrt (fw4/nftables)</td></tr>
@@ -255,7 +335,7 @@
             </div>
         </div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.6.1<br><span style="font-size:10px;">适配 iStoreOS / OpenWrt | 基于 fw4/nftables</span></div>
+    <div class="footer-sign">网络管理插件 v1.7.0<br><span style="font-size:10px;">适配 iStoreOS / OpenWrt | 基于 fw4/nftables</span></div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -731,11 +811,15 @@ function loadChinaStatus() {
     });
 }
 
-function onCronPresetChange() {
-    const sel = document.getElementById('china_cron_preset');
-    const customInput = document.getElementById('china_cron_custom');
+function onCronPresetChangeFor(presetId, customId) {
+    const sel = document.getElementById(presetId);
+    const customInput = document.getElementById(customId);
     if (sel.value === '__custom__') { customInput.style.display = ''; }
     else { customInput.style.display = 'none'; customInput.value = ''; }
+}
+
+function onCronPresetChange() {
+    onCronPresetChangeFor('china_cron_preset', 'china_cron_custom');
 }
 
 function saveChinaUrl() {
@@ -798,6 +882,189 @@ function updateChinaFilter() {
     }).catch(e => { setChinaBtns(true); alert('更新失败: ' + e.message); });
 }
 
+// ========== 中国IPv6访问限制 ==========
+function loadChina6Status() {
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china6_filter_status'})
+    .then(r => r.text()).then(data => {
+        let en='0', url='', cron='', lu='', cnt='0', devs='', active='0';
+        data.split('\n').forEach(line => {
+            const idx = line.indexOf('=');
+            if (idx > 0) {
+                const k = line.substring(0, idx), v = line.substring(idx + 1);
+                if (k === 'CHINA6_FILTER_ENABLED') en = v;
+                else if (k === 'URL') url = v;
+                else if (k === 'CRON') cron = v;
+                else if (k === 'LAST_UPDATE') lu = v;
+                else if (k === 'COUNT') cnt = v;
+                else if (k === 'WAN_DEVS') devs = v;
+                else if (k === 'RULE_ACTIVE') active = v;
+            }
+        });
+        const ruleBadge = active === '1'
+            ? ' <span class="badge badge-blue">规则已加载</span>'
+            : (en === '1' ? ' <span class="badge badge-gray" style="background:#94a3b8;color:#fff;">规则未加载</span>' : '');
+        document.getElementById('china6_status_cell').innerHTML = (en === '1' ? '<span class="badge badge-purple">已启用</span>' + ruleBadge : '<span class="badge badge-gray">已关闭</span>');
+        document.getElementById('china6_url').value = url;
+        document.getElementById('china6_update_cell').innerHTML = '上次更新: ' + escapeHtml(lu || '未更新') + ' | IPv6 CIDR条数: <b>' + escapeHtml(cnt) + '</b>';
+        document.getElementById('china6_wan_cell').innerHTML = 'WAN设备: <code>' + escapeHtml(devs || '(未探测到)') + '</code> | 规则: ' + (active === '1' ? '<span class="text-success">生效中</span>' : '<span class="text-muted">未生效</span>');
+        const sel = document.getElementById('china6_cron_preset');
+        const customInput = document.getElementById('china6_cron_custom');
+        let matched = false;
+        for (let i = 0; i < sel.options.length; i++) {
+            if (sel.options[i].value === cron && sel.options[i].value !== '__custom__') { sel.selectedIndex = i; matched = true; break; }
+        }
+        if (!matched) {
+            sel.value = '__custom__';
+            customInput.value = cron;
+            customInput.style.display = '';
+        } else {
+            customInput.value = '';
+            customInput.style.display = 'none';
+        }
+    }).catch(e => {
+        document.getElementById('china6_status_cell').innerHTML = '<span class="text-danger">加载失败: ' + escapeHtml(e.message) + '</span>';
+    });
+}
+
+function saveChina6Url() {
+    const url = document.getElementById('china6_url').value.trim();
+    if (!url) { alert('请输入订阅链接'); return; }
+    if (!/^https?:\/\//.test(url)) { alert('链接必须以 http:// 或 https:// 开头'); return; }
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china6_filter_set_url&url=' + encodeURIComponent(url)})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+    });
+}
+
+function saveChina6Cron() {
+    const sel = document.getElementById('china6_cron_preset');
+    let cron = sel.value;
+    if (cron === '__custom__') {
+        cron = document.getElementById('china6_cron_custom').value.trim();
+        if (!cron) { alert('请输入自定义cron表达式(5段: 分 时 日 月 周)'); return; }
+    }
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china6_filter_set_cron&cron=' + encodeURIComponent(cron)})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        setTimeout(loadChina6Status, 300);
+    });
+}
+
+function setChina6Btns(enabled) {
+    ['btn_china6_enable','btn_china6_disable','btn_china6_update'].forEach(id => {
+        const b = document.getElementById(id);
+        if (b) b.disabled = !enabled;
+    });
+}
+
+function enableChina6Filter() {
+    if (!confirm('确定开启中国IPv6访问限制吗？\n\n开启后仅中国大陆IPv6可访问已开放端口，境外IPv6新建连接将被丢弃。')) return;
+    setChina6Btns(false);
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china6_filter_enable'})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        setTimeout(() => { loadChina6Status(); setChina6Btns(true); }, 600);
+    }).catch(e => { setChina6Btns(true); alert('启用失败: ' + e.message); });
+}
+
+function disableChina6Filter() {
+    if (!confirm('确定关闭中国IPv6访问限制吗？\n\n关闭后境外IPv6可恢复访问已开放端口。')) return;
+    setChina6Btns(false);
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china6_filter_disable'})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        setTimeout(() => { loadChina6Status(); setChina6Btns(true); }, 400);
+    }).catch(e => { setChina6Btns(true); alert('关闭失败: ' + e.message); });
+}
+
+function updateChina6Filter() {
+    setChina6Btns(false);
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china6_filter_update'})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        setTimeout(() => { loadChina6Status(); setChina6Btns(true); }, 600);
+    }).catch(e => { setChina6Btns(true); alert('更新失败: ' + e.message); });
+}
+
+// ========== 手动黑名单（IPv4 / IPv6） ==========
+let _banV4 = [], _banV6 = [];
+
+function renderBanList(family) {
+    const list = (family === 'v4') ? _banV4 : _banV6;
+    const el = document.getElementById(family === 'v4' ? 'ban_v4_list' : 'ban_v6_list');
+    if (!el) return;
+    if (!list.length) { el.innerHTML = '<span class="text-muted">（空）</span>'; return; }
+    let html = '';
+    list.forEach((entry, i) => {
+        html += '<span class="badge badge-gray" style="display:inline-block;margin:2px 4px 2px 0;padding:3px 8px;font-family:monospace;">'
+             + escapeHtml(entry)
+             + ' <a href="javascript:void(0)" style="color:#dc2626;text-decoration:none;margin-left:4px;font-weight:bold;" '
+             + 'onclick="deleteBlacklistEntry(\'' + family + '\',' + i + ')" title="删除">×</a></span>';
+    });
+    el.innerHTML = html;
+}
+
+function loadBlacklist() {
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=blacklist_list'})
+    .then(r => r.text()).then(data => {
+        let v4='', v6='', v4n='0', v6n='0', active='0';
+        data.split('\n').forEach(line => {
+            const idx = line.indexOf('=');
+            if (idx > 0) {
+                const k = line.substring(0, idx), v = line.substring(idx + 1);
+                if (k === 'V4') v4 = v;
+                else if (k === 'V6') v6 = v;
+                else if (k === 'V4_COUNT') v4n = v;
+                else if (k === 'V6_COUNT') v6n = v;
+                else if (k === 'ACTIVE') active = v;
+            }
+        });
+        _banV4 = v4 ? v4.split(',') : [];
+        _banV6 = v6 ? v6.split(',') : [];
+        document.getElementById('ban_v4_count').textContent = v4n;
+        document.getElementById('ban_v6_count').textContent = v6n;
+        document.getElementById('ban_active_cell').innerHTML = active === '1'
+            ? '<span class="text-success">规则生效中</span>'
+            : '<span class="text-muted">未生效（无条目或未应用）</span>';
+        renderBanList('v4');
+        renderBanList('v6');
+    }).catch(e => {
+        document.getElementById('ban_v4_list').innerHTML = '<span class="text-danger">加载失败: ' + escapeHtml(e.message) + '</span>';
+    });
+}
+
+function addBlacklistEntry() {
+    const ip = document.getElementById('ban_input').value.trim();
+    if (!ip) { alert('请输入 IP 或 CIDR 网段'); return; }
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=blacklist_add&ip=' + encodeURIComponent(ip)})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        if (data.indexOf('已拉黑') >= 0) document.getElementById('ban_input').value = '';
+        setTimeout(loadBlacklist, 300);
+    }).catch(e => alert('添加失败: ' + e.message));
+}
+
+function deleteBlacklistEntry(family, idx) {
+    const list = (family === 'v4') ? _banV4 : _banV6;
+    const entry = list[idx];
+    if (!entry) return;
+    if (!confirm('确定从黑名单移除该条目吗？\n\n' + entry)) return;
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=blacklist_del&ip=' + encodeURIComponent(entry)})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        setTimeout(loadBlacklist, 300);
+    }).catch(e => alert('删除失败: ' + e.message));
+}
+
+function clearBlacklist(family) {
+    if (!confirm('确定清空 ' + (family === 'v4' ? 'IPv4' : 'IPv6') + ' 黑名单吗？此操作不可撤销。')) return;
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=blacklist_clear&family=' + encodeURIComponent(family)})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        setTimeout(loadBlacklist, 300);
+    }).catch(e => alert('清空失败: ' + e.message));
+}
+
 // ========== 卸载插件 ==========
 function uninstallPlugin() {
     const keep = document.getElementById('uninstall_keep_config').checked ? '1' : '0';
@@ -834,5 +1101,7 @@ function uninstallPlugin() {
 // 初始化
 loadSettings();
 listBackups();
+loadChina6Status();
+loadBlacklist();
 </script>
 <%+footer%>

@@ -1,8 +1,8 @@
 #!/bin/sh
 # ============================================================
-# 网络管理插件 - 中国IPv4访问限制 WAN接口事件
+# 网络管理插件 - 中国IPv4/IPv6访问限制 + 手动黑名单 WAN接口事件
 # 
-# 作用: WAN 接口 up 时重新应用过滤规则，刷新 WAN 设备名
+# 作用: WAN 接口 up 时重新应用过滤/黑名单规则，刷新 WAN 设备名
 #       (解决 PPPoE 重连 / DHCP 续约导致设备名漂移后规则失效)
 # ============================================================
 
@@ -15,8 +15,14 @@ case "$INTERFACE" in
     *) exit 0 ;;
 esac
 
-# 仅在功能已启用时重应用（避免无谓执行）
-[ "$(uci -q get netmanager.settings.china_filter_enable 2>/dev/null)" = "1" ] || exit 0
+# 仅在功能已启用或存在黑名单条目时重应用（避免无谓执行）
+en4=$(uci -q get netmanager.settings.china_filter_enable 2>/dev/null)
+en6=$(uci -q get netmanager.settings.china6_filter_enable 2>/dev/null)
+if [ "$en4" != "1" ] && [ "$en6" != "1" ] \
+   && [ ! -s /etc/netmanager/blacklist_v4.list ] \
+   && [ ! -s /etc/netmanager/blacklist_v6.list ]; then
+    exit 0
+fi
 
 # 后台重应用，不阻塞 hotplug
 ( sleep 2; /usr/sbin/netmanager china_filter boot ) >/dev/null 2>&1 &

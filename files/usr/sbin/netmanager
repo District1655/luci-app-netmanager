@@ -12,7 +12,7 @@ LOG_FILE="$LOG_DIR/run.log"
 LOG_ENABLED=0
 
 # 在线更新配置：版本号与 GitHub 仓库（发版时同步修改 PLUGIN_VERSION）
-PLUGIN_VERSION="1.6.1"
+PLUGIN_VERSION="1.7.0"
 REPO_OWNER="District1655"
 REPO_NAME="luci-app-netmanager"
 REPO_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
@@ -107,6 +107,15 @@ load_config() {
         uci set netmanager.settings.china_filter_cron='0 3 * * 0'
         uci set netmanager.settings.china_filter_last_update=''
         uci set netmanager.settings.china_filter_count='0'
+        uci commit netmanager 2>/dev/null
+    fi
+    # 补齐中国IPv6过滤相关默认值（仅在选项缺失时写入，不覆盖用户已自定义值）
+    if [ -z "$(uci get netmanager.settings.china6_filter_enable 2>/dev/null)" ]; then
+        uci set netmanager.settings.china6_filter_enable='0'
+        uci set netmanager.settings.china6_filter_url='https://ispip.clang.cn/all_cn_ipv6.txt'
+        uci set netmanager.settings.china6_filter_cron='0 3 * * 0'
+        uci set netmanager.settings.china6_filter_last_update=''
+        uci set netmanager.settings.china6_filter_count='0'
         uci commit netmanager 2>/dev/null
     fi
     # 补齐在线更新镜像前缀默认值（空=直连 GitHub）
@@ -1974,6 +1983,11 @@ cmd_settings() {
     echo "CHINA_FILTER_CRON=$(uci get netmanager.settings.china_filter_cron 2>/dev/null || echo '0 3 * * 0')"
     echo "CHINA_FILTER_LAST_UPDATE=$(uci get netmanager.settings.china_filter_last_update 2>/dev/null)"
     echo "CHINA_FILTER_COUNT=$(uci get netmanager.settings.china_filter_count 2>/dev/null || echo 0)"
+    echo "CHINA6_FILTER_ENABLED=$(uci get netmanager.settings.china6_filter_enable 2>/dev/null || echo 0)"
+    echo "CHINA6_FILTER_URL=$(uci get netmanager.settings.china6_filter_url 2>/dev/null || echo 'https://ispip.clang.cn/all_cn_ipv6.txt')"
+    echo "CHINA6_FILTER_CRON=$(uci get netmanager.settings.china6_filter_cron 2>/dev/null || echo '0 3 * * 0')"
+    echo "CHINA6_FILTER_LAST_UPDATE=$(uci get netmanager.settings.china6_filter_last_update 2>/dev/null)"
+    echo "CHINA6_FILTER_COUNT=$(uci get netmanager.settings.china6_filter_count 2>/dev/null || echo 0)"
     echo "UPDATE_MIRROR=$(uci get netmanager.settings.update_mirror 2>/dev/null)"
     echo "===END==="
 }
@@ -1982,7 +1996,7 @@ cmd_settings() {
 cmd_version() {
     echo "网络管理插件 v$PLUGIN_VERSION"
     echo ""
-    echo "功能: 系统概览 / 端口转发 / 规则管理 / SSH日志 / 访问日志 / 备份恢复 / 在线更新 / 插件更新 / 运行日志 / 中国IPv4访问限制"
+    echo "功能: 系统概览 / 端口转发 / 规则管理 / SSH日志 / 访问日志 / 备份恢复 / 在线更新 / 插件更新 / 运行日志 / 中国IPv4+IPv6访问限制 / 手动黑名单"
     echo "适配: iStoreOS / OpenWrt (fw4/nftables)"
 }
 
@@ -2015,9 +2029,11 @@ china_get_enable() {
 # 探测 WAN 设备名（去重、空格分隔），用于 iifname 匹配
 get_wan_devs() {
     local devs="" d nd val zn net
-    # 1) 默认路由设备
+    # 1) 默认路由设备（IPv4/IPv6 双栈都纳入，避免仅 v6 有默认路由时探测失败）
     d=$(ip -4 route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
     [ -n "$d" ] && devs="$d"
+    d=$(ip -6 route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+    [ -n "$d" ] && devs="$devs $d"
     # 2) network.wan / wan6 的 device / ifname
     for n in wan wan6; do
         nd=$(uci get network.$n.device 2>/dev/null)
@@ -2442,13 +2458,30 @@ cmd_china_update() {
 
 cmd_china_boot() {
     load_config
-    [ "$(china_get_enable)" = "1" ] || return 0
-    if [ ! -f "$CHINA_LIST_FILE" ]; then
-        write_log "WARN" "china_filter boot: 已启用但本地列表不存在，跳过重应用"
-        return 0
+    # IPv4 白名单
+    if [ "$(china_get_enable)" = "1" ]; then
+        if [ -f "$CHINA_LIST_FILE" ]; then
+            china_apply_rules >/dev/null 2>&1
+            write_log "INFO" "china_filter boot: 已重新应用IPv4规则"
+        else
+            write_log "WARN" "china_filter boot: 已启用但本地列表不存在，跳过重应用"
+        fi
     fi
-    china_apply_rules >/dev/null 2>&1
-    write_log "INFO" "china_filter boot: 已重新应用规则"
+    # IPv6 白名单
+    if [ "$(china6_get_enable)" = "1" ]; then
+        if [ -f "$CHINA6_LIST_FILE" ]; then
+            china6_apply_rules >/dev/null 2>&1
+            write_log "INFO" "china6_filter boot: 已重新应用IPv6规则"
+        else
+            write_log "WARN" "china6_filter boot: 已启用但本地列表不存在，跳过重应用"
+        fi
+    fi
+    # 手动黑名单（nft 表在内存中，重启/防火墙重载后需恢复）
+    if [ -s "$BAN_V4_FILE" ] || [ -s "$BAN_V6_FILE" ]; then
+        ban_apply_all >/dev/null 2>&1
+        write_log "INFO" "blacklist boot: 已重新应用黑名单规则"
+    fi
+    return 0
 }
 
 cmd_china_filter() {
@@ -2466,7 +2499,691 @@ cmd_china_filter() {
     esac
 }
 
-# ========== 14. 卸载插件 ==========
+# ========== 14. 中国IPv6访问限制（v1.7.0 新增） ==========
+# 与 IPv4 版本对称：独立 nft 表 inet netmanager6（与 fw4/IPv4 过滤互不影响），
+#       内含 china_v6 CIDR 集合 + input/forward 两条 base chain(priority -50)，
+#       规则：iifname {wan_devs} ct state new {tcp,udp} 且 ip6 saddr 不在中国集合 -> drop。
+#       默认订阅为国内可直连的 ispip.clang.cn 中国 IPv6 地址段（每行一个 CIDR）。
+CHINA6_LIST_FILE="$CHINA_LIST_DIR/china_v6.list"
+CHINA6_DEFAULT_URL="https://ispip.clang.cn/all_cn_ipv6.txt"
+CHINA6_DEFAULT_CRON="0 3 * * 0"
+CHINA6_MIN_COUNT=20
+
+china6_get_url() {
+    local u=$(uci get netmanager.settings.china6_filter_url 2>/dev/null)
+    echo "${u:-$CHINA6_DEFAULT_URL}"
+}
+
+china6_get_cron() {
+    local c=$(uci get netmanager.settings.china6_filter_cron 2>/dev/null)
+    echo "${c:-$CHINA6_DEFAULT_CRON}"
+}
+
+china6_get_enable() {
+    local e=$(uci get netmanager.settings.china6_filter_enable 2>/dev/null)
+    [ "$e" = "1" ] && echo 1 || echo 0
+}
+
+# 创建 china_v6 集合（兼容旧版 nft：先 interval,auto-merge，失败降级仅 interval）
+china6_create_set() {
+    CHINA6_SET_FLAGS=""
+    nft add table inet netmanager6 2>/dev/null
+    local nft_err
+    nft_err=$( ( nft 'add set inet netmanager6 china_v6 { type ipv6_addr; flags interval, auto-merge; }' ) 2>&1 )
+    if [ -z "$nft_err" ]; then
+        CHINA6_SET_FLAGS="modern"
+        return 0
+    fi
+    case "$nft_err" in
+        *auto-merge*)
+            write_log "INFO" "china6_filter: 旧版 nft 不支持 auto-merge，降级为 flags interval + 一次性原子加载"
+            local nft_err2
+            nft_err2=$( ( nft 'add set inet netmanager6 china_v6 { type ipv6_addr; flags interval; }' ) 2>&1 )
+            if [ -z "$nft_err2" ]; then
+                CHINA6_SET_FLAGS="compat"
+                return 0
+            fi
+            write_log "ERROR" "china6_filter: 降级 add set interval 也失败: $nft_err2"
+            error "nft 创建 china_v6 集合失败（降级后）: $nft_err2"
+            return 1
+            ;;
+        *)
+            write_log "ERROR" "china6_filter: add set china_v6 失败: $nft_err"
+            error "nft 创建 china_v6 集合失败: $nft_err"
+            return 1
+            ;;
+    esac
+}
+
+# 载入 IPv6 CIDR 到 china_v6 集合（逻辑同 IPv4 版本）
+china6_load_set() {
+    [ -f "$CHINA6_LIST_FILE" ] || { echo 0; return; }
+    if [ -z "$CHINA6_SET_FLAGS" ]; then
+        if nft list table inet netmanager6 >/dev/null 2>&1; then
+            :
+        else
+            nft add table inet netmanager6 2>/dev/null
+        fi
+        if nft list set inet netmanager6 china_v6 2>/dev/null | grep -q 'auto-merge'; then
+            CHINA6_SET_FLAGS="modern"
+        elif nft list set inet netmanager6 china_v6 >/dev/null 2>&1; then
+            CHINA6_SET_FLAGS="compat"
+        else
+            china6_create_set || { echo 0; return; }
+        fi
+    fi
+
+    local clean="/tmp/netmanager_china6_clean.list"
+    local ef="/tmp/netmanager_china6_elem.nft"
+    local total=0 loaded=0
+    local nft_err=""
+    rm -f "$clean" "$ef" /tmp/netmanager_china6_nft.err 2>/dev/null
+
+    # 仅保留合法 IPv6 CIDR 行
+    grep -E '^[0-9a-fA-F:]+/[0-9]{1,3}$' "$CHINA6_LIST_FILE" > "$clean" 2>/dev/null
+    total=$(wc -l < "$clean" 2>/dev/null | tr -d ' ')
+    [ "${total:-0}" -lt "$CHINA6_MIN_COUNT" ] && { rm -f "$clean"; echo 0; return; }
+
+    if [ "$CHINA6_SET_FLAGS" = "modern" ]; then
+        local batch=500 buf="" buf_n=0 line failed_batches=0
+        while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            if [ "$buf_n" -ge "$batch" ]; then
+                {
+                    printf 'add element inet netmanager6 china_v6 { %s }\n' "$buf"
+                } > "$ef"
+                if nft -f "$ef" 2>/tmp/netmanager_china6_nft.err; then
+                    loaded=$((loaded + buf_n))
+                else
+                    nft_err=$(cat /tmp/netmanager_china6_nft.err 2>/dev/null | tr '\n' ' ')
+                    failed_batches=$((failed_batches + 1))
+                    write_log "WARN" "china6_filter: (modern) nft batch add element failed (size=$buf_n): $nft_err"
+                fi
+                buf="" buf_n=0
+            fi
+            if [ "$buf_n" -eq 0 ]; then
+                buf="$line"
+            else
+                buf="$buf, $line"
+            fi
+            buf_n=$((buf_n + 1))
+        done < "$clean"
+        if [ "$buf_n" -gt 0 ]; then
+            {
+                printf 'add element inet netmanager6 china_v6 { %s }\n' "$buf"
+            } > "$ef"
+            if nft -f "$ef" 2>/tmp/netmanager_china6_nft.err; then
+                loaded=$((loaded + buf_n))
+            else
+                nft_err=$(cat /tmp/netmanager_china6_nft.err 2>/dev/null | tr '\n' ' ')
+                failed_batches=$((failed_batches + 1))
+                write_log "WARN" "china6_filter: (modern) nft tail batch add element failed (size=$buf_n): $nft_err"
+            fi
+        fi
+        if [ "$failed_batches" -gt 0 ]; then
+            write_log "ERROR" "china6_filter: (modern) $failed_batches 批分片加载失败，集合不完整，按整体失败处理（防止残缺集合误杀国内IPv6流量）"
+            error "中国IPv6列表分片加载有 $failed_batches 批失败，已中止应用（防止不完整集合误杀国内IPv6流量）"
+            rm -f "$clean" "$ef" /tmp/netmanager_china6_nft.err 2>/dev/null
+            echo 0
+            return
+        fi
+    else
+        {
+            printf 'add element inet netmanager6 china_v6 { '
+            awk 'BEGIN{ORS=""}{if(NR>1)printf ", ";printf "%s",$0}' "$clean"
+            printf ' }\n'
+        } > "$ef"
+        if nft -f "$ef" 2>/tmp/netmanager_china6_nft.err; then
+            loaded="$total"
+        else
+            nft_err=$(cat /tmp/netmanager_china6_nft.err 2>/dev/null | tr '\n' ' ')
+            local ok_rows=0 bad_rows=0 l
+            write_log "WARN" "china6_filter: (compat) atomic add element 失败，回退逐行加载: $nft_err"
+            while IFS= read -r l; do
+                [ -z "$l" ] && continue
+                if nft "add element inet netmanager6 china_v6 { $l }" 2>/dev/null; then
+                    ok_rows=$((ok_rows + 1))
+                else
+                    bad_rows=$((bad_rows + 1))
+                fi
+            done < "$clean"
+            loaded="$ok_rows"
+            write_log "INFO" "china6_filter: (compat) 逐行回退完成: 成功=$ok_rows 失败=$bad_rows"
+        fi
+    fi
+
+    rm -f "$clean" "$ef" /tmp/netmanager_china6_nft.err 2>/dev/null
+    echo "${loaded:-0}"
+}
+
+# 创建表/集合、载入 IPv6 CIDR、安装 input+forward 两条 drop 规则
+china6_apply_rules() {
+    [ -f "$CHINA6_LIST_FILE" ] || { error "中国IPv6列表文件不存在: $CHINA6_LIST_FILE"; return 1; }
+    nft delete table inet netmanager6 2>/dev/null
+    local nft_err
+    if ! nft add table inet netmanager6 2>/tmp/netmanager_china6_rules.err; then
+        nft_err=$(cat /tmp/netmanager_china6_rules.err 2>/dev/null | tr '\n' ' ')
+        write_log "ERROR" "china6_filter: add table inet netmanager6 失败: $nft_err"
+        rm -f /tmp/netmanager_china6_rules.err 2>/dev/null
+        error "nft 创建 inet netmanager6 表失败: $nft_err"
+        return 1
+    fi
+    rm -f /tmp/netmanager_china6_rules.err 2>/dev/null
+
+    CHINA6_SET_FLAGS=""
+    if ! china6_create_set; then
+        return 1
+    fi
+    write_log "INFO" "china6_filter: 使用 nft china_v6 集合模式: $CHINA6_SET_FLAGS"
+
+    local count
+    count=$(china6_load_set)
+    if [ "${count:-0}" -lt "$CHINA6_MIN_COUNT" ]; then
+        error "中国IPv6列表载入失败或条数过少($count)，已中止应用规则"
+        return 1
+    fi
+
+    local devs
+    devs=$(get_wan_devs)
+    if [ -z "$devs" ]; then
+        error "未探测到WAN设备，无法安装IPv6过滤规则（请检查 wan 接口/默认路由）"
+        return 1
+    fi
+    local ifname_set
+    ifname_set=$(echo "$devs" | awk '{for(i=1;i<=NF;i++){if(i>1)printf ", ";printf "\"%s\"",$i}}')
+
+    nft delete chain inet netmanager6 china6_input 2>/dev/null
+    nft delete chain inet netmanager6 china6_forward 2>/dev/null
+
+    local rf="/tmp/netmanager_china6_rules.nft"
+    {
+        echo "add chain inet netmanager6 china6_input { type filter hook input priority -50; policy accept; }"
+        echo "add chain inet netmanager6 china6_forward { type filter hook forward priority -50; policy accept; }"
+        printf 'add rule inet netmanager6 china6_forward iifname { %s } ct state new meta l4proto { tcp, udp } ip6 saddr != @china_v6 counter drop\n' "$ifname_set"
+        printf 'add rule inet netmanager6 china6_input iifname { %s } ct state new meta l4proto { tcp, udp } ip6 saddr != @china_v6 counter drop\n' "$ifname_set"
+    } > "$rf"
+    if ! nft -f "$rf" 2>/tmp/netmanager_china6_rules.err; then
+        write_log "ERROR" "china6_filter: 规则链安装失败: $(cat /tmp/netmanager_china6_rules.err 2>/dev/null | tr '\n' ' ')"
+        rm -f "$rf" /tmp/netmanager_china6_rules.err 2>/dev/null
+        error "nft IPv6 规则安装失败（nft -f 返回错误）"
+        return 1
+    fi
+    rm -f "$rf" /tmp/netmanager_china6_rules.err 2>/dev/null
+
+    uci set netmanager.settings.china6_filter_count="$count"
+    uci commit netmanager 2>/dev/null
+    info "中国IPv6过滤规则已应用: 条数=$count WAN设备=[$(echo $devs)]"
+    write_log "INFO" "china6_filter apply: count=$count devs=$devs"
+    return 0
+}
+
+# 下载中国 IPv6 列表（URL 取自配置），校验后存到持久化路径
+china6_download() {
+    local url=$(china6_get_url)
+    local tmp="/tmp/netmanager_china6.tmp"
+    info "下载中国IPv6列表: $url"
+    write_log "INFO" "china6_filter: 下载 $url"
+    mkdir -p "$CHINA_LIST_DIR" 2>/dev/null
+    if command -v wget >/dev/null 2>&1; then
+        wget -q -T 30 -O "$tmp" "$url" 2>/dev/null
+    elif command -v uclient-fetch >/dev/null 2>&1; then
+        uclient-fetch -q -T 30 -O "$tmp" "$url" 2>/dev/null
+    elif command -v curl >/dev/null 2>&1; then
+        curl -sS --max-time 30 -o "$tmp" "$url" 2>/dev/null
+    else
+        error "未找到 wget/uclient-fetch/curl，无法下载"
+        return 1
+    fi
+    if [ ! -s "$tmp" ]; then
+        error "下载失败：文件为空或不存在（请检查订阅链接与网络）"
+        rm -f "$tmp" 2>/dev/null
+        return 1
+    fi
+    # 纯化：去 BOM、去 CR、仅保留合法 IPv6 CIDR
+    local clean="/tmp/netmanager_china6_clean.tmp"
+    rm -f "$clean" 2>/dev/null
+    if command -v sed >/dev/null 2>&1; then
+        sed '1s/^\xef\xbb\xbf//' "$tmp" 2>/dev/null | tr -d '\r' | grep -E '^[0-9a-fA-F:]+/[0-9]{1,3}$' > "$clean" 2>/dev/null
+    else
+        tr -d '\r' < "$tmp" | grep -E '^[0-9a-fA-F:]+/[0-9]{1,3}$' > "$clean" 2>/dev/null
+    fi
+    local n
+    n=$(wc -l < "$clean" 2>/dev/null | tr -d ' ')
+    if [ "${n:-0}" -lt "$CHINA6_MIN_COUNT" ]; then
+        error "下载内容不像 IPv6 CIDR 列表（有效行数=$n），已拒绝保存"
+        rm -f "$tmp" "$clean" 2>/dev/null
+        return 1
+    fi
+    mv -f "$clean" "$CHINA6_LIST_FILE"
+    rm -f "$tmp" 2>/dev/null
+    uci set netmanager.settings.china6_filter_count="$n"
+    uci set netmanager.settings.china6_filter_last_update="$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)"
+    uci commit netmanager 2>/dev/null
+    info "下载完成：$n 条IPv6 CIDR"
+    return 0
+}
+
+china6_cron_remove() {
+    local cr="/etc/crontabs/root"
+    [ -f "$cr" ] || return 0
+    grep -v 'netmanager china6_filter update' "$cr" > "$cr.tmp" 2>/dev/null
+    mv -f "$cr.tmp" "$cr" 2>/dev/null
+    /etc/init.d/cron reload 2>/dev/null
+    return 0
+}
+
+china6_cron_install() {
+    local cr="/etc/crontabs/root"
+    mkdir -p /etc/crontabs 2>/dev/null
+    [ -f "$cr" ] || touch "$cr"
+    china6_cron_remove
+    local expr=$(china6_get_cron)
+    local fields=$(echo "$expr" | awk '{print NF}')
+    if [ "$fields" != "5" ] || echo "$expr" | tr ' ' '\n' | grep -qE '[^0-9*,/\-]'; then
+        write_log "ERROR" "china6_filter: UCI 中的 cron 表达式非法: '$expr'，跳过安装 cron"
+        warn "cron 表达式非法（$fields 段/含非法字符），已跳过安装，其余功能不受影响"
+        return 1
+    fi
+    echo "$expr /usr/sbin/netmanager china6_filter update" >> "$cr"
+    /etc/init.d/cron reload 2>/dev/null
+    info "已安装IPv6更新 cron 计划: $expr"
+}
+
+cmd_china6_status() {
+    load_config
+    local en=$(china6_get_enable)
+    local url=$(china6_get_url)
+    local cron=$(china6_get_cron)
+    local lu=$(uci get netmanager.settings.china6_filter_last_update 2>/dev/null)
+    local cnt=$(uci get netmanager.settings.china6_filter_count 2>/dev/null)
+    [ -z "$cnt" ] && cnt=0
+    local devs=$(get_wan_devs)
+    [ -z "$devs" ] && devs="(未探测到)"
+    local active=0
+    if nft list table inet netmanager6 >/dev/null 2>&1; then
+        if nft list chain inet netmanager6 china6_forward 2>/dev/null | grep -q 'china_v6'; then
+            active=1
+        fi
+    fi
+    echo "===CHINA6_FILTER==="
+    echo "CHINA6_FILTER_ENABLED=$en"
+    echo "URL=$url"
+    echo "CRON=$cron"
+    echo "LAST_UPDATE=${lu:-未更新}"
+    echo "COUNT=$cnt"
+    echo "WAN_DEVS=$devs"
+    echo "RULE_ACTIVE=$active"
+    echo "LIST_FILE=$CHINA6_LIST_FILE"
+    echo "===END==="
+}
+
+cmd_china6_set_url() {
+    local url="$1"
+    [ -z "$url" ] && { error "用法: netmanager china6_filter set_url <url>"; exit 1; }
+    case "$url" in
+        http://*|https://*) ;;
+        *) error "URL 必须以 http:// 或 https:// 开头"; exit 1 ;;
+    esac
+    load_config
+    uci set netmanager.settings.china6_filter_url="$url"
+    uci commit netmanager
+    info "IPv6订阅链接已保存: $url"
+    info "点击「更新IP库」或重新启用以生效"
+}
+
+cmd_china6_set_cron() {
+    local expr="$1"
+    [ -z "$expr" ] && { error "用法: netmanager china6_filter set_cron \"<5段cron表达式>\""; exit 1; }
+    local fields=$(echo "$expr" | awk '{print NF}')
+    [ "$fields" != "5" ] && { error "cron表达式必须为5段（分 时 日 月 周），当前 $fields 段"; exit 1; }
+    if echo "$expr" | tr ' ' '\n' | grep -qE '[^0-9*,/\-]'; then
+        error "cron表达式含非法字符（仅允许 0-9 * / , -）"; exit 1
+    fi
+    load_config
+    uci set netmanager.settings.china6_filter_cron="$expr"
+    uci commit netmanager
+    info "IPv6更新计划已保存: $expr"
+    [ "$(china6_get_enable)" = "1" ] && china6_cron_install
+}
+
+cmd_china6_enable() {
+    write_log "INFO" "china6_enable: 用户请求启用中国IPv6访问限制"
+    load_config
+    if [ ! -f "$CHINA6_LIST_FILE" ]; then
+        china6_download || { error "启用失败：无法获取中国IPv6列表"; exit 1; }
+    fi
+    uci set netmanager.settings.china6_filter_enable='1'
+    uci commit netmanager
+    if ! china6_apply_rules; then
+        uci set netmanager.settings.china6_filter_enable='0'
+        uci commit netmanager
+        error "启用失败：规则应用失败，已回滚为关闭状态"
+        exit 1
+    fi
+    china6_cron_install
+    /etc/init.d/netmanager-china enable 2>/dev/null
+    info "中国IPv6访问限制已开启（仅中国大陆IPv6可访问已开放端口）"
+}
+
+cmd_china6_disable() {
+    write_log "INFO" "china6_disable: 用户请求关闭中国IPv6访问限制"
+    load_config
+    nft delete table inet netmanager6 2>/dev/null
+    uci set netmanager.settings.china6_filter_enable='0'
+    uci commit netmanager
+    china6_cron_remove
+    info "中国IPv6访问限制已关闭（境外IPv6可恢复访问）"
+}
+
+cmd_china6_update() {
+    write_log "INFO" "china6_update: 用户请求更新中国IPv6列表"
+    load_config
+    if ! china6_download; then
+        error "更新失败：下载未成功，保留旧列表"
+        exit 1
+    fi
+    if [ "$(china6_get_enable)" = "1" ]; then
+        china6_apply_rules
+    else
+        info "功能未启用，仅更新了本地列表，未应用规则"
+    fi
+}
+
+cmd_china6_boot() {
+    load_config
+    [ "$(china6_get_enable)" = "1" ] || return 0
+    [ -f "$CHINA6_LIST_FILE" ] || return 0
+    china6_apply_rules >/dev/null 2>&1
+    write_log "INFO" "china6_filter boot: 已重新应用规则"
+}
+
+cmd_china6_filter() {
+    local sub="${1:-status}"
+    shift 2>/dev/null
+    case "$sub" in
+        status)   cmd_china6_status ;;
+        enable)   cmd_china6_enable ;;
+        disable)  cmd_china6_disable ;;
+        update)   cmd_china6_update ;;
+        set_url)  cmd_china6_set_url "$@" ;;
+        set_cron) cmd_china6_set_cron "$@" ;;
+        boot)     cmd_china6_boot ;;
+        *) echo "用法: netmanager china6_filter status|enable|disable|update|set_url <url>|set_cron <expr>"; exit 1 ;;
+    esac
+}
+
+# ========== 15. 手动黑名单（IPv4/IPv6，支持单IP与CIDR网段） ==========
+# 独立 nft 表 inet netmanager_ban，input/forward 两条 base chain，
+# 规则：ip saddr @ban_v4 drop / ip6 saddr @ban_v6 drop（对全部入站与转发流量生效）。
+# 条目持久化：/etc/netmanager/blacklist_v4.list、blacklist_v6.list（每行一个 IP 或 CIDR）。
+BAN_V4_FILE="$CHINA_LIST_DIR/blacklist_v4.list"
+BAN_V6_FILE="$CHINA_LIST_DIR/blacklist_v6.list"
+
+ban_count_file() {
+    [ -f "$1" ] || { echo 0; return; }
+    grep -c -vE '^[[:space:]]*(#|$)' "$1" 2>/dev/null | tr -d ' '
+}
+
+ban_valid_v4() {
+    local e="$1" addr="" pfx=""
+    case "$e" in
+        */*)
+            addr="${e%%/*}"; pfx="${e##*/}"
+            [ -z "$pfx" ] && return 1
+            ;;
+        *) addr="$e" ;;
+    esac
+    echo "$addr" | grep -qE '^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$' || return 1
+    echo "$addr" | awk -F. '{for(i=1;i<=4;i++){if($i+0>255 || $i ~ /^0[0-9]/) exit 1}}' || return 1
+    if [ -n "$pfx" ]; then
+        echo "$pfx" | grep -qE '^[0-9]{1,2}$' || return 1
+        [ "$pfx" -le 32 ] 2>/dev/null || return 1
+    fi
+    return 0
+}
+
+ban_valid_v6() {
+    local e="$1" addr="" pfx=""
+    case "$e" in
+        */*)
+            addr="${e%%/*}"; pfx="${e##*/}"
+            [ -z "$pfx" ] && return 1
+            ;;
+        *) addr="$e" ;;
+    esac
+    echo "$addr" | grep -qE '^[0-9a-fA-F:]+$' || return 1
+    echo "$addr" | grep -q ':' || return 1
+    local dc
+    dc=$(echo "$addr" | awk '{print gsub(/::/,"::")}')
+    [ "${dc:-0}" -le 1 ] || return 1
+    echo "$addr" | awk -F: '{for(i=1;i<=NF;i++){g=$i; if(g!="" && (g !~ /^[0-9a-fA-F]+$/ || length(g)>4)) exit 1}}' || return 1
+    local groups
+    groups=$(echo "$addr" | awk -F: '{c=0; for(i=1;i<=NF;i++) if($i!="") c++; print c}')
+    case "$addr" in
+        *::*) [ "${groups:-0}" -le 7 ] || return 1 ;;
+        *)    [ "${groups:-0}" -eq 8 ] || return 1 ;;
+    esac
+    if [ -n "$pfx" ]; then
+        echo "$pfx" | grep -qE '^[0-9]{1,3}$' || return 1
+        [ "$pfx" -le 128 ] 2>/dev/null || return 1
+    fi
+    return 0
+}
+
+# 从文件加载条目到指定集合；返回 0=成功
+ban_load_family() {
+    local fam="$1" file="$2" mode="$3" set="ban_v4"
+    [ "$fam" = "v6" ] && set="ban_v6"
+    [ -s "$file" ] || return 0
+    local ef="/tmp/netmanager_ban_${fam}_elem.nft"
+    local ok=1
+    rm -f "$ef" 2>/dev/null
+
+    if [ "$mode" = "modern" ]; then
+        # 分片批量添加（auto-merge 容忍重叠网段）
+        local batch=500 buf="" buf_n=0 line
+        while IFS= read -r line; do
+            line=$(echo "$line" | tr -d '\r ')
+            case "$line" in ""|"#"*) continue ;; esac
+            if [ "$buf_n" -ge "$batch" ]; then
+                printf 'add element inet netmanager_ban %s { %s }\n' "$set" "$buf" > "$ef"
+                nft -f "$ef" 2>/dev/null || ok=0
+                buf="" buf_n=0
+            fi
+            if [ "$buf_n" -eq 0 ]; then buf="$line"; else buf="$buf, $line"; fi
+            buf_n=$((buf_n + 1))
+        done < "$file"
+        if [ "$buf_n" -gt 0 ]; then
+            printf 'add element inet netmanager_ban %s { %s }\n' "$set" "$buf" > "$ef"
+            nft -f "$ef" 2>/dev/null || ok=0
+        fi
+    else
+        # 无 auto-merge：整段一次性原子添加，让内核合并可能重叠的网段
+        {
+            printf 'add element inet netmanager_ban %s { ' "$set"
+            awk 'NF && $1 !~ /^#/ {printf "%s%s", (c++ ? ", " : ""), $1}' "$file"
+            printf ' }\n'
+        } > "$ef"
+        if ! nft -f "$ef" 2>/dev/null; then
+            # 回退逐条添加（重叠网段可能失败，但至少加载可用的部分）
+            local okr=0 l
+            while IFS= read -r l; do
+                l=$(echo "$l" | tr -d '\r ')
+                case "$l" in ""|"#"*) continue ;; esac
+                nft "add element inet netmanager_ban $set { $l }" 2>/dev/null && okr=$((okr + 1))
+            done < "$file"
+            [ "$okr" -gt 0 ] || ok=0
+        fi
+    fi
+    rm -f "$ef" 2>/dev/null
+    [ "$ok" = "1" ]
+}
+
+# 重建黑名单表与规则
+ban_apply_all() {
+    mkdir -p "$CHINA_LIST_DIR" 2>/dev/null
+    local v4n v6n
+    v4n=$(ban_count_file "$BAN_V4_FILE")
+    v6n=$(ban_count_file "$BAN_V6_FILE")
+    [ -z "$v4n" ] && v4n=0
+    [ -z "$v6n" ] && v6n=0
+
+    # 无条目：删除黑名单表即可（幂等）
+    if [ "$v4n" -eq 0 ] && [ "$v6n" -eq 0 ]; then
+        nft delete table inet netmanager_ban 2>/dev/null
+        write_log "INFO" "blacklist apply: 无条目，已清空表"
+        return 0
+    fi
+
+    nft delete table inet netmanager_ban 2>/dev/null
+    if ! nft add table inet netmanager_ban 2>/dev/null; then
+        error "创建黑名单 nft 表失败（nft 不可用？）"
+        return 1
+    fi
+
+    local m4="compat" m6="compat"
+    if nft 'add set inet netmanager_ban ban_v4 { type ipv4_addr; flags interval, auto-merge; }' 2>/dev/null; then
+        m4="modern"
+    elif ! nft 'add set inet netmanager_ban ban_v4 { type ipv4_addr; flags interval; }' 2>/dev/null; then
+        error "创建 IPv4 黑名单集合失败"
+        return 1
+    fi
+    if nft 'add set inet netmanager_ban ban_v6 { type ipv6_addr; flags interval, auto-merge; }' 2>/dev/null; then
+        m6="modern"
+    elif ! nft 'add set inet netmanager_ban ban_v6 { type ipv6_addr; flags interval; }' 2>/dev/null; then
+        error "创建 IPv6 黑名单集合失败"
+        return 1
+    fi
+
+    if ! nft 'add chain inet netmanager_ban ban_input { type filter hook input priority -50; policy accept; }' 2>/dev/null || \
+       ! nft 'add chain inet netmanager_ban ban_forward { type filter hook forward priority -50; policy accept; }' 2>/dev/null; then
+        error "创建黑名单过滤链失败"
+        return 1
+    fi
+
+    if ! ban_load_family v4 "$BAN_V4_FILE" "$m4"; then
+        error "IPv4 黑名单条目加载失败（可能存在非法或重叠网段）"
+        return 1
+    fi
+    if ! ban_load_family v6 "$BAN_V6_FILE" "$m6"; then
+        error "IPv6 黑名单条目加载失败（可能存在非法或重叠网段）"
+        return 1
+    fi
+
+    if ! nft add rule inet netmanager_ban ban_input ip saddr @ban_v4 counter drop 2>/dev/null || \
+       ! nft add rule inet netmanager_ban ban_input ip6 saddr @ban_v6 counter drop 2>/dev/null || \
+       ! nft add rule inet netmanager_ban ban_forward ip saddr @ban_v4 counter drop 2>/dev/null || \
+       ! nft add rule inet netmanager_ban ban_forward ip6 saddr @ban_v6 counter drop 2>/dev/null; then
+        error "安装黑名单 drop 规则失败"
+        return 1
+    fi
+
+    info "黑名单规则已应用: IPv4=$v4n 条 IPv6=$v6n 条"
+    write_log "INFO" "blacklist apply: v4=$v4n v6=$v6n"
+    return 0
+}
+
+cmd_ban_list() {
+    local v4="" v6="" v4n=0 v6n=0 active=0
+    v4n=$(ban_count_file "$BAN_V4_FILE")
+    v6n=$(ban_count_file "$BAN_V6_FILE")
+    [ -z "$v4n" ] && v4n=0
+    [ -z "$v6n" ] && v6n=0
+    if [ -f "$BAN_V4_FILE" ]; then
+        v4=$(grep -vE '^[[:space:]]*(#|$)' "$BAN_V4_FILE" 2>/dev/null | tr '\n' ',')
+        v4=${v4%,}
+    fi
+    if [ -f "$BAN_V6_FILE" ]; then
+        v6=$(grep -vE '^[[:space:]]*(#|$)' "$BAN_V6_FILE" 2>/dev/null | tr '\n' ',')
+        v6=${v6%,}
+    fi
+    nft list table inet netmanager_ban >/dev/null 2>&1 && active=1
+    echo "===BLACKLIST==="
+    echo "V4_COUNT=$v4n"
+    echo "V6_COUNT=$v6n"
+    echo "V4=$v4"
+    echo "V6=$v6"
+    echo "ACTIVE=$active"
+    echo "===END==="
+}
+
+cmd_ban_add() {
+    local entry=$(echo "$1" | tr -d '[:space:]')
+    [ -z "$entry" ] && { error "用法: netmanager blacklist add <IPv4/IPv6 地址或CIDR>"; exit 1; }
+    local fam file
+    case "$entry" in
+        *:*)
+            fam="v6"; file="$BAN_V6_FILE"
+            ban_valid_v6 "$entry" || { error "非法 IPv6 地址/网段: $entry"; exit 1; }
+            ;;
+        *)
+            fam="v4"; file="$BAN_V4_FILE"
+            ban_valid_v4 "$entry" || { error "非法 IPv4 地址/网段: $entry"; exit 1; }
+            ;;
+    esac
+    mkdir -p "$CHINA_LIST_DIR" 2>/dev/null
+    [ -f "$file" ] || touch "$file"
+    if grep -Fxq "$entry" "$file" 2>/dev/null; then
+        info "条目已存在: $entry"
+        return 0
+    fi
+    echo "$entry" >> "$file"
+    if ! ban_apply_all >/dev/null 2>&1; then
+        # 应用失败 → 回滚文件
+        grep -Fxv "$entry" "$file" > "$file.tmp" 2>/dev/null
+        mv -f "$file.tmp" "$file" 2>/dev/null
+        ban_apply_all >/dev/null 2>&1
+        error "添加失败：nft 规则应用失败（请检查地址格式或 nft 版本）"
+        exit 1
+    fi
+    info "已拉黑 $fam 条目: $entry"
+}
+
+cmd_ban_del() {
+    local entry=$(echo "$1" | tr -d '[:space:]')
+    [ -z "$entry" ] && { error "用法: netmanager blacklist del <IPv4/IPv6 地址或CIDR>"; exit 1; }
+    local file
+    case "$entry" in
+        *:*) file="$BAN_V6_FILE" ;;
+        *)   file="$BAN_V4_FILE" ;;
+    esac
+    if [ ! -f "$file" ] || ! grep -Fxq "$entry" "$file" 2>/dev/null; then
+        error "条目不存在: $entry"
+        exit 1
+    fi
+    grep -Fxv "$entry" "$file" > "$file.tmp" 2>/dev/null
+    mv -f "$file.tmp" "$file" 2>/dev/null
+    ban_apply_all >/dev/null 2>&1
+    info "已移除黑名单条目: $entry"
+}
+
+cmd_ban_clear() {
+    local target="${1:-all}"
+    mkdir -p "$CHINA_LIST_DIR" 2>/dev/null
+    case "$target" in
+        v4)  : > "$BAN_V4_FILE" ;;
+        v6)  : > "$BAN_V6_FILE" ;;
+        all) : > "$BAN_V4_FILE"; : > "$BAN_V6_FILE" ;;
+        *) error "用法: netmanager blacklist clear [v4|v6|all]"; exit 1 ;;
+    esac
+    ban_apply_all >/dev/null 2>&1
+    info "已清空黑名单: $target"
+}
+
+cmd_blacklist() {
+    local sub="${1:-list}"
+    shift 2>/dev/null
+    case "$sub" in
+        list)            cmd_ban_list ;;
+        add)             cmd_ban_add "$@" ;;
+        del|remove)      cmd_ban_del "$@" ;;
+        clear)           cmd_ban_clear "$@" ;;
+        apply|boot)      ban_apply_all ;;
+        *) echo "用法: netmanager blacklist list|add <ip/cidr>|del <ip/cidr>|clear [v4|v6|all]|apply"; exit 1 ;;
+    esac
+}
+
+# ========== 16. 卸载插件 ==========
 # 用法: netmanager uninstall [full|keep]
 #   full = 全删（后端/LuCI/CBI模型/配置/CIDR/DNS配置与脚本/init/hotplug/缓存）
 #   keep = 保留 /etc/config/netmanager、/etc/netmanager/ 与 /etc/config/dnssettings，其余全删
@@ -2479,11 +3196,14 @@ cmd_uninstall() {
     info "开始卸载网络管理插件 (mode=$mode)..."
     write_log "INFO" "uninstall: 开始卸载 (mode=$mode keep_config=$keep_config)"
 
-    # 1. 先关闭中国IPv4过滤：清nft规则 + 移除cron + 删表
-    echo "[1/8] 关闭中国IPv4过滤（清理nft规则、移除cron）..."
+    # 1. 先关闭中国IPv4/IPv6过滤与黑名单：清nft规则 + 移除cron + 删表
+    echo "[1/8] 关闭中国IPv4/IPv6过滤与手动黑名单（清理nft规则、移除cron）..."
     cmd_china_disable >/dev/null 2>&1
+    cmd_china6_disable >/dev/null 2>&1
     nft delete table inet netmanager 2>/dev/null
-    crontab -l 2>/dev/null | grep -v 'netmanager china_filter' | crontab - 2>/dev/null
+    nft delete table inet netmanager6 2>/dev/null
+    nft delete table inet netmanager_ban 2>/dev/null
+    crontab -l 2>/dev/null | grep -v 'netmanager china_filter' | grep -v 'netmanager china6_filter' | crontab - 2>/dev/null
 
     # 2. 停止并禁用开机自启
     echo "[2/8] 停止并禁用 init 服务..."
@@ -2542,8 +3262,8 @@ cmd_uninstall() {
         echo "  - /etc/netmanager/"
         echo "  - /etc/config/dnssettings"
     fi
-    echo "  - nft 表 inet netmanager（中国IPv4过滤规则）"
-    echo "  - crontab 中国IPv4过滤计划任务"
+    echo "  - nft 表 inet netmanager / inet netmanager6 / inet netmanager_ban（IPv4/IPv6过滤与黑名单规则）"
+    echo "  - crontab 中国IPv4/IPv6过滤计划任务"
     echo "  - /tmp/netmanager* 临时文件与缓存"
     echo ""
     echo "用户在 /etc/config/firewall 中的端口转发与防火墙规则不受影响，保留不动。"
@@ -2576,6 +3296,8 @@ usage() {
     echo "插件: upload_file <文件名> <b64文件> | plugin_update <文件> | plugin_version <文件> | cleanup_uploads"
     echo "在线更新: update_check | update_apply | set_update_mirror <url|''>"
     echo "中国IPv4过滤: china_filter status | enable | disable | update | set_url <url> | set_cron <expr>"
+    echo "中国IPv6过滤: china6_filter status | enable | disable | update | set_url <url> | set_cron <expr>"
+    echo "手动黑名单: blacklist list | add <ip/cidr> | del <ip/cidr> | clear [v4|v6|all] | apply"
     echo "卸载: uninstall [full|keep]   # full=全删(默认) keep=保留配置与备份"
 }
 
@@ -2615,6 +3337,8 @@ case "$1" in
     update_apply)       cmd_update_apply ;;
     set_update_mirror)  shift; cmd_set_update_mirror "$@" ;;
     china_filter)       shift; cmd_china_filter "$@" ;;
+    china6_filter)      shift; cmd_china6_filter "$@" ;;
+    blacklist)          shift; cmd_blacklist "$@" ;;
     uninstall)          shift; cmd_uninstall "$@" ;;
     *)                  usage ;;
 esac

@@ -426,6 +426,31 @@ function api_handler()
     elseif action == "china_filter_set_cron" then
         local cron = luci.http.formvalue("cron") or ""
         cmd = string.format("/usr/sbin/netmanager china_filter set_cron %s", shell_escape(cron))
+    elseif action == "china6_filter_status" then
+        cmd = "/usr/sbin/netmanager china6_filter status"
+    elseif action == "china6_filter_enable" then
+        cmd = "/usr/sbin/netmanager china6_filter enable"
+    elseif action == "china6_filter_disable" then
+        cmd = "/usr/sbin/netmanager china6_filter disable"
+    elseif action == "china6_filter_update" then
+        cmd = "/usr/sbin/netmanager china6_filter update"
+    elseif action == "china6_filter_set_url" then
+        local url = luci.http.formvalue("url") or ""
+        cmd = string.format("/usr/sbin/netmanager china6_filter set_url %s", shell_escape(url))
+    elseif action == "china6_filter_set_cron" then
+        local cron = luci.http.formvalue("cron") or ""
+        cmd = string.format("/usr/sbin/netmanager china6_filter set_cron %s", shell_escape(cron))
+    elseif action == "blacklist_list" then
+        cmd = "/usr/sbin/netmanager blacklist list"
+    elseif action == "blacklist_add" then
+        local ip = luci.http.formvalue("ip") or ""
+        cmd = string.format("/usr/sbin/netmanager blacklist add %s", shell_escape(ip))
+    elseif action == "blacklist_del" then
+        local ip = luci.http.formvalue("ip") or ""
+        cmd = string.format("/usr/sbin/netmanager blacklist del %s", shell_escape(ip))
+    elseif action == "blacklist_clear" then
+        local family = luci.http.formvalue("family") or "all"
+        cmd = string.format("/usr/sbin/netmanager blacklist clear %s", shell_escape(family))
     elseif action == "update_check" then
         cmd = "/usr/sbin/netmanager update_check"
     elseif action == "update_apply" then

@@ -1,6 +1,6 @@
 # luci-app-netmanager 项目全景文档（PROJECT.md）
 
-> **基线**：v1.6.1（v1.4.6 CSRF 回归紧急修复：改用 LuCI 内建 authtoken + CBI 防御加固）· main 分支 · 更新时间 2026-09-05
+> **基线**：v1.7.0（新增中国 IPv6 白名单订阅 + IPv4/IPv6 手动黑名单，支持 CIDR 网段）· main 分支 · 更新时间 2026-11-19
 >
 > **用途**：本文件是项目的**单一查阅入口**——文件架构、全部源码、维护历史、开发计划、注意事项集中一处，供后续开发、排错与交接时快速定位。
 >
@@ -35,7 +35,7 @@
 | 形态 | LuCI 插件（Lua 控制器 + CBI 模型 + 自绘视图 + shell 后端） |
 | 目标平台 | iStoreOS / OpenWrt 23.05+（fw4 / nftables） |
 | 安装形态 | tar.gz + install.sh（非 ipk，原因见 8.1） |
-| 当前版本 | v1.6.1（2026-09-05，CSRF 回归修复版） |
+| 当前版本 | v1.7.0（2026-11-19，IPv6 白名单 + 手动黑名单） |
 | 许可证 | MIT（仓库根目录 LICENSE 文件，v1.4.6 补齐） |
 | 前身 | luci-app-fwmanager v1.3.33 + luci-app-dnssettings v1.2.1，v1.4.0 合并 |
 
@@ -49,6 +49,8 @@
 | 4 | SSH 登录日志 | ssh_log.htm | ssh_log |
 | 5 | 端口访问日志 | access_log.htm | access_log |
 | 6 | 中国 IPv4 访问限制 | settings.htm 内区块 | china_filter * |
+| 10 | 中国 IPv6 访问限制（v1.7.0） | settings.htm 内区块 | china6_filter * |
+| 11 | 手动黑名单 IPv4/IPv6（v1.7.0） | settings.htm 内区块 | blacklist * |
 | 7 | 设置（备份/更新/日志/卸载） | settings.htm | backup* / update_* / log_* / uninstall |
 | 8 | DNS 设置（CBI 表单） | dns_settings.lua | dnssettings-apply.sh / backup.sh |
 | 9 | 静态 IPv6 分配（CBI 表单） | dns_staticv6.lua | LuCI 内完成 + odhcpd |

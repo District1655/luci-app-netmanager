@@ -1,11 +1,11 @@
 #!/bin/ash
 # ============================================================
-# 网络管理插件 (luci-app-netmanager) - 一键安装脚本 v1.6.1
+# 网络管理插件 (luci-app-netmanager) - 一键安装脚本 v1.7.0
 # 由 luci-app-fwmanager (防火墙管理) 与 luci-app-dnssettings (DNS设置) 合并而成
 # ============================================================
 
 echo "============================================"
-echo "  网络管理插件 (luci-app-netmanager) v1.6.1"
+echo "  网络管理插件 (luci-app-netmanager) v1.7.0"
 echo "  防火墙管理 + DNS设置 一体化"
 echo "============================================"
 echo ""
@@ -68,7 +68,7 @@ else
     echo "  - /etc/config/dnssettings 已存在，跳过（保留原有DNS配置）"
 fi
 
-echo "[6/7] 复制系统脚本（中国IPv4过滤开机自启）..."
+echo "[6/7] 复制系统脚本（IPv4/IPv6过滤与黑名单开机自启）..."
 mkdir -p /etc/init.d /etc/hotplug.d/iface
 cp -f "$FILES_DIR/etc/init.d/netmanager-china" /etc/init.d/netmanager-china
 chmod +x /etc/init.d/netmanager-china
