@@ -1,6 +1,6 @@
 # 网络管理插件 (luci-app-netmanager)
 
-> 版本：v1.8.1
+> 版本：v1.8.2
 >
 > 适配：iStoreOS / OpenWrt (fw4/nftables, Lua LuCI)
 >
@@ -271,6 +271,15 @@ IPv4（每行一个 CIDR）：
 5. 更新前建议先备份配置；只支持 `.tar.gz` 或 `.tgz` 格式
 
 ## 更新日志
+
+### v1.8.2 (2026-11-20)
+
+**新增：收敛客户端 IPv6 地址堆积（路由端根因治理）**
+
+- 问题：odhcpd 按 RFC9096 把历史前缀记在 piofolder，并在每次 RA 中以 `lifetime=0` 持续广播（实测旧前缀失效两小时后仍在播）。客户端按 RFC4862 必须保留这些 deprecated 地址直到记忆过期，表现为"一台设备堆一堆旧前缀 IP"
+- 新增 `v6_cleanup_piofolder`：同步时剔除 piofolder 中既非当前前缀、也非 ULA 的条目，重启 odhcpd 后 RA 只含当前前缀 + ULA
+- 挂入 `port_sync_v6`（hotplug / 每 10 分钟 cron / DNS 应用三条触发路径自动生效）；DNS 应用脚本改为无条件同步，未登记跟踪也清理
+- 建议配合缩短租期：`dhcp.lan.ra_lifetime='1800'`、`max_valid_lifetime='30m'`、`max_preferred_lifetime='15m'`（选项名以 odhcpd 源码 config.c 为准；`ra_valid`/`ra_preferred` 不存在，写了会被忽略），前缀变更后客户端收敛更快；ULA 是否保留由用户按需决定（关闭后 LAN IPv6 DNS 需改用稳定后缀的公网地址）
 
 ### v1.8.1 (2026-11-20)
 

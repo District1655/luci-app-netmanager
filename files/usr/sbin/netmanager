@@ -12,7 +12,7 @@ LOG_FILE="$LOG_DIR/run.log"
 LOG_ENABLED=0
 
 # 在线更新配置：版本号与 GitHub 仓库（发版时同步修改 PLUGIN_VERSION）
-PLUGIN_VERSION="1.8.1"
+PLUGIN_VERSION="1.8.2"
 REPO_OWNER="District1655"
 REPO_NAME="luci-app-netmanager"
 REPO_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
@@ -165,7 +165,7 @@ cmd_overview() {
     echo "WAN_IPV6=$wan_ipv6"
 
     # LAN口IP
-    lan_ip=$(uci get network.lan.ipaddr 2>/dev/null || echo "192.168.1.1")
+    lan_ip=$(uci get network.lan.ipaddr 2>/dev/null || echo "192.1.8.2.1")
     echo "LAN_IP=$lan_ip"
 
     # 运行时间（从/proc/uptime计算）
@@ -307,7 +307,7 @@ cmd_port_list() {
     }
     END {
         for (i = 0; i <= max_idx; i++) {
-            # v1.8.1：family=ipv6 的映射不属于 IPv4 表。
+            # v1.8.2：family=ipv6 的映射不属于 IPv4 表。
             # 混进来会让「目标地址」显示成 IPv6，且与同端口的 IPv4 条目
             # 共用 编辑/删除（按 端口+协议 匹配）时误伤对方。
             if (names[i] != "" && fams[i] != "ipv6") {
@@ -361,7 +361,7 @@ cmd_port_list() {
     }
     END {
         for (i = 0; i <= max_idx; i++) {
-            # v1.8.1：只列出转发到 lan 的 IPv6 放行规则。
+            # v1.8.2：只列出转发到 lan 的 IPv6 放行规则。
             # 系统自带规则（Allow-DHCPv6 / Allow-MLD / Allow-ICMPv6-Input
             # 无 dest，Allow-ICMPv6-Forward 的 dest 为 *）不属于端口转发，
             # 混进来会被误标「未限定目标」，且提供删除按钮易误删导致 IPv6 异常。
@@ -374,7 +374,7 @@ cmd_port_list() {
         }
     }' > /tmp/fwm_pv6.txt
 
-    # v1.8.1：读取跟踪锚点，供前端展示「动态跟随」状态
+    # v1.8.2：读取跟踪锚点，供前端展示「动态跟随」状态
     track_data=$(uci -q show netmanager 2>/dev/null | grep '@v6track')
 
     while IFS='|' read -r idx name proto dp en dip; do
@@ -391,7 +391,7 @@ cmd_port_list() {
     done < /tmp/fwm_pv6.txt
     rm -f /tmp/fwm_pv6.txt
 
-    # v1.8.1：IPv6 端口映射（family=ipv6 的 DNAT redirect）单独成表。
+    # v1.8.2：IPv6 端口映射（family=ipv6 的 DNAT redirect）单独成表。
     # 这类条目此前混在 IPv4 表里，目标显示为 IPv6，且与同端口 IPv4 条目
     # 共用按「端口+协议」匹配的编辑/删除，存在误删风险。
     echo "---IPV6DNAT---"
@@ -526,7 +526,7 @@ cmd_port_add() {
                 idx=$((idx+1))
             done
             if [ $exists -eq 0 ]; then
-                # v1.8.1：IPv6 规则的 dest_ip 必须是 IPv6 地址。
+                # v1.8.2：IPv6 规则的 dest_ip 必须是 IPv6 地址。
                 # 若传入的是 IPv4（如默认目标），按该主机解析其当前公网 IPv6；
                 # 解析不到则不写 dest_ip，并明确告警（避免写入非法地址使整条规则失效）。
                 v6_target=""
@@ -814,7 +814,7 @@ cmd_port_del() {
     info "完成！"
 }
 
-# ========== 4.5 IPv6 转发目标动态跟踪（v1.8.1 新增）==========
+# ========== 4.5 IPv6 转发目标动态跟踪（v1.8.2 新增）==========
 # 背景：运营商 PD 前缀会变化（实测一天内变更多次）。IPv6 放行规则若把
 #       目标地址写死，前缀一变规则即失效；而目标主机的接口后缀通常稳定
 #       （DHCPv6 静态分配如 ::3，或 SLAAC 的固定 IID）。
@@ -1019,7 +1019,7 @@ cmd_port_sync_v6() {
             idx=$((idx+1))
         done
 
-        # v1.8.1：family=ipv6 的端口映射(DNAT)同样需要跟随前缀。
+        # v1.8.2：family=ipv6 的端口映射(DNAT)同样需要跟随前缀。
         # 这类条目匹配的是外部端口 src_dport，内部端口 dest_port 保持不变。
         idx=0
         while uci -q get "firewall.@redirect[$idx]" >/dev/null 2>&1; do
@@ -1052,6 +1052,8 @@ cmd_port_sync_v6() {
 
     # 顺带清理旧前缀遗留的源路由（前缀变更后 netifd 可能留下不可达条目）
     v6_cleanup_stale_routes "$prefix" "$quiet"
+    # v1.8.2：同步清理 piofolder 前缀记忆，止住 RA 对失效前缀的持续广播
+    v6_cleanup_piofolder "$prefix" "$quiet"
 }
 
 # 清理不属于当前前缀的 IPv6 默认源路由与 unreachable 条目
@@ -1079,6 +1081,56 @@ v6_cleanup_stale_routes() {
         esac
     done
     [ "$quiet" = "0" ] && [ $removed -gt 0 ] && info "清理旧前缀残留路由 $removed 条"
+    return 0
+}
+
+# v1.8.2：清理 odhcpd 的 RFC9096 前缀记忆(piofolder)中的失效前缀。
+# odhcpd 把历史前缀记在 piofolder，并在每次 RA 里以 lifetime=0 持续广播
+# （实测旧前缀失效两小时后仍在播）。客户端按 RFC4862 会保留这些 deprecated
+# 地址直到记忆过期 —— 这是客户端"堆一堆旧 IP"的路由端根因。
+# 只剔除既非当前前缀、也非 ULA 的 slaac 条目；重写后重启 odhcpd 生效，
+# RA 随即只含当前前缀 + ULA。
+v6_cleanup_piofolder() {
+    local prefix="$1" quiet="$2" folder pf new changed=0
+    [ -z "$prefix" ] && return 0
+    folder=$(uci -q get dhcp.odhcpd.piofolder)
+    [ -z "$folder" ] && folder="/tmp/odhcpd-piofolder"
+    [ -d "$folder" ] || return 0
+    for pf in "$folder"/*; do
+        [ -f "$pf" ] || continue
+        new=$(awk -v P="$prefix" '
+            {
+                line=$0; out=""
+                n=split(line, parts, "},")
+                for (i=1; i<=n; i++) {
+                    seg=parts[i]
+                    if (seg ~ /"prefix"/) {
+                        p=seg
+                        sub(/.*"prefix"[ ]*:[ ]*"/, "", p)
+                        sub(/".*/, "", p)
+                        keep=0
+                        if (index(p, P)==1) keep=1
+                        if (p ~ /^fd/ || p ~ /^fc/) keep=1
+                        if (!keep) continue
+                    }
+                    out = out seg (i<n ? "}," : "")
+                }
+                print out
+            }' "$pf" 2>/dev/null)
+        if [ -n "$new" ] && [ "$new" != "$(cat "$pf" 2>/dev/null)" ]; then
+            printf '%s' "$new" > "$pf"
+            changed=1
+        fi
+    done
+    if [ $changed -eq 1 ]; then
+        /etc/init.d/odhcpd stop >/dev/null 2>&1
+        sleep 1
+        killall odhcpd 2>/dev/null
+        sleep 1
+        /etc/init.d/odhcpd start >/dev/null 2>&1
+        [ "$quiet" = "0" ] && info "已清理 piofolder 失效前缀记忆并重启 odhcpd"
+        write_log "INFO" "v6_cleanup_piofolder: 剔除失效前缀记忆，前缀=${prefix}"
+    fi
     return 0
 }
 
@@ -3623,7 +3675,7 @@ cmd_uninstall() {
     rm -f /etc/init.d/netmanager-china
     rm -f /etc/hotplug.d/iface/95-netmanager-china
     rm -f /etc/hotplug.d/iface/96-netmanager-v6sync
-    # v1.8.1：移除 IPv6 目标同步定时任务
+    # v1.8.2：移除 IPv6 目标同步定时任务
     if [ -f /etc/crontabs/root ] && grep -qF 'netmanager port_sync_v6' /etc/crontabs/root 2>/dev/null; then
         grep -vF 'netmanager port_sync_v6' /etc/crontabs/root > /tmp/.nm_cron 2>/dev/null
         cat /tmp/.nm_cron > /etc/crontabs/root
