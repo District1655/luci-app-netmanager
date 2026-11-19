@@ -211,6 +211,15 @@ function api_handler()
             shell_escape(old_port), shell_escape(old_proto),
             shell_escape(new_port), shell_escape(new_proto),
             arg(new_target), shell_escape(new_ipver), arg(new_dport))
+    elseif action == "port_track_v6" then
+        -- v1.8.0：登记/取消 IPv6 转发目标跟踪锚点
+        local port = luci.http.formvalue("port") or ""
+        local proto = luci.http.formvalue("proto") or "tcp"
+        local anchor = luci.http.formvalue("anchor") or ""
+        cmd = string.format("/usr/sbin/netmanager port_track_v6 %s %s %s",
+            shell_escape(port), shell_escape(proto), shell_escape(anchor))
+    elseif action == "port_sync_v6" then
+        cmd = "/usr/sbin/netmanager port_sync_v6"
     elseif action == "rule_list" then
         cmd = "/usr/sbin/netmanager rule_list"
     elseif action == "rule_add" then

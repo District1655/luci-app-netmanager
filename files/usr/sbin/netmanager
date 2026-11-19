@@ -12,7 +12,7 @@ LOG_FILE="$LOG_DIR/run.log"
 LOG_ENABLED=0
 
 # 在线更新配置：版本号与 GitHub 仓库（发版时同步修改 PLUGIN_VERSION）
-PLUGIN_VERSION="1.7.3"
+PLUGIN_VERSION="1.8.0"
 REPO_OWNER="District1655"
 REPO_NAME="luci-app-netmanager"
 REPO_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
@@ -297,6 +297,7 @@ cmd_port_list() {
             gsub(/"$/, "", val)
         }
         if (key == "name") names[idx] = val
+        else if (key == "family") fams[idx] = val
         else if (key == "proto") protos[idx] = val
         else if (key == "src_dport") sps[idx] = val
         else if (key == "dest_ip") dips[idx] = val
@@ -306,7 +307,10 @@ cmd_port_list() {
     }
     END {
         for (i = 0; i <= max_idx; i++) {
-            if (names[i] != "") {
+            # v1.8.0：family=ipv6 的映射不属于 IPv4 表。
+            # 混进来会让「目标地址」显示成 IPv6，且与同端口的 IPv4 条目
+            # 共用 编辑/删除（按 端口+协议 匹配）时误伤对方。
+            if (names[i] != "" && fams[i] != "ipv6") {
                 proto = (protos[i] != "") ? protos[i] : "tcp"
                 sp = (sps[i] != "") ? sps[i] : ""
                 dip = (dips[i] != "") ? dips[i] : ""
@@ -350,26 +354,100 @@ cmd_port_list() {
         else if (key == "family") fams[idx] = val
         else if (key == "proto") protos[idx] = val
         else if (key == "dest_port") dps[idx] = val
+        else if (key == "dest_ip") dips[idx] = val
+        else if (key == "dest") dests[idx] = val
         else if (key == "enabled") enableds[idx] = val
         if (idx > max_idx) max_idx = idx
     }
     END {
         for (i = 0; i <= max_idx; i++) {
-            if (names[i] != "" && fams[i] == "ipv6" && dps[i] != "") {
+            # v1.8.0：只列出转发到 lan 的 IPv6 放行规则。
+            # 系统自带规则（Allow-DHCPv6 / Allow-MLD / Allow-ICMPv6-Input
+            # 无 dest，Allow-ICMPv6-Forward 的 dest 为 *）不属于端口转发，
+            # 混进来会被误标「未限定目标」，且提供删除按钮易误删导致 IPv6 异常。
+            if (names[i] != "" && fams[i] == "ipv6" && dps[i] != "" && dests[i] == "lan") {
                 proto = (protos[i] != "") ? protos[i] : "tcp"
                 en = (enableds[i] != "") ? enableds[i] : "1"
-                printf "%d|%s|%s|%s|%s\n", i, names[i], proto, dps[i], en
+                dip = (dips[i] != "") ? dips[i] : ""
+                printf "%d|%s|%s|%s|%s|%s\n", i, names[i], proto, dps[i], en, dip
             }
         }
     }' > /tmp/fwm_pv6.txt
-    
-    while IFS='|' read -r idx name proto dp en; do
+
+    # v1.8.0：读取跟踪锚点，供前端展示「动态跟随」状态
+    track_data=$(uci -q show netmanager 2>/dev/null | grep '@v6track')
+
+    while IFS='|' read -r idx name proto dp en dip; do
         [ -z "$name" ] && continue
         pkts=$(get_port_pkts "$dp")
-        echo "$idx|$name|$proto|$dp|$en|$pkts"
+        anchor=$(echo "$track_data" | awk -v P="$dp" -v R="$proto" '
+            /\.port=/ { v=$0; sub(/.*=/,"",v); gsub(/\047/,"",v); cur_p=v }
+            /\.proto=/ { v=$0; sub(/.*=/,"",v); gsub(/\047/,"",v); cur_r=v }
+            /\.anchor=/ {
+                v=$0; sub(/.*=/,"",v); gsub(/\047/,"",v)
+                if (cur_p==P && cur_r==R) { print v; exit }
+            }')
+        echo "$idx|$name|$proto|$dp|$en|$pkts|$dip|$anchor"
     done < /tmp/fwm_pv6.txt
     rm -f /tmp/fwm_pv6.txt
-    
+
+    # v1.8.0：IPv6 端口映射（family=ipv6 的 DNAT redirect）单独成表。
+    # 这类条目此前混在 IPv4 表里，目标显示为 IPv6，且与同端口 IPv4 条目
+    # 共用按「端口+协议」匹配的编辑/删除，存在误删风险。
+    echo "---IPV6DNAT---"
+    echo "$uci_data" | awk '
+    /^firewall\.@redirect\[/ {
+        idx = $0
+        sub(/^firewall\.@redirect\[/, "", idx)
+        sub(/\].*/, "", idx)
+        idx = idx + 0
+        attr = $0
+        sub(/^firewall\.@redirect\[[0-9]+\]\./, "", attr)
+        eq_pos = index(attr, "=")
+        if (eq_pos > 0) {
+            key = substr(attr, 1, eq_pos - 1)
+            val = substr(attr, eq_pos + 1)
+            gsub(/^\047/, "", val)
+            gsub(/\047$/, "", val)
+            gsub(/^"/, "", val)
+            gsub(/"$/, "", val)
+        }
+        if (key == "name") names[idx] = val
+        else if (key == "family") fams[idx] = val
+        else if (key == "proto") protos[idx] = val
+        else if (key == "src_dport") sps[idx] = val
+        else if (key == "dest_ip") dips[idx] = val
+        else if (key == "dest_port") dps[idx] = val
+        else if (key == "enabled") enableds[idx] = val
+        if (idx > max_idx) max_idx = idx
+    }
+    END {
+        for (i = 0; i <= max_idx; i++) {
+            if (names[i] != "" && fams[i] == "ipv6") {
+                proto = (protos[i] != "") ? protos[i] : "tcp"
+                sp = (sps[i] != "") ? sps[i] : ""
+                dip = (dips[i] != "") ? dips[i] : ""
+                dp = (dps[i] != "") ? dps[i] : sp
+                en = (enableds[i] != "") ? enableds[i] : "1"
+                printf "%d|%s|%s|%s|%s|%s|%s\n", i, names[i], proto, sp, dip, dp, en
+            }
+        }
+    }' > /tmp/fwm_pv6d.txt
+
+    while IFS='|' read -r idx name proto sp dip dp en; do
+        [ -z "$name" ] && continue
+        pkts=$(get_port_pkts "$sp")
+        anchor=$(echo "$track_data" | awk -v P="$sp" -v R="$proto" '
+            /\.port=/ { v=$0; sub(/.*=/,"",v); gsub(/\047/,"",v); cur_p=v }
+            /\.proto=/ { v=$0; sub(/.*=/,"",v); gsub(/\047/,"",v); cur_r=v }
+            /\.anchor=/ {
+                v=$0; sub(/.*=/,"",v); gsub(/\047/,"",v)
+                if (cur_p==P && cur_r==R) { print v; exit }
+            }')
+        echo "$idx|$name|$proto|$sp|$en|$pkts|$dip|$anchor|$dp"
+    done < /tmp/fwm_pv6d.txt
+    rm -f /tmp/fwm_pv6d.txt
+
     echo "===END==="
     write_log "DEBUG" "port_list: 列表加载完成"
 }
@@ -448,16 +526,52 @@ cmd_port_add() {
                 idx=$((idx+1))
             done
             if [ $exists -eq 0 ]; then
+                # v1.8.0：IPv6 规则的 dest_ip 必须是 IPv6 地址。
+                # 若传入的是 IPv4（如默认目标），按该主机解析其当前公网 IPv6；
+                # 解析不到则不写 dest_ip，并明确告警（避免写入非法地址使整条规则失效）。
+                v6_target=""
+                case "$target" in
+                    *:*) v6_target="$target" ;;
+                    *)
+                        v6_target=$(v6_resolve_target "$target")
+                        if [ -n "$v6_target" ]; then
+                            info "目标 $target 解析为 IPv6: $v6_target"
+                            # 自动登记跟踪，后续前缀变更自动跟随
+                            _ti=0; _tfound=0
+                            while uci -q get "netmanager.@v6track[$_ti]" >/dev/null 2>&1; do
+                                if [ "$(uci -q get netmanager.@v6track[$_ti].port)" = "$port" ] && \
+                                   [ "$(uci -q get netmanager.@v6track[$_ti].proto)" = "$p" ]; then
+                                    _tfound=1; break
+                                fi
+                                _ti=$((_ti+1))
+                            done
+                            if [ $_tfound -eq 0 ]; then
+                                uci add netmanager v6track >/dev/null
+                                uci set netmanager.@v6track[-1].port="$port"
+                                uci set netmanager.@v6track[-1].proto="$p"
+                                uci set netmanager.@v6track[-1].anchor="$target"
+                                uci set netmanager.@v6track[-1].enabled='1'
+                                uci commit netmanager
+                            fi
+                        else
+                            warn "无法解析 $target 的 IPv6 地址，本条 IPv6 放行暂不限定目标主机"
+                        fi
+                        ;;
+                esac
                 uci add firewall rule > /dev/null
                 uci set firewall.@rule[-1].name="Allow-IPv6-${port}-${p}"
                 uci set firewall.@rule[-1].src="wan"
                 uci set firewall.@rule[-1].proto="$p"
                 uci set firewall.@rule[-1].dest="lan"
-                uci set firewall.@rule[-1].dest_ip="$target"
+                [ -n "$v6_target" ] && uci set firewall.@rule[-1].dest_ip="$v6_target"
                 uci set firewall.@rule[-1].dest_port="$port"
                 uci set firewall.@rule[-1].family="ipv6"
                 uci set firewall.@rule[-1].target="ACCEPT"
-                info "IPv6放行: $port/$p -> 仅放行到 $target"
+                if [ -n "$v6_target" ]; then
+                    info "IPv6放行: $port/$p -> 仅放行到 $v6_target"
+                else
+                    warn "IPv6放行: $port/$p -> 未限定目标（建议主机上线后执行 port_sync_v6）"
+                fi
             else
                 warn "IPv6已存在: $port/$p"
             fi
@@ -698,6 +812,274 @@ cmd_port_del() {
     # 清除 nft 命中数缓存，确保下次 port_list 拿到最新数据
     rm -f /tmp/.netmanager_nft_dstnat /tmp/.netmanager_nft_dstnat.ts 2>/dev/null
     info "完成！"
+}
+
+# ========== 4.5 IPv6 转发目标动态跟踪（v1.8.0 新增）==========
+# 背景：运营商 PD 前缀会变化（实测一天内变更多次）。IPv6 放行规则若把
+#       目标地址写死，前缀一变规则即失效；而目标主机的接口后缀通常稳定
+#       （DHCPv6 静态分配如 ::3，或 SLAAC 的固定 IID）。
+# 方案：为规则登记一个「锚点」（IPv4 地址 / MAC / 主机名），
+#       由 v6_resolve_target 实时解析该主机当前的公网 IPv6，
+#       前缀变更时由 hotplug / 定时任务自动改写 dest_ip。
+
+# 取 br-lan 当前公网 IPv6 前缀（/64，形如 2408:xxxx:xxxx:xxxx:）
+v6_current_prefix() {
+    local p
+    p=$(ip -6 addr show dev br-lan scope global 2>/dev/null \
+        | awk '/inet6/{print $2}' | cut -d/ -f1 \
+        | grep -viE '^fd|^fc' | head -1)
+    [ -z "$p" ] && return 1
+    # 取前 4 段作为 /64 前缀
+    echo "$p" | awk -F: '{printf "%s:%s:%s:%s:\n", $1,$2,$3,$4}'
+}
+
+# 按锚点解析目标主机当前公网 IPv6
+# 锚点支持：IPv4 地址 / MAC 地址 / 主机名
+# 解析优先级：DHCP 静态 hostid（最稳）→ DHCPv6 租约 → 邻居表
+v6_resolve_target() {
+    local anchor="$1" prefix mac hostid duid addr hostname i h_ip h_mac h_hostid h_name
+    [ -z "$anchor" ] && return 1
+    prefix=$(v6_current_prefix) || return 1
+
+    # 归一化 MAC 为小写
+    case "$anchor" in
+        *:*:*:*:*:*) mac=$(echo "$anchor" | tr 'A-Z' 'a-z') ;;
+        *) mac="" ;;
+    esac
+
+    # 1) 由锚点在 dhcp host 静态绑定中找 hostid / duid / mac
+    i=0
+    while uci -q get "dhcp.@host[$i]" >/dev/null 2>&1; do
+        h_ip=$(uci -q get "dhcp.@host[$i].ip")
+        h_mac=$(uci -q get "dhcp.@host[$i].mac" | tr 'A-Z' 'a-z')
+        h_hostid=$(uci -q get "dhcp.@host[$i].hostid")
+        h_name=$(uci -q get "dhcp.@host[$i].name")
+        duid=$(uci -q get "dhcp.@host[$i].duid")
+        if [ "$anchor" = "$h_ip" ] || [ "$mac" = "$h_mac" ] || [ "$anchor" = "$h_name" ]; then
+            # 1a) 有 hostid：前缀 + hostid，前缀变更自动跟随，最可靠
+            if [ -n "$h_hostid" ]; then
+                case "$h_hostid" in
+                    *:*) echo "${prefix}${h_hostid}"; return 0 ;;
+                    *)
+                        # 十进制 hostid 转十六进制
+                        local hex
+                        hex=$(printf '%x' "$h_hostid" 2>/dev/null)
+                        [ -n "$hex" ] && { echo "${prefix}:${hex}"; return 0; }
+                        ;;
+                esac
+            fi
+            # 1b) 有 DUID：查 DHCPv6 租约
+            if [ -n "$duid" ]; then
+                addr=$(v6_lease_by_duid "$duid")
+                [ -n "$addr" ] && { echo "$addr"; return 0; }
+            fi
+            # 1c) 落到 MAC 解析
+            [ -z "$mac" ] && mac="$h_mac"
+            break
+        fi
+        i=$((i+1))
+    done
+
+    # 2) 锚点是 IPv4：先从 DHCP 租约换算 MAC
+    if [ -z "$mac" ]; then
+        case "$anchor" in
+            *.*.*.*)
+                mac=$(awk -v ip="$anchor" '$3==ip{print tolower($2)}' /tmp/dhcp.leases 2>/dev/null | head -1)
+                ;;
+        esac
+    fi
+
+    # 3) 锚点是主机名：从 DHCP 租约取 MAC
+    if [ -z "$mac" ]; then
+        mac=$(awk -v h="$anchor" '$4==h{print tolower($2)}' /tmp/dhcp.leases 2>/dev/null | head -1)
+    fi
+
+    # 4) 邻居表按 MAC 找当前公网 IPv6（排除 ULA / 链路本地）
+    if [ -n "$mac" ]; then
+        addr=$(ip -6 neigh show dev br-lan 2>/dev/null \
+            | awk -v m="$mac" 'tolower($0) ~ m {print $1}' \
+            | grep -viE '^fe80|^fd|^fc' | head -1)
+        [ -n "$addr" ] && { echo "$addr"; return 0; }
+    fi
+
+    return 1
+}
+
+# 从 odhcpd 租约中按 DUID 取公网 IPv6
+v6_lease_by_duid() {
+    local want="$1"
+    command -v ubus >/dev/null 2>&1 || return 1
+    ubus call dhcp ipv6leases 2>/dev/null | awk -v d="$want" '
+        /"duid"/ { cur=$0; gsub(/.*"duid": *"|",?$/,"",cur); hit=(cur==d) }
+        /"address"/ && hit {
+            a=$0; gsub(/.*"address": *"|",?$/,"",a)
+            if (a !~ /^fd/ && a !~ /^fc/ && a !~ /^fe80/) { print a; exit }
+        }
+    '
+}
+
+# 登记/取消某条 IPv6 放行规则的目标跟踪
+# 用法: netmanager port_track_v6 <端口> <tcp|udp> <锚点|off>
+cmd_port_track_v6() {
+    local port="$1" proto="$2" anchor="$3" i found=0 sec
+    [ -z "$port" ] && { error "用法: netmanager port_track_v6 <端口> <tcp|udp> <锚点IPv4/MAC/主机名|off>"; exit 1; }
+    port=$(echo "$port" | sed 's/:/-/g')
+    [ -z "$proto" ] && proto="tcp"
+
+    # 找到已存在的跟踪节
+    i=0
+    while uci -q get "netmanager.@v6track[$i]" >/dev/null 2>&1; do
+        if [ "$(uci -q get netmanager.@v6track[$i].port)" = "$port" ] && \
+           [ "$(uci -q get netmanager.@v6track[$i].proto)" = "$proto" ]; then
+            sec="@v6track[$i]"; found=1; break
+        fi
+        i=$((i+1))
+    done
+
+    if [ "$anchor" = "off" ] || [ -z "$anchor" ]; then
+        if [ $found -eq 1 ]; then
+            uci delete "netmanager.$sec"
+            uci commit netmanager
+            info "已取消 $port/$proto 的 IPv6 目标跟踪"
+        else
+            info "$port/$proto 未启用跟踪"
+        fi
+        return 0
+    fi
+
+    # 先验证锚点当前能否解析，避免登记一个无效锚点
+    local resolved
+    resolved=$(v6_resolve_target "$anchor")
+    if [ -z "$resolved" ]; then
+        warn "锚点 $anchor 当前无法解析出公网 IPv6（主机可能离线），仍登记跟踪，待其上线后自动生效"
+    else
+        info "锚点 $anchor 当前解析为 $resolved"
+    fi
+
+    if [ $found -eq 0 ]; then
+        uci add netmanager v6track >/dev/null
+        sec="@v6track[-1]"
+    fi
+    uci set "netmanager.$sec.port=$port"
+    uci set "netmanager.$sec.proto=$proto"
+    uci set "netmanager.$sec.anchor=$anchor"
+    uci set "netmanager.$sec.enabled=1"
+    uci commit netmanager
+    info "已登记 $port/$proto 跟踪锚点 $anchor"
+    # 立即同步一次
+    cmd_port_sync_v6
+}
+
+# 同步所有已跟踪的 IPv6 放行规则目标地址
+# 用法: netmanager port_sync_v6 [--quiet]
+cmd_port_sync_v6() {
+    local quiet=0
+    [ "$1" = "--quiet" ] && quiet=1
+    local i port proto anchor enabled resolved idx fam dp pr changed=0 checked=0
+    local prefix
+    prefix=$(v6_current_prefix)
+    if [ -z "$prefix" ]; then
+        [ $quiet -eq 0 ] && warn "当前无公网 IPv6 前缀，跳过同步"
+        return 0
+    fi
+    [ $quiet -eq 0 ] && info "当前 LAN 前缀: ${prefix}:/64"
+
+    i=0
+    while uci -q get "netmanager.@v6track[$i]" >/dev/null 2>&1; do
+        enabled=$(uci -q get "netmanager.@v6track[$i].enabled")
+        port=$(uci -q get "netmanager.@v6track[$i].port")
+        proto=$(uci -q get "netmanager.@v6track[$i].proto")
+        anchor=$(uci -q get "netmanager.@v6track[$i].anchor")
+        i=$((i+1))
+        [ "$enabled" = "0" ] && continue
+        [ -z "$port" ] || [ -z "$anchor" ] && continue
+        checked=$((checked+1))
+
+        resolved=$(v6_resolve_target "$anchor")
+        if [ -z "$resolved" ]; then
+            [ $quiet -eq 0 ] && warn "$port/$proto 锚点 $anchor 暂时解析不到，保留原目标"
+            continue
+        fi
+
+        # 定位对应的 IPv6 放行规则并改写 dest_ip
+        idx=0
+        while uci -q get "firewall.@rule[$idx]" >/dev/null 2>&1; do
+            fam=$(uci -q get "firewall.@rule[$idx].family")
+            dp=$(uci -q get "firewall.@rule[$idx].dest_port")
+            pr=$(uci -q get "firewall.@rule[$idx].proto")
+            if [ "$fam" = "ipv6" ] && [ "$dp" = "$port" ] && proto_match "$pr" "$proto"; then
+                local old
+                old=$(uci -q get "firewall.@rule[$idx].dest_ip")
+                if [ "$old" != "$resolved" ]; then
+                    uci set "firewall.@rule[$idx].dest_ip=$resolved"
+                    changed=$((changed+1))
+                    [ $quiet -eq 0 ] && info "$port/$proto 目标 ${old:-未设置} -> $resolved"
+                fi
+            fi
+            idx=$((idx+1))
+        done
+
+        # v1.8.0：family=ipv6 的端口映射(DNAT)同样需要跟随前缀。
+        # 这类条目匹配的是外部端口 src_dport，内部端口 dest_port 保持不变。
+        idx=0
+        while uci -q get "firewall.@redirect[$idx]" >/dev/null 2>&1; do
+            fam=$(uci -q get "firewall.@redirect[$idx].family")
+            dp=$(uci -q get "firewall.@redirect[$idx].src_dport")
+            pr=$(uci -q get "firewall.@redirect[$idx].proto")
+            if [ "$fam" = "ipv6" ] && [ "$dp" = "$port" ] && proto_match "$pr" "$proto"; then
+                local oldr
+                oldr=$(uci -q get "firewall.@redirect[$idx].dest_ip")
+                if [ "$oldr" != "$resolved" ]; then
+                    uci set "firewall.@redirect[$idx].dest_ip=$resolved"
+                    changed=$((changed+1))
+                    [ $quiet -eq 0 ] && info "映射 $port/$proto 目标 ${oldr:-未设置} -> $resolved"
+                fi
+            fi
+            idx=$((idx+1))
+        done
+    done
+
+    if [ $changed -gt 0 ]; then
+        uci commit firewall
+        rm -f /tmp/.uci/firewall 2>/dev/null
+        /etc/init.d/firewall reload >/dev/null 2>&1
+        rm -f /tmp/.netmanager_nft_dstnat /tmp/.netmanager_nft_dstnat.ts 2>/dev/null
+        write_log "INFO" "port_sync_v6: 前缀 ${prefix}:/64，更新 $changed 条 IPv6 转发目标"
+        [ $quiet -eq 0 ] && info "已更新 $changed 条规则并重载防火墙"
+    else
+        [ $quiet -eq 0 ] && info "检查 $checked 项，目标地址均为最新，无需改动"
+    fi
+
+    # 顺带清理旧前缀遗留的源路由（前缀变更后 netifd 可能留下不可达条目）
+    v6_cleanup_stale_routes "$prefix" "$quiet"
+}
+
+# 清理不属于当前前缀的 IPv6 默认源路由与 unreachable 条目
+v6_cleanup_stale_routes() {
+    local prefix="$1" quiet="$2" p removed=0
+    [ -z "$prefix" ] && return 0
+    # 形如: default from 2408:xxxx:xxxx:xxxx::/64 via fe80::... dev pppoe-wan
+    ip -6 route show 2>/dev/null | grep '^default from' | while read -r line; do
+        p=$(echo "$line" | awk '{print $3}')
+        case "$p" in
+            ${prefix}*) ;;                       # 当前前缀，保留
+            fd*|fc*) ;;                          # ULA，保留
+            *)
+                ip -6 route del $line 2>/dev/null && removed=$((removed+1))
+                ;;
+        esac
+    done
+    # unreachable 兜底路由同样按前缀清理
+    ip -6 route show 2>/dev/null | grep '^unreachable' | while read -r line; do
+        p=$(echo "$line" | awk '{print $2}')
+        case "$p" in
+            ${prefix}*) ;;
+            fd*|fc*) ;;
+            *) ip -6 route del $line 2>/dev/null ;;
+        esac
+    done
+    [ "$quiet" = "0" ] && [ $removed -gt 0 ] && info "清理旧前缀残留路由 $removed 条"
+    return 0
 }
 
 # ========== 5. 防火墙规则列表 ==========
@@ -3240,6 +3622,14 @@ cmd_uninstall() {
     echo "[3/8] 删除 init/hotplug 脚本与 DNS 管理脚本..."
     rm -f /etc/init.d/netmanager-china
     rm -f /etc/hotplug.d/iface/95-netmanager-china
+    rm -f /etc/hotplug.d/iface/96-netmanager-v6sync
+    # v1.8.0：移除 IPv6 目标同步定时任务
+    if [ -f /etc/crontabs/root ] && grep -qF 'netmanager port_sync_v6' /etc/crontabs/root 2>/dev/null; then
+        grep -vF 'netmanager port_sync_v6' /etc/crontabs/root > /tmp/.nm_cron 2>/dev/null
+        cat /tmp/.nm_cron > /etc/crontabs/root
+        rm -f /tmp/.nm_cron
+        /etc/init.d/cron restart >/dev/null 2>&1
+    fi
     rm -f /usr/sbin/dnssettings-apply.sh
     rm -f /usr/sbin/dnssettings-backup.sh
 
@@ -3315,6 +3705,7 @@ usage() {
     echo ""
     echo "系统: overview | version | settings"
     echo "端口转发: port_list | port_add | port_del | port_edit | set_default_target"
+    echo "IPv6目标跟踪: port_track_v6 <端口> <tcp|udp> <锚点|off> | port_sync_v6 [--quiet]"
     echo "防火墙规则: rule_list | rule_add | rule_del | rule_edit"
     echo "日志: ssh_log [行数] | access_log [端口] [行数] | log_set 0/1 | log_get [行数] | log_clear"
     echo "操作: restart | reload"
@@ -3335,6 +3726,8 @@ case "$1" in
     port_add)           shift; cmd_port_add "$@" ;;
     port_del)           shift; cmd_port_del "$@" ;;
     port_edit)          shift; cmd_port_edit "$@" ;;
+    port_track_v6)      shift; cmd_port_track_v6 "$@" ;;
+    port_sync_v6)       shift; cmd_port_sync_v6 "$@" ;;
     set_default_target) shift; cmd_set_default_target "$@" ;;
     rule_list)          cmd_rule_list ;;
     rule_add)           shift; cmd_rule_add "$@" ;;

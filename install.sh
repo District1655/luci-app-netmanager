@@ -1,11 +1,11 @@
 #!/bin/ash
 # ============================================================
-# 网络管理插件 (luci-app-netmanager) - 一键安装脚本 v1.7.3
+# 网络管理插件 (luci-app-netmanager) - 一键安装脚本 v1.8.0
 # 由 luci-app-fwmanager (防火墙管理) 与 luci-app-dnssettings (DNS设置) 合并而成
 # ============================================================
 
 echo "============================================"
-echo "  网络管理插件 (luci-app-netmanager) v1.7.3"
+echo "  网络管理插件 (luci-app-netmanager) v1.8.0"
 echo "  防火墙管理 + DNS设置 一体化"
 echo "============================================"
 echo ""
@@ -74,9 +74,32 @@ cp -f "$FILES_DIR/etc/init.d/netmanager-china" /etc/init.d/netmanager-china
 chmod +x /etc/init.d/netmanager-china
 cp -f "$FILES_DIR/etc/hotplug.d/iface/95-netmanager-china" /etc/hotplug.d/iface/95-netmanager-china
 chmod +x /etc/hotplug.d/iface/95-netmanager-china 2>/dev/null
+cp -f "$FILES_DIR/etc/hotplug.d/iface/96-netmanager-v6sync" /etc/hotplug.d/iface/96-netmanager-v6sync
+chmod +x /etc/hotplug.d/iface/96-netmanager-v6sync 2>/dev/null
 /etc/init.d/netmanager-china enable 2>/dev/null
 echo "  ✓ /etc/init.d/netmanager-china (开机自启)"
 echo "  ✓ /etc/hotplug.d/iface/95-netmanager-china (WAN上线重应用)"
+echo "  ✓ /etc/hotplug.d/iface/96-netmanager-v6sync (IPv6前缀变更同步 + SSH监听自愈)"
+
+# v1.8.0：IPv6 目标同步定时兜底。
+# PD 前缀可能在续租时静默变化而不触发 ifup，hotplug 会漏掉；
+# 每 10 分钟检查一次，前缀未变时开销极小（仅读一次地址与配置）。
+CRON_LINE='*/10 * * * * /usr/sbin/netmanager port_sync_v6 --quiet >/dev/null 2>&1'
+if [ -f /etc/crontabs/root ]; then
+    if ! grep -qF 'netmanager port_sync_v6' /etc/crontabs/root 2>/dev/null; then
+        echo "$CRON_LINE" >> /etc/crontabs/root
+        /etc/init.d/cron restart >/dev/null 2>&1
+        echo "  ✓ 已添加 IPv6 目标同步定时任务（每10分钟）"
+    else
+        echo "  - IPv6 目标同步定时任务已存在"
+    fi
+else
+    mkdir -p /etc/crontabs
+    echo "$CRON_LINE" > /etc/crontabs/root
+    /etc/init.d/cron enable >/dev/null 2>&1
+    /etc/init.d/cron restart >/dev/null 2>&1
+    echo "  ✓ 已创建 crontab 并添加 IPv6 目标同步任务"
+fi
 
 echo "[7/7] 重启LuCI..."
 rm -rf /tmp/luci-indexcache /tmp/luci-modulecache 2>/dev/null

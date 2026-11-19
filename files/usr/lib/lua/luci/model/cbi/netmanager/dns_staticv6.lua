@@ -421,7 +421,24 @@ end
 -- 避免每次保存（甚至无改动提交）都导致 IPv6 租约重置、设备短暂掉线
 m.on_after_commit = function(self)
     if self.changed then
-        sys.call("/etc/init.d/odhcpd restart >/dev/null 2>&1")
+        -- v1.8.0：先收敛可能存在的重复 odhcpd 实例再统一拉起。
+        -- 直接 restart 在已有手动实例时会留下两个进程同时写 RFC9096 piofile，
+        -- 造成前缀记忆互相覆盖、RA 广播不一致。
+        sys.call([=[
+            n=$(ps w 2>/dev/null | grep -c '[o]dhcpd')
+            if [ "$n" -gt 1 ]; then
+                /etc/init.d/odhcpd stop >/dev/null 2>&1
+                sleep 1
+                killall odhcpd 2>/dev/null
+                sleep 1
+                /etc/init.d/odhcpd start >/dev/null 2>&1
+            else
+                /etc/init.d/odhcpd restart >/dev/null 2>&1
+            fi
+        ]=])
+        -- v1.8.0：hostid / 静态绑定变化会改变主机的 IPv6 后缀，
+        -- 已登记跟踪的端口转发目标需要随之重算。
+        sys.call("/usr/sbin/netmanager port_sync_v6 --quiet >/dev/null 2>&1 &")
     end
     sys.call("/etc/init.d/dnsmasq reload >/dev/null 2>&1")
 end

@@ -1,0 +1,42 @@
+#!/bin/sh
+# ============================================================
+# 网络管理插件 - IPv6 前缀变更自愈 + SSH 监听自愈（v1.8.0 新增）
+#
+# 处理两类实测故障：
+#
+# 1) 运营商 PD 前缀变更后，IPv6 端口放行规则里写死的 dest_ip 失效。
+#    wan6/wan up 后延迟同步一次，按锚点重算目标主机的当前 IPv6。
+#
+# 2) dropbear 若以 DirectInterface 绑定到 br-lan（SO_BINDTODEVICE），
+#    netifd 重建 br-lan 后监听套接字绑定的 ifindex 失效：
+#    表现为端口仍 LISTEN、但连接被 refused。
+#    此时重启 dropbear 即可恢复。lan ifup 时做一次自检。
+# ============================================================
+
+[ "$ACTION" = "ifup" ] || exit 0
+
+case "$INTERFACE" in
+    wan|wan6|wan_6|wan-*|wan6-*)
+        # 前缀可能刚下发，等待地址与租约就绪后再同步
+        if uci -q get netmanager.@v6track[0] >/dev/null 2>&1; then
+            ( sleep 12; /usr/sbin/netmanager port_sync_v6 --quiet ) >/dev/null 2>&1 &
+        fi
+        ;;
+    lan)
+        # 仅当 dropbear 绑定了具体接口时才需要自愈（未绑定不受影响）
+        dif=$(uci -q get dropbear.@dropbear[0].DirectInterface 2>/dev/null)
+        [ -z "$dif" ] && exit 0
+        (
+            sleep 5
+            port=$(uci -q get dropbear.@dropbear[0].Port 2>/dev/null)
+            [ -z "$port" ] && port=22
+            # 本机自连测试：失败说明监听套接字已失效
+            if ! nc -w 3 127.0.0.1 "$port" </dev/null >/dev/null 2>&1; then
+                logger -t netmanager "检测到 SSH 监听异常（$dif 重建后），重启 dropbear"
+                /etc/init.d/dropbear restart >/dev/null 2>&1
+            fi
+        ) >/dev/null 2>&1 &
+        ;;
+esac
+
+exit 0

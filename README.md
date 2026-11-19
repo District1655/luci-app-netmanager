@@ -1,6 +1,6 @@
 # 网络管理插件 (luci-app-netmanager)
 
-> 版本：v1.7.3
+> 版本：v1.8.0
 >
 > 适配：iStoreOS / OpenWrt (fw4/nftables, Lua LuCI)
 >
@@ -271,6 +271,48 @@ IPv4（每行一个 CIDR）：
 5. 更新前建议先备份配置；只支持 `.tar.gz` 或 `.tgz` 格式
 
 ## 更新日志
+
+### v1.8.0 (2026-11-19)
+
+**新增：IPv6 转发目标动态跟踪**
+
+- 问题：运营商 PD 前缀会变化（实测一天内变更多次），IPv6 放行规则里写死的 `dest_ip` 前缀一变即失效；且旧逻辑在「仅 IPv6」模式下会把 IPv4 默认目标（如 `192.168.31.3`）直接写进 `family=ipv6` 的规则，属非法地址，导致整条规则不生效——实测 5 条 IPv6 放行规则全部没有 `dest_ip`，等于对整个内网开放端口
+- 新增锚点跟踪机制：为规则登记目标主机的内网 IPv4 / MAC / 主机名作为锚点，由 `v6_resolve_target` 实时解析其当前公网 IPv6。解析优先级为 **DHCP 静态 hostid（前缀+固定后缀，最稳）→ DHCPv6 租约（按 DUID）→ 邻居表（按 MAC）**
+- 新增命令 `port_track_v6 <端口> <tcp|udp> <锚点|off>` 与 `port_sync_v6 [--quiet]`
+- 「仅 IPv6」添加规则时自动把 IPv4 目标解析为 IPv6 并登记跟踪；解析不到则不写 `dest_ip` 并明确告警，不再写入非法地址
+- 端口转发页 IPv6 表格新增「目标地址」「跟踪锚点」两列，未限定目标的规则标红提示；提供「跟踪」与「立即同步」按钮
+- 新增 hotplug `96-netmanager-v6sync`：WAN 上线后自动同步；同步时顺带清理旧前缀残留的源路由与 unreachable 条目
+
+**修复：DNS 页面配置与实际生效不一致**
+
+- `dnssettings.wan` 节存在但 DNS 选项缺失时，页面显示默认值而 `network.wan` 实际无 `dns`、`peerdns` 未设置（走运营商 DNS），二者不符。现在应用前自动回填缺失项（优先沿用 `network` 现值），CBI 初始化也补齐单个缺失选项而非仅判断节是否存在
+- 新增 `noresolv` 开关：dnsmasq 默认除转发列表外还并用系统 resolv 上游（运营商下发、wan6 自动获取、LAN 接口 DNS），使「全局转发」名不副实。开启后严格只用转发列表
+- DNS 设置页新增「当前实际生效的 DNS」只读面板，直接展示运行时 dnsmasq 转发列表、系统 resolv 上游（首页数据来源）与下发给内网设备的 DNS，并标注 noresolv 状态，便于与首页对照
+
+**修复：应用 DNS 配置导致管理 SSH 中断**
+
+- dropbear 若以 `DirectInterface` 绑定 br-lan，`network restart` 重建 br-lan 后监听套接字绑定的 ifindex 失效，表现为端口仍 LISTEN 但连接被 refused。DNS 应用改用 `network reload`，并在应用后自检 SSH 监听、异常时自动重启 dropbear
+- 新增 hotplug 在 lan ifup 时做同样的 SSH 监听自检自愈
+
+**修复：odhcpd 重复实例**
+
+- 实测存在 `odhcpd -v` 与 `/usr/sbin/odhcpd` 两个实例并存，同时写 RFC9096 piofile 造成前缀记忆互相覆盖、RA 广播不一致。应用脚本改为先收敛实例再统一拉起，并回显实例数
+
+**修复：WAN DNS 输入框在页面上根本不渲染**
+
+- 问题：WAN 四个 DNS 选项使用 `o:depends("peerdns", "0")`，而 iStoreOS 24.10 的 CBI 对 Flag「等于 0」的依赖判定不成立，服务端直接省略这些选项——页面上看不到也无法配置 WAN DNS，只能沿用默认值，与实际生效的运营商 DNS 长期不一致（LAN 侧用的是 `="1"`，因此正常）
+- 改为始终显示这四项，并在说明中标注「仅在未勾选『使用运营商下发的 DNS』时生效」
+- `pcdata` 优先走 `luci.xml`，避免旧路径打印弃用告警污染页面输出
+
+**修复：端口转发表混入不该出现的条目**
+
+- IPv6 表此前会把系统自带规则（`Allow-DHCPv6`、`Allow-MLD`、`Allow-ICMPv6-*`）一并列出，标红「未限定目标」并提供删除按钮，误删会直接断 IPv6。现在只列出 `dest=lan` 的放行规则，系统规则天然被过滤
+- `family=ipv6` 的端口映射此前混在 IPv4 表里，目标地址显示为 IPv6，且与同端口的 IPv4 条目共用按「端口+协议」匹配的编辑/删除，存在误删对方的风险。现在独立成「IPv6 端口映射 (DNAT)」表
+
+**新增：IPv6 端口映射同样跟随前缀**
+
+- 跟踪引擎此前只覆盖 `firewall rule`（放行），`family=ipv6` 的 `redirect`（DNAT）不在其列，前缀一变即失效。现在同步时按 `src_dport` 匹配并改写其 `dest_ip`，内部端口保持不变
+- 实测修复了两条指向旧前缀临时地址、已失效的 IPv6 DNS 映射
 
 ### v1.7.3 (2026-11-19)
 

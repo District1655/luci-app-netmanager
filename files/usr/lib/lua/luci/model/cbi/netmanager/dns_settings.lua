@@ -11,7 +11,7 @@ local m, s, o
 m = Map("network", nil,
     translate("统一管理 WAN 口上网方式、LAN 口地址与 DNS 服务器。修改后点击「应用配置」生效。")
     .. "<br><em style='color:#6b7280;font-size:12px;'>"
-    .. translate("修改 WAN/LAN 口设置会重启网络服务，期间短暂断网；DNS 配置应用前自动备份到 /root/backup/。")
+    .. translate("修改 WAN/LAN 口设置会重载网络服务，期间可能短暂断网；DNS 配置应用前自动备份到 /root/backup/。")
     .. "</em>")
 
 -- v1.4.6 修复：CBI 页面缺少页内导航，注入导航模板
@@ -89,29 +89,31 @@ o = s:option(Flag, "peerdns", translate("使用运营商下发的 DNS"),
 o.default = "0"
 o.rmempty = false
 
+-- v1.8.0 修复：原先这四个字段用 o:depends("peerdns", "0")，
+-- 但 iStoreOS 24.10 的 CBI 对 Flag「等于0」的依赖判定不成立，
+-- 服务端直接不渲染这些选项 —— 页面上看不到也无法配置 WAN DNS，
+-- 只能沿用默认值，与实际生效的运营商 DNS 长期不一致。
+-- 改为始终显示，并在说明中标注生效条件。
 o = s:option(Value, "dns1_v4", translate("IPv4 主 DNS"))
 o.datatype = "ip4addr"
 o.placeholder = "223.5.5.5"
 o.default = "223.5.5.5"
-o:depends("peerdns", "0")
+o.description = translate("以下四项仅在未勾选「使用运营商下发的 DNS」时生效")
 
 o = s:option(Value, "dns2_v4", translate("IPv4 备 DNS"))
 o.datatype = "ip4addr"
 o.placeholder = "119.29.29.29"
 o.default = "119.29.29.29"
-o:depends("peerdns", "0")
 
 o = s:option(Value, "dns1_v6", translate("IPv6 主 DNS"))
 o.datatype = "ip6addr"
 o.placeholder = "2400:3200::1"
 o.default = "2400:3200::1"
-o:depends("peerdns", "0")
 
 o = s:option(Value, "dns2_v6", translate("IPv6 备 DNS"))
 o.datatype = "ip6addr"
 o.placeholder = "2402:4e00::"
 o.default = "2402:4e00::"
-o:depends("peerdns", "0")
 
 -- ---------- LAN 口设备 DNS ----------
 s = m2:section(NamedSection, "lan", "dnssettings", translate("LAN 口设备 DNS"),
@@ -155,6 +157,14 @@ o = s:option(Flag, "enable", translate("启用全局转发"),
 o.default = "1"
 o.rmempty = false
 
+-- v1.8.0：noresolv —— 解决「页面配置的 DNS」与「首页/实际生效 DNS」不一致
+o = s:option(Flag, "noresolv", translate("只用上方转发列表（忽略运营商 DNS）"),
+    translate("dnsmasq 默认除转发列表外，还会并用系统 resolv 里的上游（运营商拨号下发、wan6 自动获取、LAN 接口 DNS）。"
+        .. "这会让实际解析路径与本页配置不一致。勾选后严格只使用上方列表。"))
+o.default = "0"
+o.rmempty = false
+o:depends("enable", "1")
+
 o = s:option(DynamicList, "forward_v4", translate("IPv4 转发 DNS"))
 o.datatype = "ip4addr"
 o.placeholder = "223.5.5.5"
@@ -166,7 +176,55 @@ o.placeholder = "2400:3200::1"
 o:depends("enable", "1")
 
 -- ---------- 操作按钮（v1.6.1 移除备份按钮，统一由设置页面备份模块管理） ----------
+-- ---------- v1.8.0：实际生效 DNS 只读面板 ----------
+-- 首页显示的是运行时真实上游，本页配置的是期望值，二者来源不同容易看着「冲突」。
+-- 这里把运行时实际值直接摊开，并标注每项来源，便于对照。
+local function _runtime_dns_panel()
+    -- iStoreOS 24.10 起 pcdata 迁到 luci.xml，旧路径会打印弃用告警污染页面
+    local esc
+    local okx, xml = pcall(require, "luci.xml")
+    if okx and xml and xml.pcdata then
+        esc = function(s) return xml.pcdata(tostring(s or "")) end
+    else
+        local util = require "luci.util"
+        esc = function(s) return util.pcdata(tostring(s or "")) end
+    end
+    local function trim(s) return (s or ""):gsub("^%s+", ""):gsub("%s+$", "") end
+
+    -- dnsmasq 实际转发列表
+    local srv = trim(luci.sys.exec("uci -q get dhcp.@dnsmasq[0].server 2>/dev/null"))
+    local nr = trim(luci.sys.exec("uci -q get dhcp.@dnsmasq[0].noresolv 2>/dev/null"))
+    -- 系统 resolv 上游（运营商 / 各接口自动下发）
+    local auto = luci.sys.exec("cat /tmp/resolv.conf.d/resolv.conf.auto 2>/dev/null")
+    -- 下发给 LAN 设备的 DNS
+    local opt4 = trim(luci.sys.exec("uci -q get dhcp.lan.dhcp_option 2>/dev/null"))
+    local opt6 = trim(luci.sys.exec("uci -q get dhcp.lan.dns 2>/dev/null"))
+
+    local html = "<div style='background:#f8fafc;border:1px solid #e5e7eb;border-radius:6px;padding:10px 12px;margin:8px 0;font-size:12px;line-height:1.9;'>"
+    html = html .. "<b style='color:#374151;'>当前实际生效的 DNS（运行时读取，非本页配置值）</b><br>"
+    html = html .. "<span style='color:#6b7280;'>路由器自身解析：</span> dnsmasq (127.0.0.1) → "
+    if srv ~= "" then
+        html = html .. "<code>" .. esc(srv) .. "</code>"
+    else
+        html = html .. "<i>未配置转发列表</i>"
+    end
+    if nr == "1" then
+        html = html .. " <span style='color:#059669;'>[noresolv=1，只用上述列表]</span>"
+    else
+        html = html .. " <span style='color:#d97706;'>[noresolv=0，还会并用下方系统上游]</span>"
+    end
+    html = html .. "<br><span style='color:#6b7280;'>系统 resolv 上游（首页数据来源）：</span><br>"
+    html = html .. "<pre style='margin:4px 0;padding:6px 8px;background:#fff;border:1px solid #e5e7eb;border-radius:4px;max-height:160px;overflow:auto;'>"
+    html = html .. esc(trim(auto) ~= "" and auto or "(空)") .. "</pre>"
+    html = html .. "<span style='color:#6b7280;'>下发给内网设备：</span> IPv4 <code>"
+        .. esc(opt4 ~= "" and opt4 or "(未下发，设备用路由器 IP)")
+        .. "</code> ／ IPv6 <code>" .. esc(opt6 ~= "" and opt6 or "(未下发)") .. "</code>"
+    html = html .. "</div>"
+    return html
+end
+
 s = m2:section(NamedSection, "actions", "dnssettings", translate("操作"))
+s.description = _runtime_dns_panel()
 
 -- 执行 DNS 脚本并返回结果
 local function run_dns_script(script)
@@ -199,54 +257,91 @@ o.write = function()
         return
     end
 
-    -- 重启网络服务（应用 WAN/LAN 口设置）
-    luci.sys.exec("/etc/init.d/network restart >/dev/null 2>&1")
+    -- v1.8.0：改用 reload 而非 restart。
+    -- restart 会重建 br-lan，导致以 DirectInterface 绑定该网卡的 dropbear
+    -- 监听套接字失效（端口仍 LISTEN 但连接被拒），管理 SSH 随之中断。
+    -- apply 脚本内部已做 network reload，这里仅在 WAN 口参数确有变化时才重启接口。
+    luci.sys.exec("/etc/init.d/network reload >/dev/null 2>&1")
+
+    -- 兜底：若 SSH 监听已异常则自愈（不影响正常情况）
+    luci.sys.exec([=[
+        dif=$(uci -q get dropbear.@dropbear[0].DirectInterface 2>/dev/null)
+        if [ -n "$dif" ]; then
+            p=$(uci -q get dropbear.@dropbear[0].Port 2>/dev/null); [ -z "$p" ] && p=22
+            nc -w 3 127.0.0.1 "$p" </dev/null >/dev/null 2>&1 || /etc/init.d/dropbear restart >/dev/null 2>&1
+        fi
+    ]=])
 
     if rc == 0 then
-        m2.message = "配置已应用成功，已写入 /etc/config/ 并重启网络服务（详细输出见「设置 → 运行日志」）"
+        m2.message = "配置已应用成功，已写入 /etc/config/ 并重载网络服务（详细输出见「设置 → 运行日志」）"
     else
         m2.message = "配置应用失败 (exit=" .. tostring(rc) .. ")：" .. to_one_line(out)
     end
 end
 
 -- v1.6.1 修复：/etc/config/dnssettings 为空或缺失节时，自动初始化默认节
+-- v1.8.0 增强：节存在但个别选项缺失时也要补齐（历史版本只建了 wan 节
+--              却没写 DNS 值，导致页面显示默认值而实际未生效）
 local function _ensure_dns_defaults()
-    local need_init = false
-    for _, sec in ipairs({"wan", "lan", "dnsmasq", "actions"}) do
+    local defaults = {
+        wan = {
+            peerdns = "0",
+            dns1_v4 = "223.5.5.5", dns2_v4 = "119.29.29.29",
+            dns1_v6 = "2400:3200::1", dns2_v6 = "2402:4e00::",
+        },
+        lan = {
+            force_dns = "1",
+            dns1_v4 = "223.5.5.5", dns2_v4 = "119.29.29.29",
+            dns1_v6 = "2400:3200::1", dns2_v6 = "2402:4e00::",
+        },
+        dnsmasq = { enable = "1", noresolv = "0" },
+    }
+    local changed = false
+
+    for sec, opts in pairs(defaults) do
         if not m2.uci:get("dnssettings", sec) then
-            need_init = true
-            break
+            -- 建节走命令行，避免桥接 cursor 对三参 set 支持不一致
+            luci.sys.exec("uci set dnssettings." .. sec .. "=dnssettings")
+            changed = true
+        end
+        for k, v in pairs(opts) do
+            if not m2.uci:get("dnssettings", sec, k) then
+                -- WAN DNS 缺失时优先沿用 network 现值，避免覆盖用户已有设置
+                local cur = nil
+                if sec == "wan" then
+                    if k == "dns1_v4" then
+                        cur = (luci.sys.exec("uci -q get network.wan.dns 2>/dev/null"):match("(%S+)"))
+                    elseif k == "dns1_v6" then
+                        cur = (luci.sys.exec("uci -q get network.wan6.dns 2>/dev/null"):match("(%S+)"))
+                    end
+                end
+                local val = (cur and cur ~= "") and cur or v
+                luci.sys.exec("uci set dnssettings." .. sec .. "." .. k .. "='" .. val .. "'")
+                changed = true
+            end
         end
     end
-    if not need_init then return end
 
-    local cmds = {
-        "uci set dnssettings.wan=dnssettings",
-        "uci set dnssettings.wan.peerdns='0'",
-        "uci set dnssettings.wan.dns1_v4='223.5.5.5'",
-        "uci set dnssettings.wan.dns2_v4='119.29.29.29'",
-        "uci set dnssettings.wan.dns1_v6='2400:3200::1'",
-        "uci set dnssettings.wan.dns2_v6='2402:4e00::'",
-        "uci set dnssettings.lan=dnssettings",
-        "uci set dnssettings.lan.force_dns='1'",
-        "uci set dnssettings.lan.dns1_v4='223.5.5.5'",
-        "uci set dnssettings.lan.dns2_v4='119.29.29.29'",
-        "uci set dnssettings.lan.dns1_v6='2400:3200::1'",
-        "uci set dnssettings.lan.dns2_v6='2402:4e00::'",
-        "uci set dnssettings.dnsmasq=dnssettings",
-        "uci set dnssettings.dnsmasq.enable='1'",
-        "uci delete dnssettings.dnsmasq.forward_v4",
-        "uci delete dnssettings.dnsmasq.forward_v6",
-        "uci add_list dnssettings.dnsmasq.forward_v4='223.5.5.5'",
-        "uci add_list dnssettings.dnsmasq.forward_v4='119.29.29.29'",
-        "uci add_list dnssettings.dnsmasq.forward_v6='2400:3200::1'",
-        "uci add_list dnssettings.dnsmasq.forward_v6='2402:4e00::'",
-        "uci set dnssettings.actions=dnssettings",
-        "uci commit dnssettings",
-    }
-    for _, cmd in ipairs(cmds) do
-        luci.sys.exec(cmd)
+    if not m2.uci:get("dnssettings", "actions") then
+        luci.sys.exec("uci set dnssettings.actions=dnssettings")
+        changed = true
     end
+
+    -- 转发列表为空时补默认
+    -- 注意：iStoreOS 24.10 的 ucode uci 桥接不提供 cursor:list_add，
+    -- 必须走命令行 uci add_list，否则页面加载即报错。
+    if not m2.uci:get("dnssettings", "dnsmasq", "forward_v4") then
+        luci.sys.exec("uci add_list dnssettings.dnsmasq.forward_v4='223.5.5.5'")
+        luci.sys.exec("uci add_list dnssettings.dnsmasq.forward_v4='119.29.29.29'")
+        changed = true
+    end
+    if not m2.uci:get("dnssettings", "dnsmasq", "forward_v6") then
+        luci.sys.exec("uci add_list dnssettings.dnsmasq.forward_v6='2400:3200::1'")
+        luci.sys.exec("uci add_list dnssettings.dnsmasq.forward_v6='2402:4e00::'")
+        changed = true
+    end
+
+    if changed then luci.sys.exec("uci commit dnssettings") end
 end
 _ensure_dns_defaults()
 

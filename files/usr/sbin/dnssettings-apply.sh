@@ -1,6 +1,6 @@
 #!/bin/sh
 # ============================================================
-# DNS设置插件 - 应用配置脚本 (v1.7.3)
+# DNS设置插件 - 应用配置脚本 (v1.8.0)
 # 读取 /etc/config/dnssettings，写入系统 network/dhcp 配置并重载服务
 #
 # v1.7.3 更新：
@@ -71,29 +71,100 @@ iface_from_route() {
         fi
         idx=$((idx+1))
     done
-    echo "$rt_dev"
+
+    # 【v1.8.0 修复】路由设备名不等于 UCI 节名的情况。
+    # PPPoE 下默认路由 dev 是 pppoe-wan，而 UCI 节名是 wan；
+    # 旧版这里直接 echo "$rt_dev"，导致后续 uci get network.pppoe-wan 失败、
+    # WAN DNS 整段被跳过（这是「页面配置与实际 DNS 不一致」的根因）。
+    case "$rt_dev" in
+        pppoe-*)
+            name=${rt_dev#pppoe-}
+            if uci -q get "network.$name" >/dev/null 2>&1; then
+                echo "$name"
+                return
+            fi
+            ;;
+    esac
+
+    # 再用 netifd 运行时信息反查（覆盖 VLAN / 桥接 / 别名等场景）
+    if command -v ubus >/dev/null 2>&1; then
+        name=$(ubus call network.interface dump 2>/dev/null \
+            | awk -v d="$rt_dev" '
+                /"interface"/ { i=$0; gsub(/.*"interface": *"|",?$/,"",i) }
+                /"device"/ { v=$0; gsub(/.*"device": *"|",?$/,"",v); if (v==d) { print i; exit } }
+            ')
+        if [ -n "$name" ] && uci -q get "network.$name" >/dev/null 2>&1; then
+            echo "$name"
+            return
+        fi
+    fi
+
+    # 无法映射到 UCI 节名时返回空，由调用方兜底，绝不返回非法节名
+    return
 }
 
 detect_wan_iface() {
     # $1: 4 或 6
-    local custom rt
+    local custom rt fallback
     if [ "$1" = "4" ]; then
+        fallback="wan"
         custom=$(uci -q get dnssettings.wan.wan_iface 2>/dev/null)
         [ -n "$custom" ] && uci -q get "network.$custom" >/dev/null 2>&1 && { echo "$custom"; return; }
         rt=$(iface_from_route -4)
-        [ -n "$rt" ] && { echo "$rt"; return; }
-        echo "wan"
+        # v1.8.0：必须校验节名真实存在，否则回退，避免写入不存在的接口
+        [ -n "$rt" ] && uci -q get "network.$rt" >/dev/null 2>&1 && { echo "$rt"; return; }
+        echo "$fallback"
     else
+        fallback="wan6"
         custom=$(uci -q get dnssettings.wan.wan6_iface 2>/dev/null)
         [ -n "$custom" ] && uci -q get "network.$custom" >/dev/null 2>&1 && { echo "$custom"; return; }
+        # v1.8.0：IPv6 必须优先落在 wan6 节。
+        # IPv6 默认路由的 dev 同样是 pppoe-wan，按路由反查会得到 wan，
+        # 若据此写入就会用 IPv6 DNS 覆盖掉刚写好的 wan.dns（IPv4 列表丢失）。
+        if uci -q get network.wan6 >/dev/null 2>&1; then
+            echo "wan6"
+            return
+        fi
         rt=$(iface_from_route -6)
-        [ -n "$rt" ] && { echo "$rt"; return; }
-        echo "wan6"
+        if [ -n "$rt" ] && uci -q get "network.$rt" >/dev/null 2>&1; then
+            # 仅当该节确实是 IPv6 协议时才采用
+            case "$(uci -q get network.$rt.proto)" in
+                dhcpv6|6in4|6to4|6rd) echo "$rt"; return ;;
+            esac
+        fi
+        # 无独立 wan6：并入 wan（下游会把 IPv6 DNS 追加而非覆盖）
+        echo "wan"
     fi
 }
 
 WAN_IFACE=$(detect_wan_iface 4)
 WAN6_IFACE=$(detect_wan_iface 6)
+
+# ---------- v1.8.0：回填 dnssettings 缺失项（必须在读取配置之前）----------
+# 历史版本只建了 wan 节却没写 DNS 值，导致页面显示默认值、
+# 而 network.wan 无 dns 且 peerdns 未设置（实际走运营商 DNS），两者不一致。
+# 缺失时优先取 network 现值回填，保证「页面所见 = 实际生效」。
+if [ "$(uci -q get dnssettings.wan.peerdns)" = "0" ]; then
+    _cur4=$(uci -q get network.wan.dns)
+    _cur6=$(uci -q get network.wan6.dns)
+    if [ -z "$(uci -q get dnssettings.wan.dns1_v4)" ]; then
+        _v=$(echo "$_cur4" | awk '{print $1}')
+        uci set dnssettings.wan.dns1_v4="${_v:-223.5.5.5}"
+    fi
+    if [ -z "$(uci -q get dnssettings.wan.dns2_v4)" ]; then
+        _v=$(echo "$_cur4" | awk '{print $2}')
+        uci set dnssettings.wan.dns2_v4="${_v:-119.29.29.29}"
+    fi
+    if [ -z "$(uci -q get dnssettings.wan.dns1_v6)" ]; then
+        _v=$(echo "$_cur6" | awk '{print $1}')
+        uci set dnssettings.wan.dns1_v6="${_v:-2400:3200::1}"
+    fi
+    if [ -z "$(uci -q get dnssettings.wan.dns2_v6)" ]; then
+        _v=$(echo "$_cur6" | awk '{print $2}')
+        uci set dnssettings.wan.dns2_v6="${_v:-2402:4e00::}"
+    fi
+    uci commit dnssettings 2>/dev/null
+fi
 
 # ---------- 读取 WAN 配置 ----------
 WAN_PEERDNS=$(uci get dnssettings.wan.peerdns 2>/dev/null)
@@ -196,7 +267,11 @@ if uci get "network.$WAN6_IFACE" >/dev/null 2>&1; then
             log "WARN: WAN6 IPv6 自定义 DNS 为空，跳过该接口（保持现状，防止断网）"
         else
             uci set "network.$WAN6_IFACE.peerdns='0'"
-            uci delete "network.$WAN6_IFACE.dns" 2>/dev/null
+            # v1.8.0：与 WAN 同节时（无独立 wan6）必须保留已写入的 IPv4 DNS，
+            # 否则这里的 delete 会把上一步的 IPv4 列表清空，只剩 IPv6。
+            if [ "$WAN6_IFACE" != "$WAN_IFACE" ]; then
+                uci delete "network.$WAN6_IFACE.dns" 2>/dev/null
+            fi
             for dns in $WAN_V6_DNS; do
                 uci add_list "network.$WAN6_IFACE.dns=$dns"
             done
@@ -299,6 +374,19 @@ if [ "$DNSMASQ_ENABLE" = "1" ]; then
 
     # 【防护】启用转发但两个列表全空 → 提示（不清旧值，dnsmasq 仍有默认上游）
     uci -q get dhcp.@dnsmasq[0].server >/dev/null 2>&1 || log "WARN: 启用转发但未配置任何转发 DNS"
+
+    # v1.8.0：noresolv —— 决定是否只用上面的转发列表。
+    # dnsmasq 默认还会读 /tmp/resolv.conf.d/resolv.conf.auto（含运营商下发、
+    # wan_6 自动获取、lan 接口 DNS），导致「全局转发」名不副实、
+    # 页面配置与首页显示的实际 DNS 不一致。开启后严格只用转发列表。
+    NORESOLV=$(uci -q get dnssettings.dnsmasq.noresolv)
+    if [ "$NORESOLV" = "1" ]; then
+        uci set dhcp.@dnsmasq[0].noresolv='1'
+        log "dnsmasq noresolv=1：仅使用上方转发列表，忽略运营商下发 DNS"
+    else
+        uci delete dhcp.@dnsmasq[0].noresolv 2>/dev/null
+        log "dnsmasq noresolv=0：转发列表之外仍会并用系统 resolv 上游"
+    fi
 else
     # 关闭转发时清空 server 列表，使"关闭"真正生效
     uci delete dhcp.@dnsmasq[0].server 2>/dev/null
@@ -319,7 +407,28 @@ log "重载 dnsmasq..."
 /etc/init.d/dnsmasq reload
 
 log "重载 odhcpd (IPv6 RA/DHCPv6)..."
-/etc/init.d/odhcpd restart
+# v1.8.0：先收敛重复实例。实测存在 procd 实例与手动实例并存
+# （odhcpd -v 与 /usr/sbin/odhcpd 同时在跑），两者都在写 piofile，
+# 造成 RFC9096 前缀记忆互相覆盖、RA 广播不一致。
+ODHCPD_N=$(ps w 2>/dev/null | grep -c '[o]dhcpd')
+if [ "$ODHCPD_N" -gt 1 ]; then
+    log "检测到 $ODHCPD_N 个 odhcpd 实例，先全部停止再统一拉起"
+    /etc/init.d/odhcpd stop 2>/dev/null
+    sleep 1
+    killall odhcpd 2>/dev/null
+    sleep 1
+fi
+/etc/init.d/odhcpd start 2>/dev/null
+sleep 2
+ODHCPD_N=$(ps w 2>/dev/null | grep -c '[o]dhcpd')
+log "odhcpd 实例数: $ODHCPD_N"
+[ "$ODHCPD_N" -gt 1 ] && log "WARN: odhcpd 仍有多个实例，请检查是否有额外启动项"
+
+# v1.8.0：前缀可能已变化，同步 IPv6 转发目标并清理旧前缀残留路由
+if uci -q get netmanager.@v6track[0] >/dev/null 2>&1; then
+    log "同步 IPv6 端口转发目标..."
+    /usr/sbin/netmanager port_sync_v6 2>&1 | while read -r l; do log "  $l"; done
+fi
 
 # 【v1.7.3】wan6 绑定被修正后必须重新协商，否则新绑定不生效、PD 仍拿不到
 if [ "$FIXED_WAN6" = "1" ]; then
