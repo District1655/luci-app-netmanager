@@ -35,7 +35,7 @@
 | 形态 | LuCI 插件（Lua 控制器 + CBI 模型 + 自绘视图 + shell 后端） |
 | 目标平台 | iStoreOS / OpenWrt 23.05+（fw4 / nftables） |
 | 安装形态 | tar.gz + install.sh（非 ipk，原因见 8.1） |
-| 当前版本 | v1.7.1（2026-11-19，修复 BusyBox 下黑名单 IPv6 入参被截断） |
+| 当前版本 | v1.7.2（2026-11-19，修复 IPv6 白名单误伤 DHCPv6-PD） |
 | 许可证 | MIT（仓库根目录 LICENSE 文件，v1.4.6 补齐） |
 | 前身 | luci-app-fwmanager v1.3.33 + luci-app-dnssettings v1.2.1，v1.4.0 合并 |
 

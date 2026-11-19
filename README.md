@@ -1,6 +1,6 @@
 # 网络管理插件 (luci-app-netmanager)
 
-> 版本：v1.7.1
+> 版本：v1.7.2
 >
 > 适配：iStoreOS / OpenWrt (fw4/nftables, Lua LuCI)
 >
@@ -271,6 +271,18 @@ IPv4（每行一个 CIDR）：
 5. 更新前建议先备份配置；只支持 `.tar.gz` 或 `.tgz` 格式
 
 ## 更新日志
+
+### v1.7.2 (2026-11-19)
+
+**修复：开启中国 IPv6 白名单后 LAN 设备丢失公网 IPv6**
+
+- 原因：白名单 drop 规则覆盖全部 TCP/UDP，DHCPv6-PD 应答源地址为链路本地 `fe80::`，不在 `china_v6` 公网集合中，被误判为境外地址丢弃；PD 续租失败后前缀到期撤销，LAN 设备拿不到/续不上公网 IPv6
+- IPv6 修复：在 drop 规则之前新增放行规则
+  - `ip6 saddr fe80::/10`（链路本地）
+  - `ip6 saddr ff00::/8`（多播）
+  - `udp sport 547 udp dport 546`（DHCPv6 服务端应答）
+- IPv4 同步加固：在 drop 之前放行 `udp sport 67 udp dport 68`（DHCPv4 应答）与 `169.254.0.0/16`（链路本地）
+- 已启用用户升级后会自动重应用规则，无需重新下载 IP 库
 
 ### v1.7.1 (2026-11-19)
 

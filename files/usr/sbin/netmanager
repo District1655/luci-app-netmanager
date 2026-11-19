@@ -12,7 +12,7 @@ LOG_FILE="$LOG_DIR/run.log"
 LOG_ENABLED=0
 
 # 在线更新配置：版本号与 GitHub 仓库（发版时同步修改 PLUGIN_VERSION）
-PLUGIN_VERSION="1.7.1"
+PLUGIN_VERSION="1.7.2"
 REPO_OWNER="District1655"
 REPO_NAME="luci-app-netmanager"
 REPO_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
@@ -2260,6 +2260,10 @@ china_apply_rules() {
     {
         echo "add chain inet netmanager china_input { type filter hook input priority -50; policy accept; }"
         echo "add chain inet netmanager china_forward { type filter hook forward priority -50; policy accept; }"
+        # v1.7.2 修复：先放行 DHCPv4 服务端应答(67->68)与链路本地网段，
+        # 避免白名单规则误伤 DHCP 续租导致 WAN/LAN 地址丢失
+        printf 'add rule inet netmanager china_input iifname { %s } udp sport 67 udp dport 68 counter accept\n' "$ifname_set"
+        printf 'add rule inet netmanager china_input iifname { %s } ip saddr 169.254.0.0/16 counter accept\n' "$ifname_set"
         printf 'add rule inet netmanager china_forward iifname { %s } ct state new meta l4proto { tcp, udp } ip saddr != @china_v4 counter drop\n' "$ifname_set"
         printf 'add rule inet netmanager china_input iifname { %s } ct state new meta l4proto { tcp, udp } ip saddr != @china_v4 counter drop\n' "$ifname_set"
     } > "$rf"
@@ -2699,6 +2703,12 @@ china6_apply_rules() {
     {
         echo "add chain inet netmanager6 china6_input { type filter hook input priority -50; policy accept; }"
         echo "add chain inet netmanager6 china6_forward { type filter hook forward priority -50; policy accept; }"
+        # v1.7.2 修复：必须在 drop 之前放行 IPv6 控制面流量，
+        # 否则 DHCPv6-PD 应答（源为 fe80:: 链路本地）被当作“境外地址”丢弃，
+        # 导致前缀续租失败、LAN 设备拿不到/续不上公网 IPv6
+        printf 'add rule inet netmanager6 china6_input iifname { %s } ip6 saddr fe80::/10 counter accept\n' "$ifname_set"
+        printf 'add rule inet netmanager6 china6_input iifname { %s } ip6 saddr ff00::/8 counter accept\n' "$ifname_set"
+        printf 'add rule inet netmanager6 china6_input iifname { %s } udp sport 547 udp dport 546 counter accept\n' "$ifname_set"
         printf 'add rule inet netmanager6 china6_forward iifname { %s } ct state new meta l4proto { tcp, udp } ip6 saddr != @china_v6 counter drop\n' "$ifname_set"
         printf 'add rule inet netmanager6 china6_input iifname { %s } ct state new meta l4proto { tcp, udp } ip6 saddr != @china_v6 counter drop\n' "$ifname_set"
     } > "$rf"
