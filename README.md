@@ -1,6 +1,6 @@
 # 网络管理插件 (luci-app-netmanager)
 
-> 版本：v1.7.0
+> 版本：v1.7.1
 >
 > 适配：iStoreOS / OpenWrt (fw4/nftables, Lua LuCI)
 >
@@ -271,6 +271,13 @@ IPv4（每行一个 CIDR）：
 5. 更新前建议先备份配置；只支持 `.tar.gz` 或 `.tgz` 格式
 
 ## 更新日志
+
+### v1.7.1 (2026-11-19)
+
+**修复：手动黑名单添加 IPv6 地址被误判为 IPv4**
+
+- `blacklist add/del` 入参清洗由 `tr -d '[:space:]'` 改为 `tr -d ' \t\r\n'`。部分 BusyBox 的 tr 不识别 POSIX 字符类，会把 `[:space:]` 按字面字符解析，连冒号与 `s/p/a/c/e` 等字母一起删除，导致 `2001:550:9005:e000::13` 被吞成 `2001550900500013` 后误报「非法 IPv4 地址」
+- 该问题仅影响 iStoreOS/BusyBox 环境下的手动黑名单增删命令，IPv6 白名单订阅不受影响
 
 ### v1.7.0 (2026-11-19)
 

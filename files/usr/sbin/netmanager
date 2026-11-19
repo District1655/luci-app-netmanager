@@ -12,7 +12,7 @@ LOG_FILE="$LOG_DIR/run.log"
 LOG_ENABLED=0
 
 # 在线更新配置：版本号与 GitHub 仓库（发版时同步修改 PLUGIN_VERSION）
-PLUGIN_VERSION="1.7.0"
+PLUGIN_VERSION="1.7.1"
 REPO_OWNER="District1655"
 REPO_NAME="luci-app-netmanager"
 REPO_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
@@ -3108,7 +3108,9 @@ cmd_ban_list() {
 }
 
 cmd_ban_add() {
-    local entry=$(echo "$1" | tr -d '[:space:]')
+    # 【v1.7.1 修复】不能使用 tr -d '[:space:]'：部分 BusyBox tr 会把该集合按字面字符
+    # 解析（连 ': s p a c e [ ]' 一起删除），导致 IPv6 地址被吞掉冒号后误判为 IPv4
+    local entry=$(printf '%s' "$1" | tr -d ' \t\r\n')
     [ -z "$entry" ] && { error "用法: netmanager blacklist add <IPv4/IPv6 地址或CIDR>"; exit 1; }
     local fam file
     case "$entry" in
@@ -3140,7 +3142,9 @@ cmd_ban_add() {
 }
 
 cmd_ban_del() {
-    local entry=$(echo "$1" | tr -d '[:space:]')
+    # 【v1.7.1 修复】不能使用 tr -d '[:space:]'：部分 BusyBox tr 会把该集合按字面字符
+    # 解析（连 ': s p a c e [ ]' 一起删除），导致 IPv6 地址被吞掉冒号后误判为 IPv4
+    local entry=$(printf '%s' "$1" | tr -d ' \t\r\n')
     [ -z "$entry" ] && { error "用法: netmanager blacklist del <IPv4/IPv6 地址或CIDR>"; exit 1; }
     local file
     case "$entry" in
