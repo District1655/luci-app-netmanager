@@ -1,6 +1,6 @@
 # 网络管理插件 (luci-app-netmanager)
 
-> 版本：v1.7.2
+> 版本：v1.7.3
 >
 > 适配：iStoreOS / OpenWrt (fw4/nftables, Lua LuCI)
 >
@@ -271,6 +271,21 @@ IPv4（每行一个 CIDR）：
 5. 更新前建议先备份配置；只支持 `.tar.gz` 或 `.tgz` 格式
 
 ## 更新日志
+
+### v1.7.3 (2026-11-19)
+
+**修复：IPv6 白名单 forward 链缺少控制面放行，NDP/DHCPv6 relay 场景仍会误杀**
+
+- 问题：v1.7.2 只在 `china6_input` 链补了放行（`fe80::/10`、`ff00::/8`、DHCPv6 546/547），`china6_forward` 链**一条放行规则都没有**，只有 `ip6 saddr != @china_v6 drop`。开启 NDP relay（`dhcp.wan.ndp='relay'`）或 DHCPv6 relay（`dhcp.wan.dhcpv6='relay'`）时，从 WAN 侧返回的邻居发现包与中继应答源地址同样是链路本地 `fe80::`，会被判成境外地址丢弃，导致 LAN 设备地址解析失败、DHCPv6 中继拿不到地址
+- IPv6 修复：`china6_forward` 在 drop 之前补齐三条放行——`ip6 saddr fe80::/10`、`ip6 saddr ff00::/8`、`udp sport 547 udp dport 546`
+- IPv4 同步加固：`china_forward` 补齐 `udp sport 67 udp dport 68` 与 `ip saddr 169.254.0.0/16`，覆盖 DHCP relay（LAN 设备经路由器向运营商续租）场景
+- 已启用用户升级后会自动重应用规则，无需重新下载 IP 库
+
+**修复：PPPoE 场景下 wan6 绑定物理网口导致 PD 前缀拿不到**
+
+- 问题：`network.wan6.device` 与 `network.wan` 绑在同一物理网口时，DHCPv6 客户端在该口上没有可用的 IPv6 出口地址，`SOLICIT`/`RS` 发不出去（syslog 报 `Failed to send SOLICIT message to ff02::1:2 (Address not available)`），PD 前缀续租失败 → 前缀到期撤销 → 局域网设备全部丢失公网 IPv6。此时 `ifstatus wan6` 的 `ipv6-prefix` 为空，而 LAN 仍靠旧租约（`valid_lft` 倒计时）残着，到期即彻底断网
+- 修复：「应用配置」时增加一致性校验——`wan.proto=pppoe` 且 `wan6.device == wan.device` 时自动改为 `@wan`（指向 PPPoE 逻辑接口），随后自动 `ifup wan6` 重新协商，并在日志中回显 PD 获取结果
+- 排查提示：怀疑 IPv6 断流时按顺序核查 `ifstatus wan6` 的 `ipv6-prefix` 是否为空、`ip -6 addr show <LAN 设备>` 的 `valid_lft` 是否在倒计时、`logread | grep odhcp6c` 是否出现 `Address not available`
 
 ### v1.7.2 (2026-11-19)
 

@@ -1,7 +1,15 @@
 #!/bin/sh
 # ============================================================
-# DNS设置插件 - 应用配置脚本 (v1.4.6)
+# DNS设置插件 - 应用配置脚本 (v1.7.3)
 # 读取 /etc/config/dnssettings，写入系统 network/dhcp 配置并重载服务
+#
+# v1.7.3 更新：
+#   1. 【关键】PPPoE 场景下自动修正 network.wan6.device：
+#      wan6 若与 wan 绑在同一物理网口，DHCPv6 客户端发不出 SOLICIT/RS
+#      （syslog: "Failed to send SOLICIT ... (Address not available)"），
+#      PD 前缀续租失败后 LAN 设备会丢失公网 IPv6。
+#      现检测 wan.proto=pppoe 且 wan6.device==wan.device 时改为 @wan，
+#      修正后自动 ifup wan6 重新协商，并在日志中回显 PD 获取结果。
 #
 # v1.4.6 更新：
 #   1. WAN 接口自动探测（用户配置 → 默认路由反查 → 兜底 wan/wan6），
@@ -120,6 +128,27 @@ if mkdir -p "$BACKUP_DIR" && tar -czf "$AUTO_BAK" /etc/config/network /etc/confi
     done
 else
     log "WARN: 自动备份失败（继续应用，建议先手动备份）"
+fi
+
+# ============================================================
+# 0.5 【v1.7.3】WAN 一致性校验：PPPoE 场景修正 wan6 绑定
+#     现象：wan6.device 若仍指向物理网口（与 wan.device 相同），
+#     DHCPv6 客户端在物理口上缺乏可用的 IPv6 出口地址，
+#     SOLICIT / RS 发不出去（syslog 报 "Failed to send SOLICIT
+#     message to ff02::1:2 (Address not available)"），
+#     PD 前缀续租失败 → 前缀到期撤销 → LAN 设备丢失公网 IPv6。
+#     修正条件：wan.proto=pppoe 且 wan6.device 与 wan.device 相同。
+# ============================================================
+FIXED_WAN6=0
+if [ "$(uci -q get network.wan.proto)" = "pppoe" ]; then
+    WAN_DEV_RAW=$(uci -q get network.wan.device)
+    WAN6_DEV_RAW=$(uci -q get network.wan6.device)
+    if [ -n "$WAN_DEV_RAW" ] && [ -n "$WAN6_DEV_RAW" ] && [ "$WAN6_DEV_RAW" = "$WAN_DEV_RAW" ]; then
+        uci set network.wan6.device='@wan'
+        uci commit network 2>/dev/null
+        FIXED_WAN6=1
+        log "修正 wan6 绑定: $WAN6_DEV_RAW -> @wan（PPPoE 必须挂在逻辑接口上）"
+    fi
 fi
 
 # ============================================================
@@ -291,6 +320,19 @@ log "重载 dnsmasq..."
 
 log "重载 odhcpd (IPv6 RA/DHCPv6)..."
 /etc/init.d/odhcpd restart
+
+# 【v1.7.3】wan6 绑定被修正后必须重新协商，否则新绑定不生效、PD 仍拿不到
+if [ "$FIXED_WAN6" = "1" ]; then
+    log "重启 wan6 接口以应用新绑定并重新获取 PD 前缀..."
+    ifup wan6 2>/dev/null
+    sleep 12
+    PD_INFO=$(ifstatus wan6 2>/dev/null | awk '/"ipv6-prefix"/{f=1} f&&/"mask"/{print; exit}')
+    if [ -n "$PD_INFO" ]; then
+        log "wan6 已重新获取 PD 前缀（$PD_INFO）"
+    else
+        log "WARN: wan6 暂未获取到 PD 前缀，请稍后执行 ifstatus wan6 复核"
+    fi
+fi
 
 log "========== DNS 配置应用完成 =========="
 log "若设备 DNS 未生效，请重连 WiFi/网线清除设备端缓存"

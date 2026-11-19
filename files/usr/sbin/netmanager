@@ -12,7 +12,7 @@ LOG_FILE="$LOG_DIR/run.log"
 LOG_ENABLED=0
 
 # 在线更新配置：版本号与 GitHub 仓库（发版时同步修改 PLUGIN_VERSION）
-PLUGIN_VERSION="1.7.2"
+PLUGIN_VERSION="1.7.3"
 REPO_OWNER="District1655"
 REPO_NAME="luci-app-netmanager"
 REPO_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
@@ -2264,6 +2264,11 @@ china_apply_rules() {
         # 避免白名单规则误伤 DHCP 续租导致 WAN/LAN 地址丢失
         printf 'add rule inet netmanager china_input iifname { %s } udp sport 67 udp dport 68 counter accept\n' "$ifname_set"
         printf 'add rule inet netmanager china_input iifname { %s } ip saddr 169.254.0.0/16 counter accept\n' "$ifname_set"
+        # v1.7.3 修复：forward 链同样需放行 DHCPv4 应答与链路本地地址。
+        # 否则 DHCP relay（LAN 设备经路由器向运营商续租）的应答会被
+        # 「ip saddr != @china_v4 drop」误判为境外 IPv4 直接丢弃，导致租约续不上。
+        printf 'add rule inet netmanager china_forward iifname { %s } udp sport 67 udp dport 68 counter accept\n' "$ifname_set"
+        printf 'add rule inet netmanager china_forward iifname { %s } ip saddr 169.254.0.0/16 counter accept\n' "$ifname_set"
         printf 'add rule inet netmanager china_forward iifname { %s } ct state new meta l4proto { tcp, udp } ip saddr != @china_v4 counter drop\n' "$ifname_set"
         printf 'add rule inet netmanager china_input iifname { %s } ct state new meta l4proto { tcp, udp } ip saddr != @china_v4 counter drop\n' "$ifname_set"
     } > "$rf"
@@ -2709,6 +2714,13 @@ china6_apply_rules() {
         printf 'add rule inet netmanager6 china6_input iifname { %s } ip6 saddr fe80::/10 counter accept\n' "$ifname_set"
         printf 'add rule inet netmanager6 china6_input iifname { %s } ip6 saddr ff00::/8 counter accept\n' "$ifname_set"
         printf 'add rule inet netmanager6 china6_input iifname { %s } udp sport 547 udp dport 546 counter accept\n' "$ifname_set"
+        # v1.7.3 修复：forward 链此前完全没有放行规则（v1.7.2 只补了 input 链），
+        # 而 NDP relay / DHCPv6 relay 场景下邻居发现与中继应答的源地址同样是
+        # 链路本地 fe80::（或组播 ff00::/8），会被「ip6 saddr != @china_v6 drop」
+        # 判成境外地址丢弃，导致 LAN 设备地址解析失败、DHCPv6 中继拿不到地址。
+        printf 'add rule inet netmanager6 china6_forward iifname { %s } ip6 saddr fe80::/10 counter accept\n' "$ifname_set"
+        printf 'add rule inet netmanager6 china6_forward iifname { %s } ip6 saddr ff00::/8 counter accept\n' "$ifname_set"
+        printf 'add rule inet netmanager6 china6_forward iifname { %s } udp sport 547 udp dport 546 counter accept\n' "$ifname_set"
         printf 'add rule inet netmanager6 china6_forward iifname { %s } ct state new meta l4proto { tcp, udp } ip6 saddr != @china_v6 counter drop\n' "$ifname_set"
         printf 'add rule inet netmanager6 china6_input iifname { %s } ct state new meta l4proto { tcp, udp } ip6 saddr != @china_v6 counter drop\n' "$ifname_set"
     } > "$rf"
