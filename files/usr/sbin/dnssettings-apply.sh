@@ -1,6 +1,6 @@
 #!/bin/sh
 # ============================================================
-# DNS设置插件 - 应用配置脚本 (v1.8.0)
+# DNS设置插件 - 应用配置脚本 (v1.8.1)
 # 读取 /etc/config/dnssettings，写入系统 network/dhcp 配置并重载服务
 #
 # v1.7.3 更新：
@@ -72,7 +72,7 @@ iface_from_route() {
         idx=$((idx+1))
     done
 
-    # 【v1.8.0 修复】路由设备名不等于 UCI 节名的情况。
+    # 【v1.8.1 修复】路由设备名不等于 UCI 节名的情况。
     # PPPoE 下默认路由 dev 是 pppoe-wan，而 UCI 节名是 wan；
     # 旧版这里直接 echo "$rt_dev"，导致后续 uci get network.pppoe-wan 失败、
     # WAN DNS 整段被跳过（这是「页面配置与实际 DNS 不一致」的根因）。
@@ -111,14 +111,14 @@ detect_wan_iface() {
         custom=$(uci -q get dnssettings.wan.wan_iface 2>/dev/null)
         [ -n "$custom" ] && uci -q get "network.$custom" >/dev/null 2>&1 && { echo "$custom"; return; }
         rt=$(iface_from_route -4)
-        # v1.8.0：必须校验节名真实存在，否则回退，避免写入不存在的接口
+        # v1.8.1：必须校验节名真实存在，否则回退，避免写入不存在的接口
         [ -n "$rt" ] && uci -q get "network.$rt" >/dev/null 2>&1 && { echo "$rt"; return; }
         echo "$fallback"
     else
         fallback="wan6"
         custom=$(uci -q get dnssettings.wan.wan6_iface 2>/dev/null)
         [ -n "$custom" ] && uci -q get "network.$custom" >/dev/null 2>&1 && { echo "$custom"; return; }
-        # v1.8.0：IPv6 必须优先落在 wan6 节。
+        # v1.8.1：IPv6 必须优先落在 wan6 节。
         # IPv6 默认路由的 dev 同样是 pppoe-wan，按路由反查会得到 wan，
         # 若据此写入就会用 IPv6 DNS 覆盖掉刚写好的 wan.dns（IPv4 列表丢失）。
         if uci -q get network.wan6 >/dev/null 2>&1; then
@@ -140,7 +140,7 @@ detect_wan_iface() {
 WAN_IFACE=$(detect_wan_iface 4)
 WAN6_IFACE=$(detect_wan_iface 6)
 
-# ---------- v1.8.0：回填 dnssettings 缺失项（必须在读取配置之前）----------
+# ---------- v1.8.1：回填 dnssettings 缺失项（必须在读取配置之前）----------
 # 历史版本只建了 wan 节却没写 DNS 值，导致页面显示默认值、
 # 而 network.wan 无 dns 且 peerdns 未设置（实际走运营商 DNS），两者不一致。
 # 缺失时优先取 network 现值回填，保证「页面所见 = 实际生效」。
@@ -267,7 +267,7 @@ if uci get "network.$WAN6_IFACE" >/dev/null 2>&1; then
             log "WARN: WAN6 IPv6 自定义 DNS 为空，跳过该接口（保持现状，防止断网）"
         else
             uci set "network.$WAN6_IFACE.peerdns='0'"
-            # v1.8.0：与 WAN 同节时（无独立 wan6）必须保留已写入的 IPv4 DNS，
+            # v1.8.1：与 WAN 同节时（无独立 wan6）必须保留已写入的 IPv4 DNS，
             # 否则这里的 delete 会把上一步的 IPv4 列表清空，只剩 IPv6。
             if [ "$WAN6_IFACE" != "$WAN_IFACE" ]; then
                 uci delete "network.$WAN6_IFACE.dns" 2>/dev/null
@@ -375,7 +375,7 @@ if [ "$DNSMASQ_ENABLE" = "1" ]; then
     # 【防护】启用转发但两个列表全空 → 提示（不清旧值，dnsmasq 仍有默认上游）
     uci -q get dhcp.@dnsmasq[0].server >/dev/null 2>&1 || log "WARN: 启用转发但未配置任何转发 DNS"
 
-    # v1.8.0：noresolv —— 决定是否只用上面的转发列表。
+    # v1.8.1：noresolv —— 决定是否只用上面的转发列表。
     # dnsmasq 默认还会读 /tmp/resolv.conf.d/resolv.conf.auto（含运营商下发、
     # wan_6 自动获取、lan 接口 DNS），导致「全局转发」名不副实、
     # 页面配置与首页显示的实际 DNS 不一致。开启后严格只用转发列表。
@@ -406,25 +406,25 @@ log "重载网络服务（不重拨）..."
 log "重载 dnsmasq..."
 /etc/init.d/dnsmasq reload
 
-log "重载 odhcpd (IPv6 RA/DHCPv6)..."
-# v1.8.0：先收敛重复实例。实测存在 procd 实例与手动实例并存
-# （odhcpd -v 与 /usr/sbin/odhcpd 同时在跑），两者都在写 piofile，
+log "重启 odhcpd (IPv6 RA/DHCPv6)..."
+# v1.8.1：必须 restart，不能只 start。
+# 实测 odhcpd 已在运行时，procd 的 start 是空操作、不会重读配置，
+# 导致改了 dhcp.lan.dns 后 RA 里播的仍是旧 RDNSS（抓包确认）。
+# 同时收敛重复实例：曾出现 procd 实例与手动实例并存，两者都写 piofile，
 # 造成 RFC9096 前缀记忆互相覆盖、RA 广播不一致。
 ODHCPD_N=$(ps w 2>/dev/null | grep -c '[o]dhcpd')
-if [ "$ODHCPD_N" -gt 1 ]; then
-    log "检测到 $ODHCPD_N 个 odhcpd 实例，先全部停止再统一拉起"
-    /etc/init.d/odhcpd stop 2>/dev/null
-    sleep 1
-    killall odhcpd 2>/dev/null
-    sleep 1
-fi
+[ "$ODHCPD_N" -gt 1 ] && log "检测到 $ODHCPD_N 个 odhcpd 实例，一并收敛"
+/etc/init.d/odhcpd stop 2>/dev/null
+sleep 1
+killall odhcpd 2>/dev/null
+sleep 1
 /etc/init.d/odhcpd start 2>/dev/null
 sleep 2
 ODHCPD_N=$(ps w 2>/dev/null | grep -c '[o]dhcpd')
 log "odhcpd 实例数: $ODHCPD_N"
 [ "$ODHCPD_N" -gt 1 ] && log "WARN: odhcpd 仍有多个实例，请检查是否有额外启动项"
 
-# v1.8.0：前缀可能已变化，同步 IPv6 转发目标并清理旧前缀残留路由
+# v1.8.1：前缀可能已变化，同步 IPv6 转发目标并清理旧前缀残留路由
 if uci -q get netmanager.@v6track[0] >/dev/null 2>&1; then
     log "同步 IPv6 端口转发目标..."
     /usr/sbin/netmanager port_sync_v6 2>&1 | while read -r l; do log "  $l"; done

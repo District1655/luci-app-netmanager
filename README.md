@@ -1,6 +1,6 @@
 # 网络管理插件 (luci-app-netmanager)
 
-> 版本：v1.8.0
+> 版本：v1.8.1
 >
 > 适配：iStoreOS / OpenWrt (fw4/nftables, Lua LuCI)
 >
@@ -271,6 +271,19 @@ IPv4（每行一个 CIDR）：
 5. 更新前建议先备份配置；只支持 `.tar.gz` 或 `.tgz` 格式
 
 ## 更新日志
+
+### v1.8.1 (2026-11-20)
+
+**修复：SSH 自愈判据错误，导致每次 lan ifup 都无谓重启 dropbear**
+
+- v1.8.0 用本机 TCP 自连（`nc 127.0.0.1 <port>`）判断 dropbear 监听是否失效。但 dropbear 设了 `DirectInterface` 后以 `SO_BINDTODEVICE` 绑在该接口上，而本机连自身地址走回环路由，**无论用回环还是 LAN IP 都连不通**——探测恒失败，于是每次 lan ifup 都会重启 dropbear 并踢掉在线会话
+- 改为比对绑定网卡的 `ifindex` 是否变化（`/sys/class/net/<dev>/ifindex`），这才是套接字失效的真实判据；首次观测只记录基线、不重启
+- DNS 应用路径移除该探测：应用走 `network reload` 不重建 br-lan，本就无需重启 dropbear
+
+**修复：改了 LAN IPv6 DNS 后 RA 仍播旧值**
+
+- 应用脚本在 odhcpd 只有单实例时仅调 `/etc/init.d/odhcpd start`，而服务已在运行时 procd 的 start 是空操作、**不会重读配置**。实测 `dhcp.lan.dns` 已更新，抓包看到的 RDNSS 却仍是旧地址
+- 改为无条件 stop + killall + start，强制重读；抓包复验 RDNSS 与配置一致
 
 ### v1.8.0 (2026-11-19)
 

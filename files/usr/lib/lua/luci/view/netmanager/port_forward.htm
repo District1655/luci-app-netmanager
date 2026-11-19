@@ -88,7 +88,7 @@
         </table>
         <div id="action_result" class="netmanager-result"></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.0</div>
+    <div class="footer-sign">网络管理插件 v1.8.1</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -148,7 +148,7 @@ function loadPortList() {
         document.querySelector('#ipv6dnat_table tbody').innerHTML = ipv6dHtml || '<tr><td colspan="8" class="empty-state">暂无规则</td></tr>';
     });
 }
-// v1.8.0：登记/取消 IPv6 目标跟踪锚点
+// v1.8.1：登记/取消 IPv6 目标跟踪锚点
 function trackV6(rowId) {
     const r = window.PORT_ROWS && window.PORT_ROWS[rowId];
     if (!r) return;

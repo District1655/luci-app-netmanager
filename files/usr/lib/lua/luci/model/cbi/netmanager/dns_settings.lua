@@ -263,14 +263,11 @@ o.write = function()
     -- apply 脚本内部已做 network reload，这里仅在 WAN 口参数确有变化时才重启接口。
     luci.sys.exec("/etc/init.d/network reload >/dev/null 2>&1")
 
-    -- 兜底：若 SSH 监听已异常则自愈（不影响正常情况）
-    luci.sys.exec([=[
-        dif=$(uci -q get dropbear.@dropbear[0].DirectInterface 2>/dev/null)
-        if [ -n "$dif" ]; then
-            p=$(uci -q get dropbear.@dropbear[0].Port 2>/dev/null); [ -z "$p" ] && p=22
-            nc -w 3 127.0.0.1 "$p" </dev/null >/dev/null 2>&1 || /etc/init.d/dropbear restart >/dev/null 2>&1
-        fi
-    ]=])
+    -- v1.8.1：此处不再做 SSH 自连探测。
+    -- dropbear 绑 DirectInterface 时，本机连自身地址走回环路由必然失败，
+    -- 探测无法区分"真失效"与"绑定特性"，只会造成无谓重启并踢掉在线会话。
+    -- 应用走的是 reload（不重建 br-lan），本就无需重启 dropbear；
+    -- 真正重建网卡的场景由 hotplug 96-netmanager-v6sync 按 ifindex 变化处理。
 
     if rc == 0 then
         m2.message = "配置已应用成功，已写入 /etc/config/ 并重载网络服务（详细输出见「设置 → 运行日志」）"

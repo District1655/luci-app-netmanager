@@ -28,12 +28,26 @@ case "$INTERFACE" in
         [ -z "$dif" ] && exit 0
         (
             sleep 5
-            port=$(uci -q get dropbear.@dropbear[0].Port 2>/dev/null)
-            [ -z "$port" ] && port=22
-            # 本机自连测试：失败说明监听套接字已失效
-            if ! nc -w 3 127.0.0.1 "$port" </dev/null >/dev/null 2>&1; then
-                logger -t netmanager "检测到 SSH 监听异常（$dif 重建后），重启 dropbear"
+            # v1.8.1：不能用本机 TCP 自连判断。dropbear 设 DirectInterface 后
+            # 以 SO_BINDTODEVICE 绑在该接口，而本机连自身地址走回环路由，
+            # 无论用 127.0.0.1 还是 LAN IP 都连不通 —— 探测必然失败，
+            # 会导致每次 lan ifup 都无谓重启 dropbear（并踢掉在线会话）。
+            # 真正的判据是网卡 ifindex 是否变过：变了才说明旧套接字失效。
+            dev="br-$dif"
+            [ -d "/sys/class/net/$dev" ] || dev="$dif"
+            cur=$(cat "/sys/class/net/$dev/ifindex" 2>/dev/null)
+            [ -z "$cur" ] && exit 0
+            state="/tmp/.netmanager_db_ifindex.$dif"
+            old=$(cat "$state" 2>/dev/null)
+            if [ -z "$old" ]; then
+                # 首次观测：dropbear 是在 lan 就绪后启动的，认定当前绑定有效
+                echo "$cur" > "$state"
+                exit 0
+            fi
+            if [ "$cur" != "$old" ]; then
+                logger -t netmanager "SSH 绑定网卡 $dev ifindex $old -> $cur，重启 dropbear 恢复监听"
                 /etc/init.d/dropbear restart >/dev/null 2>&1
+                echo "$cur" > "$state"
             fi
         ) >/dev/null 2>&1 &
         ;;

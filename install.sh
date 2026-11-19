@@ -1,11 +1,11 @@
 #!/bin/ash
 # ============================================================
-# 网络管理插件 (luci-app-netmanager) - 一键安装脚本 v1.8.0
+# 网络管理插件 (luci-app-netmanager) - 一键安装脚本 v1.8.1
 # 由 luci-app-fwmanager (防火墙管理) 与 luci-app-dnssettings (DNS设置) 合并而成
 # ============================================================
 
 echo "============================================"
-echo "  网络管理插件 (luci-app-netmanager) v1.8.0"
+echo "  网络管理插件 (luci-app-netmanager) v1.8.1"
 echo "  防火墙管理 + DNS设置 一体化"
 echo "============================================"
 echo ""
@@ -81,7 +81,7 @@ echo "  ✓ /etc/init.d/netmanager-china (开机自启)"
 echo "  ✓ /etc/hotplug.d/iface/95-netmanager-china (WAN上线重应用)"
 echo "  ✓ /etc/hotplug.d/iface/96-netmanager-v6sync (IPv6前缀变更同步 + SSH监听自愈)"
 
-# v1.8.0：IPv6 目标同步定时兜底。
+# v1.8.1：IPv6 目标同步定时兜底。
 # PD 前缀可能在续租时静默变化而不触发 ifup，hotplug 会漏掉；
 # 每 10 分钟检查一次，前缀未变时开销极小（仅读一次地址与配置）。
 CRON_LINE='*/10 * * * * /usr/sbin/netmanager port_sync_v6 --quiet >/dev/null 2>&1'
