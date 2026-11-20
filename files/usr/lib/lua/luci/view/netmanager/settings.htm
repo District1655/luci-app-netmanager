@@ -158,6 +158,57 @@
             </div>
         </div>
 
+        <!-- 自动拉黑（端口扫描防护，v1.8.8） -->
+        <h3>自动拉黑（端口扫描防护）</h3>
+        <div class="netmanager-form" style="border-left:3px solid #f59e0b;">
+            <div style="margin-bottom:10px;">
+                <b>扫描源自动拉黑</b>
+                <span class="text-muted" style="margin-left:8px;">窗口期内同一境外源 IP 被拦截累计达到阈值次数，自动拉黑。纯内存存储、重启清零、不写闪存；私网/LAN/白名单永不拉黑。每 5 分钟自动扫描。</span>
+            </div>
+            <div id="ab_china_hint" style="display:none;margin-bottom:10px;padding:6px 10px;background:#fef3c7;color:#92400e;border:1px solid #fcd34d;border-radius:4px;font-size:12px;">
+                ⚠ 境外过滤（china/china6）当前关闭，无拦截日志，自动拉黑将空转。请先在「中国IP过滤」开启。
+            </div>
+            <div class="netmanager-toolbar" style="margin-bottom:10px;flex-wrap:wrap;">
+                <label style="display:inline-flex;align-items:center;gap:6px;"><input type="checkbox" id="ab_enabled"> 启用</label>
+                <label style="display:inline-flex;align-items:center;gap:6px;">拦截次数 ≥ <input type="number" id="ab_hits" min="1" max="100" value="5" style="width:64px;"></label>
+                <label style="display:inline-flex;align-items:center;gap:6px;">窗口(分) <input type="number" id="ab_window" min="1" max="1440" value="10" style="width:70px;"></label>
+                <label style="display:inline-flex;align-items:center;gap:6px;">上限(条) <input type="number" id="ab_max" min="10" max="100000" value="1000" style="width:80px;"></label>
+                <label style="display:inline-flex;align-items:center;gap:6px;">TTL(时,0=不过期) <input type="number" id="ab_ttl" min="0" max="8760" value="24" style="width:70px;"></label>
+                <label style="display:inline-flex;align-items:center;gap:6px;"><input type="checkbox" id="ab_v6agg"> IPv6按/64聚合</label>
+            </div>
+            <div class="netmanager-toolbar" style="margin-bottom:10px;flex-wrap:wrap;">
+                <button class="btn btn-primary btn-sm" onclick="saveAutoban()">保存配置</button>
+                <button class="btn btn-success btn-sm" onclick="runAutoban()">立即扫描</button>
+                <button class="btn btn-warning btn-sm" onclick="clearAutoban()">清空自动拉黑</button>
+            </div>
+            <div style="margin-bottom:10px;">
+                <b style="font-size:13px;">白名单（永不拉黑，空格分隔，支持 IP 与 IPv4 CIDR）</b>
+                <textarea id="ab_whitelist" rows="2" placeholder="如 1.2.3.4 5.6.7.0/24（自家监控/VPS/探针）" style="width:100%;box-sizing:border-box;margin-top:4px;font-family:monospace;"></textarea>
+            </div>
+            <table class="netmanager-table">
+                <tr>
+                    <td width="22%">当前黑名单总数</td>
+                    <td><span id="ab_ban_total">0</span> 个
+                        <button class="btn btn-secondary btn-sm" style="margin-left:10px;" onclick="openBanView()">查看 / 搜索 / 解封</button>
+                    </td>
+                </tr>
+                <tr><td>自动拉黑(内存)</td><td><span id="ab_auto_total">0</span> 个</td></tr>
+            </table>
+            <div id="ab_result" class="text-muted" style="margin-top:6px;font-size:12px;"></div>
+        </div>
+
+        <!-- 黑名单查看弹窗（搜索/解封；自包含显式配色，亮暗主题均清晰） -->
+        <div id="ban_view_mask" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9998;" onclick="closeBanView()"></div>
+        <div id="ban_view_panel" style="display:none;position:fixed;top:8%;left:0;right:0;margin-left:auto;margin-right:auto;width:min(680px,92%);max-height:80%;overflow:auto;z-index:9999;background:#ffffff;color:#333333;border:1px solid #cccccc;border-radius:8px;box-shadow:0 8px 30px rgba(0,0,0,0.3);padding:16px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+                <b style="color:#111111;font-size:15px;">黑名单（含自动拉黑）</b>
+                <button class="btn btn-secondary btn-sm" onclick="closeBanView()">关闭</button>
+            </div>
+            <input type="text" id="ban_search" placeholder="搜索 IP / 网段…" oninput="renderBanView()" style="width:100%;box-sizing:border-box;padding:6px 8px;margin-bottom:10px;background:#ffffff;color:#333333;border:1px solid #cccccc;border-radius:4px;">
+            <div id="ban_view_count" style="color:#555555;font-size:12px;margin-bottom:6px;"></div>
+            <div id="ban_view_list"></div>
+        </div>
+
         <!-- 备份管理 -->
         <h3>备份管理</h3>
         <div class="netmanager-form" style="border-left:3px solid #10b981;">
@@ -183,7 +234,7 @@
             <table class="netmanager-table" style="margin-bottom:10px;">
                 <tr>
                     <td width="30%">当前版本</td>
-                    <td><b id="online_cur_version">v1.8.7</b></td>
+                    <td><b id="online_cur_version">v1.8.8</b></td>
                 </tr>
                 <tr>
                     <td>最新版本</td>
@@ -302,7 +353,7 @@
         <h3>关于插件</h3>
         <table class="netmanager-table">
             <tr><td width="30%">插件名称</td><td>网络管理 (luci-app-netmanager)</td></tr>
-            <tr><td>版本</td><td id="plugin_version">v1.8.7</td></tr>
+            <tr><td>版本</td><td id="plugin_version">v1.8.8</td></tr>
             <tr><td>作者</td><td><b>吾爱破解liyu0828</b></td></tr>
             <tr><td>仓库地址</td><td><a href="https://github.com/District1655/luci-app-netmanager" target="_blank" style="color:#2563eb;">https://github.com/District1655/luci-app-netmanager</a></td></tr>
             <tr><td>适配系统</td><td>iStoreOS / OpenWrt (fw4/nftables)</td></tr>
@@ -335,7 +386,7 @@
             </div>
         </div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.7<br><span style="font-size:10px;">适配 iStoreOS / OpenWrt | 基于 fw4/nftables</span></div>
+    <div class="footer-sign">网络管理插件 v1.8.8<br><span style="font-size:10px;">适配 iStoreOS / OpenWrt | 基于 fw4/nftables</span></div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -1065,6 +1116,118 @@ function clearBlacklist(family) {
     }).catch(e => alert('清空失败: ' + e.message));
 }
 
+// ========== 自动拉黑（v1.8.8） ==========
+let _banView = [];   // {ip, auto}
+
+function _abKV(d) {
+    const o = {};
+    d.split('\n').forEach(l => { const i = l.indexOf('='); if (i > 0) o[l.substring(0,i)] = l.substring(i+1); });
+    return o;
+}
+function _abPost(body) {
+    return nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body}).then(r => r.text());
+}
+
+function refreshBanTotal() {
+    _abPost('action=blacklist_list').then(d => {
+        const o = _abKV(d);
+        const tot = (+o.V4_COUNT||0)+(+o.V6_COUNT||0)+(+o.AUTO_V4_COUNT||0)+(+o.AUTO_V6_COUNT||0);
+        document.getElementById('ab_ban_total').textContent = tot;
+    }).catch(()=>{});
+}
+
+function loadAutoban() {
+    _abPost('action=autoban_status').then(d => {
+        const o = _abKV(d);
+        document.getElementById('ab_enabled').checked = (o.ENABLED==='1');
+        document.getElementById('ab_hits').value = o.HITS||'5';
+        document.getElementById('ab_window').value = o.WINDOW||'10';
+        document.getElementById('ab_max').value = o.MAX||'1000';
+        document.getElementById('ab_ttl').value = o.TTL||'24';
+        document.getElementById('ab_v6agg').checked = (o.V6AGG==='1');
+        document.getElementById('ab_whitelist').value = o.WHITELIST||'';
+        document.getElementById('ab_auto_total').textContent = o.TOTAL||'0';
+        document.getElementById('ab_china_hint').style.display = (o.CHINA_ON==='1') ? 'none' : 'block';
+    }).catch(()=>{});
+    refreshBanTotal();
+}
+
+function saveAutoban() {
+    const en = document.getElementById('ab_enabled').checked ? '1' : '0';
+    const body = 'action=autoban_config&enabled=' + en
+        + '&hits=' + encodeURIComponent(document.getElementById('ab_hits').value||'5')
+        + '&window=' + encodeURIComponent(document.getElementById('ab_window').value||'10')
+        + '&max=' + encodeURIComponent(document.getElementById('ab_max').value||'1000')
+        + '&ttl=' + encodeURIComponent(document.getElementById('ab_ttl').value||'24')
+        + '&v6agg=' + (document.getElementById('ab_v6agg').checked?'1':'0')
+        + '&whitelist=' + encodeURIComponent(document.getElementById('ab_whitelist').value.trim());
+    _abPost(body).then(d => {
+        document.getElementById('ab_result').textContent = d.trim();
+        loadAutoban();
+    }).catch(e => alert('保存失败: ' + e.message));
+}
+
+function runAutoban() {
+    document.getElementById('ab_result').textContent = '扫描中…';
+    _abPost('action=autoban_run').then(d => {
+        const m = d.match(/BANNED=(\d+)/);
+        document.getElementById('ab_result').textContent = '本次新增拉黑 ' + (m?m[1]:'0') + ' 个';
+        loadAutoban();
+    }).catch(e => alert('扫描失败: ' + e.message));
+}
+
+function clearAutoban() {
+    if (!confirm('确定清空自动拉黑内存列表吗？\n（手动黑名单不受影响）')) return;
+    _abPost('action=autoban_clear').then(d => {
+        document.getElementById('ab_result').textContent = d.trim();
+        loadAutoban();
+    }).catch(e => alert('清空失败: ' + e.message));
+}
+
+function openBanView() {
+    // 挂到 body 下，脱离 LuCI 内容层 transform 形成的包含块/堆叠上下文，避免被侧栏遮挡
+    document.body.appendChild(document.getElementById('ban_view_mask'));
+    document.body.appendChild(document.getElementById('ban_view_panel'));
+    document.getElementById('ban_view_mask').style.display = 'block';
+    document.getElementById('ban_view_panel').style.display = 'block';
+    document.getElementById('ban_search').value = '';
+    refreshBanView();
+}
+function closeBanView() {
+    document.getElementById('ban_view_mask').style.display = 'none';
+    document.getElementById('ban_view_panel').style.display = 'none';
+}
+function refreshBanView() {
+    _abPost('action=blacklist_list').then(d => {
+        const o = _abKV(d);
+        const mk = (s, auto) => (s ? s.split(',') : []).filter(x=>x).map(ip => ({ip:ip, auto:auto}));
+        _banView = [].concat(mk(o.V4,false), mk(o.V6,false), mk(o.AUTO_V4,true), mk(o.AUTO_V6,true));
+        renderBanView();
+    }).catch(e => { document.getElementById('ban_view_list').innerHTML = '<div style="color:#dc2626;padding:8px;">加载失败: '+escapeHtml(e.message)+'</div>'; });
+}
+function renderBanView() {
+    const q = (document.getElementById('ban_search').value || '').trim().toLowerCase();
+    const list = _banView.filter(x => !q || x.ip.toLowerCase().indexOf(q) >= 0);
+    document.getElementById('ban_view_count').textContent = '共 ' + _banView.length + ' 个，显示 ' + list.length + ' 个';
+    const el = document.getElementById('ban_view_list');
+    if (!list.length) { el.innerHTML = '<div style="color:#777777;padding:8px;">（无匹配条目）</div>'; return; }
+    el.innerHTML = list.map(x =>
+        '<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 8px;border-bottom:1px solid #eeeeee;">'
+        + '<span style="font-family:monospace;color:#111111;">'
+        + '<span style="display:inline-block;margin-right:6px;padding:1px 6px;border-radius:3px;font-size:11px;font-family:sans-serif;'
+        + (x.auto ? 'background:#fef3c7;color:#92400e;">自动' : 'background:#f3f4f6;color:#6b7280;">手动')
+        + '</span>' + escapeHtml(x.ip) + '</span>'
+        + '<button style="background:#dc2626;color:#ffffff;border:none;border-radius:4px;padding:3px 10px;cursor:pointer;" '
+        + 'onclick="unbanFromView(\'' + escapeHtml(x.ip) + '\')">解封</button></div>'
+    ).join('');
+}
+function unbanFromView(ip) {
+    if (!confirm('确定解封该 IP 吗？\n\n' + ip)) return;
+    _abPost('action=blacklist_del&ip=' + encodeURIComponent(ip)).then(() => {
+        refreshBanView(); refreshBanTotal(); loadAutoban();
+    }).catch(e => alert('解封失败: ' + e.message));
+}
+
 // ========== 卸载插件 ==========
 function uninstallPlugin() {
     const keep = document.getElementById('uninstall_keep_config').checked ? '1' : '0';
@@ -1103,5 +1266,6 @@ loadSettings();
 listBackups();
 loadChina6Status();
 loadBlacklist();
+loadAutoban();
 </script>
 <%+footer%>

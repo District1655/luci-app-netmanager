@@ -39,6 +39,11 @@
                 <div class="card-label">内存使用</div>
                 <div class="card-value" id="mem_percent">--</div>
             </div>
+            <div class="netmanager-card">
+                <div class="card-icon">🚫</div>
+                <div class="card-label">自动拉黑(内存)</div>
+                <div class="card-value orange" id="autoban_count">--</div>
+            </div>
         </div>
         <h3>网络信息</h3>
         <table class="netmanager-table">
@@ -47,6 +52,19 @@
             <tr><td>默认转发目标</td><td id="default_target">--</td></tr>
             <tr><td>运行时间</td><td id="uptime">--</td></tr>
             <tr><td>系统负载</td><td id="load">--</td></tr>
+        </table>
+        <h3>IPv6 状态</h3>
+        <table class="netmanager-table">
+            <tr><td width="30%">IPv6 出口</td><td id="ipv6_status">--</td></tr>
+            <tr><td>WAN IPv6</td><td id="wan_ipv6">--</td></tr>
+            <tr><td>PD 前缀</td><td id="pd_prefix">--</td></tr>
+            <tr><td>LAN 分发地址</td><td id="lan_ipv6">--</td></tr>
+            <tr><td>IPv6 默认路由</td><td id="ipv6_gw">--</td></tr>
+        </table>
+        <h3>DNS</h3>
+        <table class="netmanager-table">
+            <tr><td width="30%">DNS 模式</td><td id="dns_mode">--</td></tr>
+            <tr><td>上游服务器</td><td id="dns_servers">--</td></tr>
         </table>
         <h3>快捷操作</h3>
         <div class="netmanager-toolbar">
@@ -57,7 +75,7 @@
         </div>
         <div id="action_result" class="netmanager-result"></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.7</div>
+    <div class="footer-sign">网络管理插件 v1.8.8</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';

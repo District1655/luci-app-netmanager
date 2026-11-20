@@ -476,6 +476,23 @@ function api_handler()
     elseif action == "blacklist_clear" then
         local family = luci.http.formvalue("family") or "all"
         cmd = string.format("/usr/sbin/netmanager blacklist clear %s", shell_escape(family))
+    elseif action == "autoban_status" then
+        cmd = "/usr/sbin/netmanager autoban status"
+    elseif action == "autoban_run" then
+        cmd = "/usr/sbin/netmanager autoban run"
+    elseif action == "autoban_clear" then
+        cmd = "/usr/sbin/netmanager autoban clear"
+    elseif action == "autoban_config" then
+        local en = luci.http.formvalue("enabled") or "1"
+        local hits = luci.http.formvalue("hits") or "5"
+        local win = luci.http.formvalue("window") or "10"
+        local max = luci.http.formvalue("max") or "1000"
+        local ttl = luci.http.formvalue("ttl") or "24"
+        local v6agg = luci.http.formvalue("v6agg") or "1"
+        local wl = luci.http.formvalue("whitelist") or ""
+        cmd = string.format("/usr/sbin/netmanager autoban config %s %s %s %s %s %s %s",
+            shell_escape(en), shell_escape(hits), shell_escape(win),
+            shell_escape(max), shell_escape(ttl), shell_escape(v6agg), shell_escape(wl))
     elseif action == "update_check" then
         cmd = "/usr/sbin/netmanager update_check"
     elseif action == "update_apply" then
