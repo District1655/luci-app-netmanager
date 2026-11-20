@@ -12,7 +12,7 @@ LOG_FILE="$LOG_DIR/run.log"
 LOG_ENABLED=0
 
 # 在线更新配置：版本号与 GitHub 仓库（发版时同步修改 PLUGIN_VERSION）
-PLUGIN_VERSION="1.8.6"
+PLUGIN_VERSION="1.8.7"
 REPO_OWNER="District1655"
 REPO_NAME="luci-app-netmanager"
 REPO_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
@@ -1079,6 +1079,56 @@ cmd_port_sync_v6() {
     v6_cleanup_stale_routes "$prefix" "$quiet"
     # v1.8.3：同步清理 piofolder 前缀记忆，止住 RA 对失效前缀的持续广播
     v6_cleanup_piofolder "$prefix" "$quiet"
+    # v1.8.7：顺带做 IPv6 默认网关自愈（复用本命令的 cron / hotplug 触发）
+    cmd_v6gw --quiet
+}
+
+# v1.8.7：IPv6 默认网关自愈
+# 背景：pppoe 场景为抑制 netifd 自动 wan_6 与手动 wan6 双接口冲突而关闭
+#   network.wan.ipv6 后，pppoe 自带的 IPv6 默认路由也随之消失；手动 wan6
+#   只做 PD 委派、不装默认路由。odhcpd 默认 ra_default=0 仅在路由器有默认
+#   路由时才宣告网关 —— 于是 LAN 客户端拿到 SLAAC 地址却没有默认网关、上不了网。
+# 本命令做两件事：
+#   ① pppoe 且默认路由缺失/指向失效设备时，补 default dev <wan-l3> metric 512；
+#   ② LAN ra=server 时强制 ra_default=1，确保始终宣告网关。
+# 用法: netmanager v6gw [--quiet]
+cmd_v6gw() {
+    local quiet=0
+    [ "$1" = "--quiet" ] && quiet=1
+    local proto wandev cur changed=0
+    proto=$(uci -q get network.wan.proto)
+    wandev=$(ubus call network.interface.wan status 2>/dev/null | jsonfilter -e '@.l3_device' 2>/dev/null)
+    [ -z "$wandev" ] && [ "$proto" = "pppoe" ] && wandev="pppoe-wan"
+
+    # ① 补默认路由（仅 pppoe 点对点；缺失或指向其它设备时纠正）
+    if [ "$proto" = "pppoe" ] && [ -n "$wandev" ] && [ -d "/sys/class/net/$wandev" ]; then
+        cur=$(ip -6 route show default 2>/dev/null | head -1)
+        case "$cur" in
+            *"dev $wandev"*) : ;;   # 已正确，无需改动
+            *)
+                if ip -6 route replace default dev "$wandev" metric 512 2>/dev/null; then
+                    changed=1
+                    [ $quiet -eq 0 ] && info "已补 IPv6 默认路由: default dev $wandev metric 512"
+                    write_log "INFO" "v6gw: 补 IPv6 默认路由 dev $wandev（原: ${cur:-无}）"
+                fi
+                ;;
+        esac
+    fi
+
+    # ② 强制宣告网关（LAN 为 RA 服务器模式时）
+    if [ "$(uci -q get dhcp.lan.ra)" = "server" ]; then
+        if [ "$(uci -q get dhcp.lan.ra_default)" != "1" ]; then
+            uci set dhcp.lan.ra_default='1'
+            uci commit dhcp
+            /etc/init.d/odhcpd reload >/dev/null 2>&1
+            changed=1
+            [ $quiet -eq 0 ] && info "已设 ra_default=1（强制宣告 IPv6 网关）"
+            write_log "INFO" "v6gw: 设 dhcp.lan.ra_default=1"
+        fi
+    fi
+
+    [ $quiet -eq 0 ] && [ $changed -eq 0 ] && info "IPv6 网关状态正常，无需改动"
+    return 0
 }
 
 # 清理不属于当前前缀的 IPv6 默认源路由与 unreachable 条目
@@ -3893,6 +3943,7 @@ usage() {
     echo "系统: overview | version | settings"
     echo "端口转发: port_list | port_add | port_del | port_edit | set_default_target"
     echo "IPv6目标跟踪: port_track_v6 <端口> <tcp|udp> <锚点|off> | port_sync_v6 [--quiet]"
+    echo "IPv6网关自愈: v6gw [--quiet]   # 补pppoe默认路由 + 强制ra_default=1"
     echo "防火墙规则: rule_list | rule_add | rule_del | rule_edit"
     echo "日志: ssh_log [行数] | access_log [端口] [行数] | log_set 0/1 | log_get [行数] | log_clear"
     echo "操作: restart | reload"
@@ -3915,6 +3966,7 @@ case "$1" in
     port_edit)          shift; cmd_port_edit "$@" ;;
     port_track_v6)      shift; cmd_port_track_v6 "$@" ;;
     port_sync_v6)       shift; cmd_port_sync_v6 "$@" ;;
+    v6gw)               shift; cmd_v6gw "$@" ;;
     set_default_target) shift; cmd_set_default_target "$@" ;;
     rule_list)          cmd_rule_list ;;
     rule_add)           shift; cmd_rule_add "$@" ;;

@@ -383,6 +383,10 @@ case "$V6MODE" in
         uci delete dhcp.lan.ra_flags 2>/dev/null
         uci add_list dhcp.lan.ra_flags='other-config'
         uci set dhcp.lan.ra_slaac='1'
+        # v1.8.7：强制宣告默认网关。pppoe 关闭 wan.ipv6 后默认路由可能缺失，
+        # odhcpd 默认 ra_default=0 只在有默认路由时才宣告网关，会导致客户端
+        # 拿到 SLAAC 地址却没有默认网关。设 1 确保始终宣告（路由由 v6gw 守护补）。
+        uci set dhcp.lan.ra_default='1'
         uci delete dhcp.wan6 2>/dev/null
         log "LAN IPv6: 服务器模式（SLAAC 无状态）"
         ;;
@@ -394,6 +398,7 @@ case "$V6MODE" in
         uci add_list dhcp.lan.ra_flags='managed-config'
         uci add_list dhcp.lan.ra_flags='other-config'
         uci set dhcp.lan.ra_slaac='1'
+        uci set dhcp.lan.ra_default='1'   # v1.8.7：强制宣告默认网关（见 slaac 分支说明）
         uci delete dhcp.wan6 2>/dev/null
         log "LAN IPv6: 服务器模式（RA + DHCPv6 状态化）"
         ;;

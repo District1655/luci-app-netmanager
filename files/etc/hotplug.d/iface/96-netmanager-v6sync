@@ -17,10 +17,16 @@
 
 case "$INTERFACE" in
     wan|wan6|wan_6|wan-*|wan6-*)
-        # 前缀可能刚下发，等待地址与租约就绪后再同步
-        if uci -q get netmanager.@v6track[0] >/dev/null 2>&1; then
-            ( sleep 12; /usr/sbin/netmanager port_sync_v6 --quiet ) >/dev/null 2>&1 &
-        fi
+        # v1.8.7：WAN 上线/重拨后先自愈 IPv6 默认网关（pppoe 补默认路由 +
+        # 强制 ra_default=1 宣告网关），再按锚点同步端口放行目标。
+        # 前缀可能刚下发，延迟等待地址与租约就绪后再执行。
+        (
+            sleep 12
+            /usr/sbin/netmanager v6gw --quiet
+            if uci -q get netmanager.@v6track[0] >/dev/null 2>&1; then
+                /usr/sbin/netmanager port_sync_v6 --quiet
+            fi
+        ) >/dev/null 2>&1 &
         ;;
     lan)
         # 仅当 dropbear 绑定了具体接口时才需要自愈（未绑定不受影响）

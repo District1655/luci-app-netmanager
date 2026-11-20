@@ -1,6 +1,6 @@
 # 网络管理插件 (luci-app-netmanager)
 
-> 版本：v1.8.6
+> 版本：v1.8.7
 >
 > 适配：iStoreOS / OpenWrt (fw4/nftables, Lua LuCI)
 >
@@ -271,6 +271,14 @@ IPv4（每行一个 CIDR）：
 5. 更新前建议先备份配置；只支持 `.tar.gz` 或 `.tgz` 格式
 
 ## 更新日志
+
+### v1.8.7 (2026-11-21)
+
+**新增：IPv6 默认网关自愈（v6gw），修复 pppoe 关闭 wan.ipv6 后客户端拿到 SLAAC 地址却没有默认网关、上不了网**
+
+- 新增 `netmanager v6gw [--quiet]` 网关自愈命令，处理两类实测故障：① pppoe 场景为抑制 netifd 自动 `wan_6` 与手动 `wan6` 双 IPv6 WAN 接口冲突（手动 wan6 持续 `Invalid argument` 抖动、频繁重载防火墙搅乱 RA）而关闭 `network.wan.ipv6` 后，pppoe 自带的 IPv6 默认路由随之消失，手动 wan6 只做 PD 委派不装默认路由 → 路由器无 IPv6 默认路由；② odhcpd 默认 `ra_default=0` 仅在路由器有默认路由时才宣告网关 → RA 的 Router lifetime=0，LAN 客户端拿到 SLAAC 地址却没有默认网关。`v6gw` 在 pppoe 且默认路由缺失/指向失效设备时补 `default dev <wan-l3> metric 512`，并在 LAN `ra=server` 时强制 `ra_default=1` 确保始终宣告网关
+- 自愈触发：WAN `ifup`/重拨 hotplug 延迟 12s 先跑 `v6gw` 再同步端口目标；`port_sync_v6` 末尾顺带调用 `v6gw`（复用现有每 10 分钟 cron 兜底，前缀续租静默变化也能自愈）；上网设置应用脚本在 SLAAC / RA+DHCPv6 两个 server 分支同步写入 `ra_default=1`
+- 说明：`planb` 为 iStoreOS 应急兜底接口（br-lan 上 DHCP 客户端，默认 `auto=0` 不开机启动），正常上网无需启用，与网关故障无关
 
 ### v1.8.6 (2026-11-21)
 
