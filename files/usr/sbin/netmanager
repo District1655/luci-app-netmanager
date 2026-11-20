@@ -12,7 +12,7 @@ LOG_FILE="$LOG_DIR/run.log"
 LOG_ENABLED=0
 
 # 在线更新配置：版本号与 GitHub 仓库（发版时同步修改 PLUGIN_VERSION）
-PLUGIN_VERSION="1.8.2"
+PLUGIN_VERSION="1.8.3"
 REPO_OWNER="District1655"
 REPO_NAME="luci-app-netmanager"
 REPO_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
@@ -165,7 +165,7 @@ cmd_overview() {
     echo "WAN_IPV6=$wan_ipv6"
 
     # LAN口IP
-    lan_ip=$(uci get network.lan.ipaddr 2>/dev/null || echo "192.1.8.2.1")
+    lan_ip=$(uci get network.lan.ipaddr 2>/dev/null || echo "192.1.8.3.1")
     echo "LAN_IP=$lan_ip"
 
     # 运行时间（从/proc/uptime计算）
@@ -307,7 +307,7 @@ cmd_port_list() {
     }
     END {
         for (i = 0; i <= max_idx; i++) {
-            # v1.8.2：family=ipv6 的映射不属于 IPv4 表。
+            # v1.8.3：family=ipv6 的映射不属于 IPv4 表。
             # 混进来会让「目标地址」显示成 IPv6，且与同端口的 IPv4 条目
             # 共用 编辑/删除（按 端口+协议 匹配）时误伤对方。
             if (names[i] != "" && fams[i] != "ipv6") {
@@ -361,7 +361,7 @@ cmd_port_list() {
     }
     END {
         for (i = 0; i <= max_idx; i++) {
-            # v1.8.2：只列出转发到 lan 的 IPv6 放行规则。
+            # v1.8.3：只列出转发到 lan 的 IPv6 放行规则。
             # 系统自带规则（Allow-DHCPv6 / Allow-MLD / Allow-ICMPv6-Input
             # 无 dest，Allow-ICMPv6-Forward 的 dest 为 *）不属于端口转发，
             # 混进来会被误标「未限定目标」，且提供删除按钮易误删导致 IPv6 异常。
@@ -374,7 +374,7 @@ cmd_port_list() {
         }
     }' > /tmp/fwm_pv6.txt
 
-    # v1.8.2：读取跟踪锚点，供前端展示「动态跟随」状态
+    # v1.8.3：读取跟踪锚点，供前端展示「动态跟随」状态
     track_data=$(uci -q show netmanager 2>/dev/null | grep '@v6track')
 
     while IFS='|' read -r idx name proto dp en dip; do
@@ -391,7 +391,7 @@ cmd_port_list() {
     done < /tmp/fwm_pv6.txt
     rm -f /tmp/fwm_pv6.txt
 
-    # v1.8.2：IPv6 端口映射（family=ipv6 的 DNAT redirect）单独成表。
+    # v1.8.3：IPv6 端口映射（family=ipv6 的 DNAT redirect）单独成表。
     # 这类条目此前混在 IPv4 表里，目标显示为 IPv6，且与同端口 IPv4 条目
     # 共用按「端口+协议」匹配的编辑/删除，存在误删风险。
     echo "---IPV6DNAT---"
@@ -526,7 +526,7 @@ cmd_port_add() {
                 idx=$((idx+1))
             done
             if [ $exists -eq 0 ]; then
-                # v1.8.2：IPv6 规则的 dest_ip 必须是 IPv6 地址。
+                # v1.8.3：IPv6 规则的 dest_ip 必须是 IPv6 地址。
                 # 若传入的是 IPv4（如默认目标），按该主机解析其当前公网 IPv6；
                 # 解析不到则不写 dest_ip，并明确告警（避免写入非法地址使整条规则失效）。
                 v6_target=""
@@ -814,7 +814,7 @@ cmd_port_del() {
     info "完成！"
 }
 
-# ========== 4.5 IPv6 转发目标动态跟踪（v1.8.2 新增）==========
+# ========== 4.5 IPv6 转发目标动态跟踪（v1.8.3 新增）==========
 # 背景：运营商 PD 前缀会变化（实测一天内变更多次）。IPv6 放行规则若把
 #       目标地址写死，前缀一变规则即失效；而目标主机的接口后缀通常稳定
 #       （DHCPv6 静态分配如 ::3，或 SLAAC 的固定 IID）。
@@ -835,9 +835,12 @@ v6_current_prefix() {
 
 # 按锚点解析目标主机当前公网 IPv6
 # 锚点支持：IPv4 地址 / MAC 地址 / 主机名
-# 解析优先级：DHCP 静态 hostid（最稳）→ DHCPv6 租约 → 邻居表
+# 解析优先级（v1.8.3）：邻居表 SLAAC 地址（对齐目标机
+#   `ip -6 addr show scope global | grep -v deprecated` 选出的 /64 地址）
+#   → DHCP 静态 hostid（兜底）→ DHCPv6 租约 → 邻居表任意全局地址
 v6_resolve_target() {
     local anchor="$1" prefix mac hostid duid addr hostname i h_ip h_mac h_hostid h_name
+    local hostid_addr="" m_duid="" hex
     [ -z "$anchor" ] && return 1
     prefix=$(v6_current_prefix) || return 1
 
@@ -847,7 +850,7 @@ v6_resolve_target() {
         *) mac="" ;;
     esac
 
-    # 1) 由锚点在 dhcp host 静态绑定中找 hostid / duid / mac
+    # 1) 由锚点在 dhcp host 静态绑定中找 hostid / duid / mac（只收集，不抢先返回）
     i=0
     while uci -q get "dhcp.@host[$i]" >/dev/null 2>&1; do
         h_ip=$(uci -q get "dhcp.@host[$i].ip")
@@ -856,23 +859,19 @@ v6_resolve_target() {
         h_name=$(uci -q get "dhcp.@host[$i].name")
         duid=$(uci -q get "dhcp.@host[$i].duid")
         if [ "$anchor" = "$h_ip" ] || [ "$mac" = "$h_mac" ] || [ "$anchor" = "$h_name" ]; then
-            # 1a) 有 hostid：前缀 + hostid，前缀变更自动跟随，最可靠
+            # 1a) hostid 拼出静态地址，留作兜底
             if [ -n "$h_hostid" ]; then
                 case "$h_hostid" in
-                    *:*) echo "${prefix}${h_hostid}"; return 0 ;;
+                    *:*) hostid_addr="${prefix}${h_hostid#:}" ;;
                     *)
                         # 十进制 hostid 转十六进制
-                        local hex
                         hex=$(printf '%x' "$h_hostid" 2>/dev/null)
-                        [ -n "$hex" ] && { echo "${prefix}:${hex}"; return 0; }
+                        [ -n "$hex" ] && hostid_addr="${prefix}:${hex}"
                         ;;
                 esac
             fi
-            # 1b) 有 DUID：查 DHCPv6 租约
-            if [ -n "$duid" ]; then
-                addr=$(v6_lease_by_duid "$duid")
-                [ -n "$addr" ] && { echo "$addr"; return 0; }
-            fi
+            # 1b) DUID 留作次级兜底
+            m_duid="$duid"
             # 1c) 落到 MAC 解析
             [ -z "$mac" ] && mac="$h_mac"
             break
@@ -894,7 +893,31 @@ v6_resolve_target() {
         mac=$(awk -v h="$anchor" '$4==h{print tolower($2)}' /tmp/dhcp.leases 2>/dev/null | head -1)
     fi
 
-    # 4) 邻居表按 MAC 找当前公网 IPv6（排除 ULA / 链路本地）
+    # 4) 首选：邻居表中该 MAC 在当前前缀下的 SLAAC 地址。
+    #    目标机对外通信用的是 SLAAC /64 地址（如 Debian 的 mngtmpaddr），
+    #    hostid 静态地址（::3 等）只是锚点，不应作为转发目标。
+    #    排除 FAILED/INCOMPLETE 死条目；REACHABLE（近期有流量）优先，
+    #    近似目标机侧 "grep -v deprecated" 的效果。
+    if [ -n "$mac" ]; then
+        addr=$(ip -6 neigh show dev br-lan 2>/dev/null \
+            | awk -v m="$mac" -v p="$prefix" -v x="$hostid_addr" '
+                tolower($0) ~ m && index($1, p) == 1 && $1 != x &&
+                $0 !~ /FAILED|INCOMPLETE/ {
+                    print ($0 ~ /REACHABLE/ ? "0 " : "1 ") $1
+                }' | sort | head -1 | cut -d' ' -f2)
+        [ -n "$addr" ] && { echo "$addr"; return 0; }
+    fi
+
+    # 5) 兜底：hostid 静态地址（主机离线/邻居表空时仍可跟住前缀）
+    [ -n "$hostid_addr" ] && { echo "$hostid_addr"; return 0; }
+
+    # 6) 兜底：DUID 查 DHCPv6 租约
+    if [ -n "$m_duid" ]; then
+        addr=$(v6_lease_by_duid "$m_duid")
+        [ -n "$addr" ] && { echo "$addr"; return 0; }
+    fi
+
+    # 7) 最后兜底：邻居表按 MAC 找任意公网 IPv6（排除 ULA / 链路本地）
     if [ -n "$mac" ]; then
         addr=$(ip -6 neigh show dev br-lan 2>/dev/null \
             | awk -v m="$mac" 'tolower($0) ~ m {print $1}' \
@@ -1019,7 +1042,7 @@ cmd_port_sync_v6() {
             idx=$((idx+1))
         done
 
-        # v1.8.2：family=ipv6 的端口映射(DNAT)同样需要跟随前缀。
+        # v1.8.3：family=ipv6 的端口映射(DNAT)同样需要跟随前缀。
         # 这类条目匹配的是外部端口 src_dport，内部端口 dest_port 保持不变。
         idx=0
         while uci -q get "firewall.@redirect[$idx]" >/dev/null 2>&1; do
@@ -1052,7 +1075,7 @@ cmd_port_sync_v6() {
 
     # 顺带清理旧前缀遗留的源路由（前缀变更后 netifd 可能留下不可达条目）
     v6_cleanup_stale_routes "$prefix" "$quiet"
-    # v1.8.2：同步清理 piofolder 前缀记忆，止住 RA 对失效前缀的持续广播
+    # v1.8.3：同步清理 piofolder 前缀记忆，止住 RA 对失效前缀的持续广播
     v6_cleanup_piofolder "$prefix" "$quiet"
 }
 
@@ -1084,7 +1107,7 @@ v6_cleanup_stale_routes() {
     return 0
 }
 
-# v1.8.2：清理 odhcpd 的 RFC9096 前缀记忆(piofolder)中的失效前缀。
+# v1.8.3：清理 odhcpd 的 RFC9096 前缀记忆(piofolder)中的失效前缀。
 # odhcpd 把历史前缀记在 piofolder，并在每次 RA 里以 lifetime=0 持续广播
 # （实测旧前缀失效两小时后仍在播）。客户端按 RFC4862 会保留这些 deprecated
 # 地址直到记忆过期 —— 这是客户端"堆一堆旧 IP"的路由端根因。
@@ -3675,7 +3698,7 @@ cmd_uninstall() {
     rm -f /etc/init.d/netmanager-china
     rm -f /etc/hotplug.d/iface/95-netmanager-china
     rm -f /etc/hotplug.d/iface/96-netmanager-v6sync
-    # v1.8.2：移除 IPv6 目标同步定时任务
+    # v1.8.3：移除 IPv6 目标同步定时任务
     if [ -f /etc/crontabs/root ] && grep -qF 'netmanager port_sync_v6' /etc/crontabs/root 2>/dev/null; then
         grep -vF 'netmanager port_sync_v6' /etc/crontabs/root > /tmp/.nm_cron 2>/dev/null
         cat /tmp/.nm_cron > /etc/crontabs/root

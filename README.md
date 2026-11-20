@@ -1,6 +1,6 @@
 # 网络管理插件 (luci-app-netmanager)
 
-> 版本：v1.8.2
+> 版本：v1.8.3
 >
 > 适配：iStoreOS / OpenWrt (fw4/nftables, Lua LuCI)
 >
@@ -271,6 +271,15 @@ IPv4（每行一个 CIDR）：
 5. 更新前建议先备份配置；只支持 `.tar.gz` 或 `.tgz` 格式
 
 ## 更新日志
+
+### v1.8.3 (2026-11-20)
+
+**修正：IPv6 跟踪目标应选 SLAAC 地址，而非 hostid 静态锚点**
+
+- 问题：v6_resolve_target 原先最优先返回「前缀 + hostid」拼出的静态地址（如 `...::3`），但目标主机对外通信实际用的是 SLAAC /64 地址（如 Debian 的 mngtmpaddr `...:17aa:e56e:f552:cdbd`），部分服务只监听/回应该地址
+- 解析优先级改为：邻居表中该主机 MAC 在当前前缀下的 SLAAC 地址（排除 hostid 静态地址与 FAILED/INCOMPLETE 死条目，REACHABLE 优先，近似目标机 `grep -v deprecated` 的选址）→ hostid 静态地址兜底 → DHCPv6 租约 → 邻居表任意全局地址
+- 修正 hostid 冒号形式拼接：`::3` 与 `/64` 前缀拼接不再产生三冒号非法地址
+- SLAAC 临时地址轮换由既有 hotplug / 每 10 分钟 cron 同步自动跟随
 
 ### v1.8.2 (2026-11-20)
 
