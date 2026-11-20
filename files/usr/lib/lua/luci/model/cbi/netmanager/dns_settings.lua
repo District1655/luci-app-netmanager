@@ -16,6 +16,7 @@ m = Map("network", nil,
     .. "<br><em style='color:#6b7280;font-size:12px;'>"
     .. translate("修改 WAN/LAN 口设置会重载网络服务，期间可能短暂断网；DNS 配置应用前自动备份到 /root/backup/。")
     .. "</em>")
+m.pageaction = false  -- v1.8.6：关闭本 Map 默认保存按钮，统一由底部「应用配置」提交
 
 -- v1.4.6 修复：CBI 页面缺少页内导航，注入导航模板
 m:append(Template("netmanager/cbi_nav"))
@@ -63,8 +64,61 @@ o.datatype = "ip4addr"
 o.placeholder = "223.5.5.5"
 o.description = translate("静态 IP 模式下手动指定 DNS，可添加多个")
 
+-- ============================================================
+-- IPv6 获取与分发（v1.8.6：独立 Map，渲染在 WAN 上网方式之后、LAN 口地址之前）
+-- 页面顺序：WAN上网方式 → IPv6获取分发 → LAN口地址 → WAN-DNS → LAN-DNS → dnsmasq → 操作
+-- CBI 每个 Map 绑定单一配置、写入只走本 Map 配置，交错顺序需拆成多 Map 按序渲染。
+-- ============================================================
+local m_v6 = Map("dnssettings", nil, nil)
+m_v6.pageaction = false  -- v1.8.6：关闭默认保存按钮
+
+-- ---------- IPv6 获取与分发模式 ----------
+-- 与 iStoreOS 原生网络管理共用同一套 dhcp.lan / network.wan6 配置，两边互通：
+-- 这里改的模式，原生「网络→接口→LAN→DHCP服务器→IPv6设置」里同步可见，反之亦然。
+-- 选项值存 dnssettings.ipv6，点「应用配置」时由 dnssettings-apply.sh 翻译写入 dhcp/network。
+s = m_v6:section(NamedSection, "ipv6", "dnssettings", translate("IPv6 获取与分发"),
+    translate("管理 WAN 口 IPv6 前缀获取（PD）与 LAN 口 IPv6 分发模式。配置写入 iStoreOS 原生网络管理同一套参数，互不冲突。"))
+
+o = s:option(ListValue, "wan_prefix", translate("WAN 前缀请求长度 (PD)"))
+o:value("auto", translate("自动（运营商决定）"))
+o:value("60", "/60")
+o:value("56", "/56")
+o:value("64", "/64")
+o:value("no", translate("不请求前缀（关闭 PD）"))
+o.default = "auto"
+o.rmempty = false
+function o.cfgvalue(self, section)
+    local v = trim(luci.sys.exec("uci -q get network.wan6.reqprefix 2>/dev/null"))
+    return (v ~= "") and v or "auto"
+end
+o.description = translate("向运营商请求的 IPv6 前缀长度。前缀越短可划分的子网越多；「不请求」则关闭前缀委托。修改后应用会重新协商 wan6。")
+
+o = s:option(ListValue, "lan_mode", translate("LAN 口 IPv6 分发模式"))
+o:value("server", translate("服务器模式（RA + DHCPv6 状态化）"))
+o:value("slaac", translate("服务器模式（SLAAC 无状态）"))
+o:value("relay", translate("中继模式（透传上级路由 IPv6）"))
+o:value("disabled", translate("关闭 IPv6 分发"))
+o.default = "server"
+o.rmempty = false
+function o.cfgvalue(self, section)
+    local ra = trim(luci.sys.exec("uci -q get dhcp.lan.ra 2>/dev/null"))
+    local d6 = trim(luci.sys.exec("uci -q get dhcp.lan.dhcpv6 2>/dev/null"))
+    if ra == "relay" or d6 == "relay" then return "relay" end
+    if ra == "disabled" and (d6 == "disabled" or d6 == "") then return "disabled" end
+    if d6 == "server" then return "server" end
+    if ra == "server" then return "slaac" end
+    return "server"
+end
+o.description = translate("服务器模式：由本机给内网设备分配 IPv6（状态化=DHCPv6 分配地址；SLAAC=设备按 RA 前缀自行生成）。中继模式：上级路由已有 IPv6 时透传给内网（需上级支持）。关闭：内网不再分发 IPv6。")
+
+-- ============================================================
+-- LAN 口地址（v1.8.6：独立 Map，绑定 network，渲染在 IPv6 之后）
+-- ============================================================
+local m_lan = Map("network", nil, nil)
+m_lan.pageaction = false  -- v1.8.6：关闭默认保存按钮
+
 -- ---------- LAN 口地址设置 ----------
-s = m:section(NamedSection, "lan", "interface", translate("LAN 口地址"),
+s = m_lan:section(NamedSection, "lan", "interface", translate("LAN 口地址"),
     translate("路由器局域网管理地址与子网掩码，修改后需用新地址登录管理页面。"))
 
 o = s:option(Value, "ipaddr", translate("LAN 口 IP 地址"))
@@ -78,10 +132,11 @@ o.placeholder = "255.255.255.0"
 o.rmempty = false
 
 -- ============================================================
--- 第二部分：DNS 设置（绑定 dnssettings 配置）
+-- DNS 设置（绑定 dnssettings 配置）
 -- v1.6.1：隐藏 Map 级别标题栏，统一用 section 级别标题（灰色标题栏）
 -- ============================================================
 local m2 = Map("dnssettings", nil, nil)
+m2.pageaction = false  -- v1.8.6：关闭默认「保存并应用」，仅保留自定义「应用配置」按钮
 
 -- ---------- WAN 口上游 DNS ----------
 s = m2:section(NamedSection, "wan", "dnssettings", translate("WAN 口上游 DNS"),
@@ -178,45 +233,6 @@ o.datatype = "ip6addr"
 o.placeholder = "2400:3200::1"
 o:depends("enable", "1")
 
--- ---------- IPv6 获取与分发模式（v1.8.4） ----------
--- 与 iStoreOS 原生网络管理共用同一套 dhcp.lan / network.wan6 配置，两边互通：
--- 这里改的模式，原生「网络→接口→LAN→DHCP服务器→IPv6设置」里同步可见，反之亦然。
--- 选项值存 dnssettings.ipv6，点「应用配置」时由 dnssettings-apply.sh 翻译写入 dhcp/network。
-s = m2:section(NamedSection, "ipv6", "dnssettings", translate("IPv6 获取与分发"),
-    translate("管理 WAN 口 IPv6 前缀获取（PD）与 LAN 口 IPv6 分发模式。配置写入 iStoreOS 原生网络管理同一套参数，互不冲突。"))
-
-o = s:option(ListValue, "wan_prefix", translate("WAN 前缀请求长度 (PD)"))
-o:value("auto", translate("自动（运营商决定）"))
-o:value("60", "/60")
-o:value("56", "/56")
-o:value("64", "/64")
-o:value("no", translate("不请求前缀（关闭 PD）"))
-o.default = "auto"
-o.rmempty = false
-function o.cfgvalue(self, section)
-    local v = trim(luci.sys.exec("uci -q get network.wan6.reqprefix 2>/dev/null"))
-    return (v ~= "") and v or "auto"
-end
-o.description = translate("向运营商请求的 IPv6 前缀长度。前缀越短可划分的子网越多；「不请求」则关闭前缀委托。修改后应用会重新协商 wan6。")
-
-o = s:option(ListValue, "lan_mode", translate("LAN 口 IPv6 分发模式"))
-o:value("server", translate("服务器模式（RA + DHCPv6 状态化）"))
-o:value("slaac", translate("服务器模式（SLAAC 无状态）"))
-o:value("relay", translate("中继模式（透传上级路由 IPv6）"))
-o:value("disabled", translate("关闭 IPv6 分发"))
-o.default = "server"
-o.rmempty = false
-function o.cfgvalue(self, section)
-    local ra = trim(luci.sys.exec("uci -q get dhcp.lan.ra 2>/dev/null"))
-    local d6 = trim(luci.sys.exec("uci -q get dhcp.lan.dhcpv6 2>/dev/null"))
-    if ra == "relay" or d6 == "relay" then return "relay" end
-    if ra == "disabled" and (d6 == "disabled" or d6 == "") then return "disabled" end
-    if d6 == "server" then return "server" end
-    if ra == "server" then return "slaac" end
-    return "server"
-end
-o.description = translate("服务器模式：由本机给内网设备分配 IPv6（状态化=DHCPv6 分配地址；SLAAC=设备按 RA 前缀自行生成）。中继模式：上级路由已有 IPv6 时透传给内网（需上级支持）。关闭：内网不再分发 IPv6。")
-
 -- ---------- 操作按钮（v1.6.1 移除备份按钮，统一由设置页面备份模块管理） ----------
 -- ---------- v1.8.0：实际生效 DNS 只读面板 ----------
 -- 首页显示的是运行时真实上游，本页配置的是期望值，二者来源不同容易看着「冲突」。
@@ -287,10 +303,11 @@ o = s:option(Button, "_apply", translate("应用配置"))
 o.inputtitle = translate("应用配置")
 o.inputstyle = "apply"
 o.write = function()
-    -- 先保存 network 配置（WAN/LAN 口设置）
-    m.uci:commit("network")
-    -- 再保存 dnssettings 配置
-    m2.uci:commit("dnssettings")
+    -- v1.8.6：四个 Map 各持独立 cursor，需逐一提交（WAN/LAN 属 network，IPv6/DNS 属 dnssettings）
+    m.uci:commit("network")        -- WAN 上网方式
+    m_lan.uci:commit("network")    -- LAN 口地址
+    m_v6.uci:commit("dnssettings") -- IPv6 获取分发
+    m2.uci:commit("dnssettings")   -- DNS 各节
 
     -- 执行 DNS 应用脚本
     local ok, rc, out = pcall(run_dns_script, "/usr/sbin/dnssettings-apply.sh")
@@ -385,4 +402,4 @@ local function _ensure_dns_defaults()
 end
 _ensure_dns_defaults()
 
-return m, m2
+return m, m_v6, m_lan, m2

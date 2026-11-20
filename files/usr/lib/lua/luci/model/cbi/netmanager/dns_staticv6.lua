@@ -354,10 +354,20 @@ local function build_online_html()
         end
 
         local v6_html = ""
+        -- v1.8.6：标注地址性质——公网 GUA(2000::/3) 随前缀/SLAAC 变化属动态，
+        -- ULA(fd/fc) 才是可静态绑定的稳定地址，避免把动态公网误认为静态绑定。
+        local function v6tag(a)
+            if a:match("^[23]") then
+                return '<span style="color:#9ca3af;font-size:10px;">动态公网 </span>'
+            elseif a:lower():match("^f[cd]") then
+                return '<span style="color:#059669;font-size:10px;">ULA </span>'
+            end
+            return ''
+        end
         if #global_v6 == 0 then
             v6_html = '<span style="color:#d1d5db">—</span>'
         else
-            v6_html = '<span class="nm-ov-v6-main">' .. esc(global_v6[1]) .. '</span>'
+            v6_html = '<span class="nm-ov-v6-main">' .. v6tag(global_v6[1]) .. esc(global_v6[1]) .. '</span>'
             if #global_v6 > 1 then
                 local more_count = #global_v6 - 1
                 local all_id = 'nm_v6_all_' .. row_idx
@@ -365,7 +375,7 @@ local function build_online_html()
                 v6_html = v6_html .. '<span class="nm-ov-v6-more" id="' .. btn_id .. '" data-more="+' .. more_count .. ' 个" onclick="nmToggleV6(\'' .. all_id .. '\')">+' .. more_count .. ' 个</span>'
                 v6_html = v6_html .. '<div class="nm-ov-v6-all" id="' .. all_id .. '">'
                 for i = 2, #global_v6 do
-                    v6_html = v6_html .. '<span>' .. esc(global_v6[i]) .. '</span>'
+                    v6_html = v6_html .. '<span>' .. v6tag(global_v6[i]) .. esc(global_v6[i]) .. '</span>'
                 end
                 v6_html = v6_html .. '</div>'
             end
@@ -640,6 +650,12 @@ o_ip6.description = translate("仅适合 ULA(fd开头)，留空则用 hostid 自
 function o_ip6.validate(self, value, section)
     if value and value ~= "" then
         local val_lower = value:lower()
+        -- v1.8.6：完整 IPv6 仅允许 ULA（fc00::/7，实际 fd 开头）。
+        -- 公网 GUA（2000::/3，如 24xx/2408）随运营商前缀重拨变化、SLAAC 后缀随机，
+        -- 设为静态必失效；公网地址请改用 hostid 后缀（按当前前缀自动合成，前缀变仍一致）。
+        if not val_lower:match("^f[cd]") then
+            return nil, translate("完整IPv6仅支持 ULA(fd/fc 开头)；公网地址(如2408)会随前缀变化失效，请改用 hostid 后缀")
+        end
         local conflict
         m.uci:foreach("dhcp", "host", function(s2)
             if s2[".name"] ~= section and s2.ip6 and s2.ip6 ~= "" and s2.ip6:lower() == val_lower then

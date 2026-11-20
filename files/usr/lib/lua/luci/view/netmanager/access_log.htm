@@ -44,15 +44,15 @@
         <h3>防火墙拦截统计 (按端口)</h3>
         <div class="text-muted" style="font-size:12px;margin-bottom:6px;">点击任意一行可查看被拦截的源 IP 明细并一键拉黑（境外IP拦截已启用限速源IP记录）。</div>
         <div class="netmanager-log" id="blocked_log"><div class="text-muted">加载中...</div></div>
-        <div id="block_detail_panel" style="display:none;margin-top:12px;border:1px solid #e5e7eb;border-radius:8px;padding:12px;background:#f9fafb;">
+        <div id="block_detail_panel" style="display:none;margin-top:12px;border:1px solid #e5e7eb;border-radius:8px;padding:12px;background:#f9fafb;color:#1f2937;">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-                <b id="bd_title">拦截明细</b>
+                <b id="bd_title" style="color:#111827;">拦截明细</b>
                 <button class="btn btn-secondary btn-sm" onclick="closeBlockDetail()">关闭</button>
             </div>
-            <div id="bd_body" class="netmanager-log"></div>
+            <div id="bd_body" style="background:#ffffff;border:1px solid #e5e7eb;border-radius:6px;padding:4px;color:#1f2937;max-height:420px;overflow-y:auto;"></div>
         </div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.5</div>
+    <div class="footer-sign">网络管理插件 v1.8.6</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -139,7 +139,7 @@ function showBlockDetail(key) {
             document.getElementById('bd_body').innerHTML = '<div class="text-muted">该类别暂无匹配的源IP记录（可能拦截发生在日志记录之前，或属未启用源IP记录的类别）。</div>';
             return;
         }
-        let html = '<table style="width:100%;border-collapse:collapse;font-size:12px;"><tr style="background:#f3f4f6;"><th style="padding:6px;text-align:left;">源IP</th><th style="padding:6px;">协议</th><th style="padding:6px;">命中端口</th><th style="padding:6px;">次数</th><th style="padding:6px;">最近时间</th><th style="padding:6px;">操作</th></tr>';
+        let html = '<table style="width:100%;border-collapse:collapse;font-size:12px;color:#1f2937;"><tr style="background:#f3f4f6;color:#374151;"><th style="padding:6px;text-align:left;">源IP</th><th style="padding:6px;">协议</th><th style="padding:6px;">命中端口</th><th style="padding:6px;">次数</th><th style="padding:6px;">最近时间</th><th style="padding:6px;">操作</th></tr>';
         lines.forEach(line => {
             const p = line.split('|'); if (p.length < 5) return;
             const src = p[0], proto = p[1], ports = p[2], cnt = p[3], last = p[4];

@@ -1,6 +1,6 @@
 # 网络管理插件 (luci-app-netmanager)
 
-> 版本：v1.8.5
+> 版本：v1.8.6
 >
 > 适配：iStoreOS / OpenWrt (fw4/nftables, Lua LuCI)
 >
@@ -271,6 +271,15 @@ IPv4（每行一个 CIDR）：
 5. 更新前建议先备份配置；只支持 `.tar.gz` 或 `.tgz` 格式
 
 ## 更新日志
+
+### v1.8.6 (2026-11-21)
+
+**修复：重启后 LAN 公网 IPv6 分发中断（wan6 dns_search 残留 + peerdns 引号）；静态IP禁止绑定公网 GUA；拦截明细文字看不清；调整：上网设置 IPv6 段移到 WAN 下方**
+
+- 修复重启/重拨后应用 DNS 配置导致 LAN 公网 IPv6 分发中断：**根因**是 `network.wan6` 残留运营商下发的 `dns_search` 选项，本平台（iStoreOS 25.12）netifd 的 dhcpv6 proto 不接受该选项 → `wan_6` setup 报 `ubus error: Invalid argument` 无限重试、PD 续租失败、odhcpd 租约清空、LAN 设备拿不到公网 IPv6。应用脚本现在配置 wan6 后主动清除 `dns_search`（pppoe 的 wan 接受该选项，不受影响）；同时修复写 `peerdns` 时把单引号包进值里（存成带引号的 `'0'`）的隐患，去掉内层引号
+- 静态IP分配「完整IPv6地址」字段强制仅允许 ULA（fd/fc 开头）：公网 GUA（2000::/3，如 2408）随运营商前缀重拨变化、SLAAC 后缀随机，设为静态必失效，校验直接拒绝并引导改用 hostid 后缀；在线客户端 IPv6 列新增「动态公网 / ULA」性质标注，避免把动态公网误认为静态绑定
+- 上网设置页面顺序调整为 **WAN上网方式 → IPv6获取分发 → LAN口地址 → WAN-DNS → LAN-DNS → dnsmasq → 操作**（CBI 每 Map 绑定单一配置，拆成 4 个 Map 按序渲染，应用按钮逐一提交各 cursor）；关闭各 Map 默认「保存/保存并应用」按钮（`pageaction=false`），全页仅保留一个「应用配置」，消除重复提交入口
+- 修复拦截明细面板文字看不清：明细容器误用深色日志样式（`netmanager-log` 浅灰字）导致表头浅底浅字，改为白底深色字表格
 
 ### v1.8.5 (2026-11-20)
 

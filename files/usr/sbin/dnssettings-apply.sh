@@ -1,6 +1,6 @@
 #!/bin/sh
 # ============================================================
-# DNS设置插件 - 应用配置脚本 (v1.8.5)
+# DNS设置插件 - 应用配置脚本 (v1.8.6)
 # 读取 /etc/config/dnssettings，写入系统 network/dhcp 配置并重载服务
 #
 # v1.7.3 更新：
@@ -227,7 +227,7 @@ fi
 # ============================================================
 if uci get "network.$WAN_IFACE" >/dev/null 2>&1; then
     if [ "$WAN_PEERDNS" = "1" ]; then
-        uci set "network.$WAN_IFACE.peerdns='1'"
+        uci set "network.$WAN_IFACE.peerdns=1"
         uci delete "network.$WAN_IFACE.dns" 2>/dev/null
         log "WAN IPv4 ($WAN_IFACE): 使用运营商下发 DNS"
     else
@@ -238,7 +238,7 @@ if uci get "network.$WAN_IFACE" >/dev/null 2>&1; then
         if [ -z "$WAN_V4_DNS" ]; then
             log "WARN: WAN IPv4 自定义 DNS 为空，跳过该接口（保持现状，防止断网）"
         else
-            uci set "network.$WAN_IFACE.peerdns='0'"
+            uci set "network.$WAN_IFACE.peerdns=0"
             # list 字段：先清残留，再逐个 add_list（uci set 单元素是错误写法）
             uci delete "network.$WAN_IFACE.dns" 2>/dev/null
             for dns in $WAN_V4_DNS; do
@@ -256,7 +256,7 @@ fi
 # ============================================================
 if uci get "network.$WAN6_IFACE" >/dev/null 2>&1; then
     if [ "$WAN_PEERDNS" = "1" ]; then
-        uci set "network.$WAN6_IFACE.peerdns='1'"
+        uci set "network.$WAN6_IFACE.peerdns=1"
         uci delete "network.$WAN6_IFACE.dns" 2>/dev/null
         log "WAN6 IPv6 ($WAN6_IFACE): 使用运营商下发 DNS"
     else
@@ -266,7 +266,7 @@ if uci get "network.$WAN6_IFACE" >/dev/null 2>&1; then
         if [ -z "$WAN_V6_DNS" ]; then
             log "WARN: WAN6 IPv6 自定义 DNS 为空，跳过该接口（保持现状，防止断网）"
         else
-            uci set "network.$WAN6_IFACE.peerdns='0'"
+            uci set "network.$WAN6_IFACE.peerdns=0"
             # v1.8.3：与 WAN 同节时（无独立 wan6）必须保留已写入的 IPv4 DNS，
             # 否则这里的 delete 会把上一步的 IPv4 列表清空，只剩 IPv6。
             if [ "$WAN6_IFACE" != "$WAN_IFACE" ]; then
@@ -303,6 +303,20 @@ else
         else
             log "（IPv6 自定义 DNS 为空，不并入 $WAN_IFACE）"
         fi
+    fi
+fi
+
+# ============================================================
+# 2.5 【v1.8.6】清除 wan6 的 dns_search 残留
+#     本平台（iStoreOS 25.12 / netifd dhcpv6）不接受 dns_search 选项，
+#     残留会使 netifd setup 报 "ubus error: Invalid argument" 并无限重试，
+#     PD 续租失败 → LAN 设备丢失公网 IPv6。pppoe 的 wan 接受该选项不受影响。
+#     dns_search 多由运营商 DHCP 下发后残留进 uci，本插件不主动写入，应用时清除。
+# ============================================================
+if [ "$WAN6_IFACE" != "$WAN_IFACE" ] && uci -q get "network.$WAN6_IFACE" >/dev/null 2>&1; then
+    if uci -q delete "network.$WAN6_IFACE.dns_search" 2>/dev/null; then
+        uci commit network 2>/dev/null
+        log "清除 $WAN6_IFACE.dns_search（dhcpv6 不支持，防止 Invalid argument 抖动）"
     fi
 fi
 
