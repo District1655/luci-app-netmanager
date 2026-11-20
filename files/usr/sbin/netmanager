@@ -12,7 +12,7 @@ LOG_FILE="$LOG_DIR/run.log"
 LOG_ENABLED=0
 
 # 在线更新配置：版本号与 GitHub 仓库（发版时同步修改 PLUGIN_VERSION）
-PLUGIN_VERSION="1.8.3"
+PLUGIN_VERSION="1.8.5"
 REPO_OWNER="District1655"
 REPO_NAME="luci-app-netmanager"
 REPO_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
@@ -536,25 +536,27 @@ cmd_port_add() {
                         v6_target=$(v6_resolve_target "$target")
                         if [ -n "$v6_target" ]; then
                             info "目标 $target 解析为 IPv6: $v6_target"
-                            # 自动登记跟踪，后续前缀变更自动跟随
-                            _ti=0; _tfound=0
-                            while uci -q get "netmanager.@v6track[$_ti]" >/dev/null 2>&1; do
-                                if [ "$(uci -q get netmanager.@v6track[$_ti].port)" = "$port" ] && \
-                                   [ "$(uci -q get netmanager.@v6track[$_ti].proto)" = "$p" ]; then
-                                    _tfound=1; break
-                                fi
-                                _ti=$((_ti+1))
-                            done
-                            if [ $_tfound -eq 0 ]; then
-                                uci add netmanager v6track >/dev/null
-                                uci set netmanager.@v6track[-1].port="$port"
-                                uci set netmanager.@v6track[-1].proto="$p"
-                                uci set netmanager.@v6track[-1].anchor="$target"
-                                uci set netmanager.@v6track[-1].enabled='1'
-                                uci commit netmanager
-                            fi
                         else
-                            warn "无法解析 $target 的 IPv6 地址，本条 IPv6 放行暂不限定目标主机"
+                            warn "无法解析 $target 的 IPv6 地址，本条 IPv6 放行暂不限定目标主机（已登记跟踪，主机上线后自动修正）"
+                        fi
+                        # v1.8.5：无论当前是否解析成功都登记跟踪锚点。
+                        # 旧版仅在解析成功时登记——目标主机离线/无IPv6时添加的IPv6放行
+                        # 会永久"未限定目标"且 port_sync_v6 无法自动修正（IPv6没正确添加的根因）。
+                        _ti=0; _tfound=0
+                        while uci -q get "netmanager.@v6track[$_ti]" >/dev/null 2>&1; do
+                            if [ "$(uci -q get netmanager.@v6track[$_ti].port)" = "$port" ] && \
+                               [ "$(uci -q get netmanager.@v6track[$_ti].proto)" = "$p" ]; then
+                                _tfound=1; break
+                            fi
+                            _ti=$((_ti+1))
+                        done
+                        if [ $_tfound -eq 0 ]; then
+                            uci add netmanager v6track >/dev/null
+                            uci set netmanager.@v6track[-1].port="$port"
+                            uci set netmanager.@v6track[-1].proto="$p"
+                            uci set netmanager.@v6track[-1].anchor="$target"
+                            uci set netmanager.@v6track[-1].enabled='1'
+                            uci commit netmanager
                         fi
                         ;;
                 esac
@@ -1375,119 +1377,75 @@ cmd_access_log() {
     [ $out_count -lt 0 ] && out_count=0
     echo "OUT_COUNT=$out_count"
 
-    # 防火墙拦截统计
+    # 防火墙拦截统计（v1.8.4 重写）
+    # 旧版用 prev_pkts/prev_dport/prev_proto 跨行借用上下文，会把前面 accept 规则
+    # （如 Allow-DHCP-Renew 的 udp dport 68）的端口/协议/计数错误套到后面无端口的
+    # drop 规则（china/ban IP 段拦截）上，导致「端口68拦截几万」这类明显错误。
+    # 新版逐行独立解析：计数器/端口/协议只取本行，绝不跨行借用；无端口规则按用途标注。
     echo "---BLOCKED---"
     block_total=0
     block_output=""
 
-    # 使用nftables列出所有规则
     nft_output=$(nft list ruleset 2>/dev/null)
-    
+
     if [ -n "$nft_output" ]; then
-        # 更健壮的解析：处理多种counter格式、行内/分离行、tab空格、policy counter等
         block_output=$(echo "$nft_output" | awk '
-        BEGIN { 
-            prev_pkts = 0; prev_dport = ""; prev_proto = "any"; 
-            in_policy = 0; policy_drops = 0;
-            delete port_map; delete port_proto;
-        }
+        function trim(s){ gsub(/^[ \t]+|[ \t]+$/,"",s); return s }
         {
-            line = $0
-            pkts = 0
-            dport = ""
-            proto = "any"
-            
-            # ========== 1. 提取counter packets数值 ==========
-            # 格式A: counter packets 123 bytes 456
+            line=$0
+            # 跳过 chain 定义与 policy 行（fw4 的 policy drop 不挂计数器，非规则）
+            if (line ~ /policy[ \t]+(drop|accept)/) next
+            if (line ~ /^[ \t]*chain[ \t]/) next
+            # 只认本行裁决为 drop/reject 的规则（独立词，排除 drop_from_wan 等链名）
+            is_drop=0
+            if (line ~ /[ \t]drop([ \t;]|$)/) is_drop=1
+            else if (line ~ /[ \t]reject([ \t;]|$)/) is_drop=1
+            if (!is_drop) next
+
+            # 本行内联计数器；没有则计0，不借用上一行
+            pkts=0
             if (match(line, /counter packets [0-9]+/)) {
-                tmp = substr(line, RSTART, RLENGTH)
-                gsub(/[^0-9]/, "", tmp)
-                pkts = tmp + 0
+                t=substr(line,RSTART,RLENGTH); gsub(/[^0-9]/,"",t); pkts=t+0
             }
-            # 格式B: packets 123 bytes 456 (行开头)
-            if (pkts == 0 && match(line, /[[:space:]]packets [0-9]+/)) {
-                tmp = substr(line, RSTART, RLENGTH)
-                gsub(/[^0-9]/, "", tmp)
-                pkts = tmp + 0
+
+            # 本行协议：多协议集合 {tcp,udp} / 单协议 / icmp
+            proto="any"
+            if (line ~ /l4proto[ \t]*\{[^}]*tcp[^}]*udp[^}]*\}/ || line ~ /l4proto[ \t]*\{[^}]*udp[^}]*tcp[^}]*\}/) proto="tcp/udp"
+            else if (line ~ /l4proto[ \t]+tcp/ || line ~ /[ \t]tcp[ \t]+dport/) proto="tcp"
+            else if (line ~ /l4proto[ \t]+udp/ || line ~ /[ \t]udp[ \t]+dport/) proto="udp"
+            else if (line ~ /icmpv6/) proto="icmpv6"
+            else if (line ~ /[ \t]icmp[ \t]/) proto="icmp"
+
+            # 本行端口（单值/范围/集合）；无端口则按用途标注
+            label=""
+            if (match(line, /dport[ \t]+[0-9]+(-[0-9]+)?/)) {
+                t=substr(line,RSTART,RLENGTH); gsub(/dport[ \t]+/,"",t); label=t
+            } else if (match(line, /dport[ \t]*\{[^}]*\}/)) {
+                t=substr(line,RSTART,RLENGTH); gsub(/dport[ \t]*/,"",t); gsub(/[{} \t]/,"",t); label=t
             }
-            # 格式C: chain policy counter: "policy drop; counter packets N bytes M"
-            if (match(line, /policy drop;[[:space:]]*counter packets [0-9]+/)) {
-                tmp = substr(line, RSTART, RLENGTH)
-                gsub(/[^0-9]/, "", tmp)
-                policy_drops += tmp + 0
-                next  # policy行不参与规则匹配
+            if (label=="") {
+                if (line ~ /@china_v4/) label="境外IP拦截(v4)"
+                else if (line ~ /@china_v6/) label="境外IP拦截(v6)"
+                else if (line ~ /@ban_v4/) label="黑名单拦截(v4)"
+                else if (line ~ /@ban_v6/) label="黑名单拦截(v6)"
+                else if (line ~ /iifname.*wan/ || line ~ /oifname.*wan/) label="WAN口丢弃"
+                else if (line ~ /ct state invalid/) label="无效连接丢弃"
+                else if (line ~ /echo-request/) label="Ping丢弃"
+                else if (line ~ /reject/) label="拒绝连接"
+                else label="其他丢弃"
             }
-            if (match(line, /policy drop[[:space:]]*$/)) {
-                # 有些格式counter在下一行，标记一下
-                in_policy = 1
-                next
-            }
-            if (in_policy && pkts > 0) {
-                policy_drops += pkts
-                in_policy = 0
-                next
-            }
-            
-            # ========== 2. 提取dport ==========
-            if (match(line, /dport [\x22\x27]?[0-9]+(-[0-9]+)?[\x22\x27]?/)) {
-                tmp = substr(line, RSTART, RLENGTH)
-                gsub(/dport[[:space:]]+/, "", tmp)
-                gsub(/[\x22\x27]/, "", tmp)
-                dport = tmp
-            }
-            
-            # ========== 3. 提取协议 ==========
-            if (line ~ /meta l4proto tcp/) proto = "tcp"
-            else if (line ~ /meta l4proto udp/) proto = "udp"
-            else if (line ~ /meta l4proto icmp/) proto = "icmp"
-            else if (match(line, /[[:space:]]tcp[[:space:]]/)) proto = "tcp"
-            else if (match(line, /[[:space:]]udp[[:space:]]/)) proto = "udp"
-            else if (match(line, /[[:space:]]icmp[[:space:]]/)) proto = "icmp"
-            
-            # ========== 4. 检查是否为drop/reject动作 ==========
-            is_drop = 0
-            if (match(line, /[[:space:]]drop[[:space:];]/)) is_drop = 1
-            else if (match(line, /[[:space:]]drop$/)) is_drop = 1
-            else if (match(line, /[[:space:]]reject[[:space:];]/)) is_drop = 1
-            else if (match(line, /[[:space:]]reject$/)) is_drop = 1
-            
-            if (is_drop) {
-                use_pkts = (pkts > 0) ? pkts : prev_pkts
-                use_dport = (dport != "") ? dport : prev_dport
-                use_proto = (proto != "any") ? proto : prev_proto
-                
-                if (use_pkts > 0) {
-                    key = use_proto "|" ((use_dport != "") ? use_dport : "默认规则")
-                    port_map[key] += use_pkts
-                    port_proto[key] = use_proto
-                }
-                prev_pkts = 0; prev_dport = ""; prev_proto = "any"
-            } else {
-                # 保存上下文
-                if (pkts > 0) prev_pkts = pkts
-                if (dport != "") prev_dport = dport
-                if (proto != "any") prev_proto = proto
+
+            if (pkts>0) {
+                key=proto "|" label
+                m[key]+=pkts
             }
         }
         END {
-            # 输出聚合结果（按端口聚合，pkts从高到低）
-            for (k in port_map) {
-                pkts = port_map[k] + 0
-                proto = port_proto[k]
-                # k的格式是 "proto|dport"
-                dp = k
-                sub(/^[^|]*\|/, "", dp)  # 去掉proto|前缀
-                printf "%s|%s|%d|拦截\n", proto, dp, pkts
-            }
-            # 输出默认policy drop（如果有）
-            if (policy_drops > 0) {
-                printf "%s|%s|%d|拦截\n", "any", "默认策略DROP", policy_drops
-            }
+            for (k in m) printf "%s|%d|拦截\n", k, m[k]
         }')
-        
+
         # 排序并计算总数
         if [ -n "$block_output" ]; then
-            # 按pkts降序排序（第三列）
             block_output=$(echo "$block_output" | sort -t'|' -k3,3 -rn)
             block_total=$(echo "$block_output" | awk -F'|' '{sum+=$3} END{print sum+0}')
         fi
@@ -1501,6 +1459,158 @@ cmd_access_log() {
 
     echo "===END==="
     write_log "DEBUG" "access_log: 完成, BLOCK_TOTAL=${block_total:-0}"
+}
+
+# ========== 9.4 拦截明细（v1.8.5） ==========
+# 点击「防火墙拦截统计(按端口)」某行时调用，返回被拦截的源IP明细，便于拉黑。
+# 数据源：china_input/china6_input 的限速日志（NM_DROP4/NM_DROP6 前缀，10/分钟）。
+# 参数 key：纯端口号(按DPT过滤) / 含v4|v6(按族过滤) / 空或all(全部已记录源IP)。
+cmd_block_detail() {
+    local key="$1"
+    load_config
+    echo "===BLOCK_DETAIL==="
+    echo "KEY=${key}"
+    local raw
+    raw=$(logread 2>/dev/null | grep -E 'NM_DROP[46]:' | tail -n 3000)
+    if [ -z "$raw" ]; then
+        echo "NO_LOG=1"
+        echo "===END==="
+        return 0
+    fi
+    echo "$raw" | awk -v key="$key" '
+    {
+        line=$0
+        fam=""
+        if (line ~ /NM_DROP4:/) fam="v4"
+        else if (line ~ /NM_DROP6:/) fam="v6"
+        else next
+        if (key ~ /v4/ && fam!="v4") next
+        if (key ~ /v6/ && fam!="v6") next
+        src=""; dpt=""; proto=""
+        if (match(line, /SRC=[^ ]+/)) src=substr(line,RSTART+4,RLENGTH-4)
+        if (match(line, /DPT=[0-9]+/)) dpt=substr(line,RSTART+4,RLENGTH-4)
+        if (match(line, /PROTO=[A-Za-z0-9]+/)) proto=substr(line,RSTART+6,RLENGTH-6)
+        if (src=="") next
+        if (key ~ /^[0-9]+(-[0-9]+)?$/ && dpt!=key) next
+        cnt[src]++
+        if (dpt!="" && index(","ports[src]",", ","dpt",")==0)
+            ports[src]=ports[src] (ports[src]==""?"":",") dpt
+        if (proto!="") pr[src]=proto
+        ts=line; sub(/kernel:.*/,"",ts); gsub(/^[ \t]+|[ \t]+$/,"",ts)
+        last[src]=ts
+    }
+    END {
+        n=0
+        for (s in cnt) { printf "%s|%s|%s|%d|%s\n", s, pr[s], ports[s], cnt[s], last[s]; n++ }
+        if (n==0) print "NO_MATCH=1"
+    }' | sort -t'|' -k4,4 -rn | head -100
+    echo "===END==="
+}
+
+# ========== 9.5 静态IP一键绑定（v1.8.4） ==========
+# 从在线客户端速览直接绑定：创建 dhcp host（MAC + 当前IPv4 + 主机名 + DUID）。
+# 与「静态IP分配」页设备列表共用同一套 dhcp.host 配置，绑定后页面可见可编辑。
+nm_valid_mac() {
+    case "$1" in
+        [0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+cmd_static_bind() {
+    local mac="$1" ip="$2" name="$3" duid="$4"
+    load_config
+    # MAC 必填且格式合法
+    if [ -z "$mac" ] || ! nm_valid_mac "$mac"; then
+        error "MAC 地址格式无效（应为 AA:BB:CC:DD:EE:FF）"
+        return 1
+    fi
+    mac=$(echo "$mac" | tr 'a-f' 'A-F')
+    # 去重：同 MAC 已绑定则拒绝
+    local exist
+    exist=$(uci show dhcp 2>/dev/null | grep "=host" | cut -d. -f2 | cut -d= -f1 | while read -r s; do
+        [ "$(uci -q get dhcp.$s.mac | tr 'a-f' 'A-F')" = "$mac" ] && echo "$s"
+    done | head -n1)
+    if [ -n "$exist" ]; then
+        error "该 MAC 已绑定（条目 $exist），请在设备列表中编辑"
+        return 1
+    fi
+    # IPv4 校验（可选）：格式 + 不等于路由器LAN IP + 落在LAN网段
+    if [ -n "$ip" ] && [ "$ip" != "*" ]; then
+        if ! echo "$ip" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; then
+            error "IPv4 地址格式无效：$ip"
+            return 1
+        fi
+        local lanip lanprefix ipprefix
+        lanip=$(uci -q get network.lan.ipaddr)
+        if [ -n "$lanip" ]; then
+            [ "$ip" = "$lanip" ] && { error "该 IPv4 是路由器自身地址，不可绑定"; return 1; }
+            lanprefix=$(echo "$lanip" | cut -d. -f1-3)
+            ipprefix=$(echo "$ip" | cut -d. -f1-3)
+            if [ "$lanprefix" != "$ipprefix" ]; then
+                error "IPv4 $ip 不在 LAN 网段 ${lanprefix}.0/24 内"
+                return 1
+            fi
+        fi
+    else
+        ip=""
+    fi
+    # 主机名清洗（仅允许字母数字下划线连字符）
+    if [ -n "$name" ] && [ "$name" != "*" ]; then
+        name=$(echo "$name" | tr -cd 'A-Za-z0-9_-' | cut -c1-32)
+    else
+        name=""
+    fi
+    # DUID 去冒号
+    if [ -n "$duid" ]; then
+        duid=$(echo "$duid" | tr -d ':' | tr 'A-F' 'a-f')
+        echo "$duid" | grep -Eq '^[0-9a-f]+$' || duid=""
+    fi
+    local sec
+    sec=$(uci add dhcp host)
+    uci set dhcp.$sec.mac="$mac"
+    [ -n "$ip" ] && uci set dhcp.$sec.ip="$ip"
+    [ -n "$name" ] && uci set dhcp.$sec.name="$name"
+    [ -n "$duid" ] && uci set dhcp.$sec.duid="$duid"
+    uci set dhcp.$sec.enabled='1'
+    uci commit dhcp
+    /etc/init.d/dnsmasq reload >/dev/null 2>&1
+    info "已绑定 $mac ${ip:+→ $ip }${name:+($name)}，条目 $sec"
+    write_log "INFO" "static_bind: mac=$mac ip=$ip name=$name sec=$sec"
+    return 0
+}
+
+# ========== 9.6 静态IP解绑（v1.8.5） ==========
+# 按 MAC 删除 dhcp host 静态绑定（在线客户端速览「解绑」按钮调用）。
+# 同 MAC 可能有多条（历史重复），全部删除；按下标降序删避免移位误删。
+cmd_static_unbind() {
+    local mac="$1"
+    load_config
+    if [ -z "$mac" ] || ! nm_valid_mac "$mac"; then
+        error "MAC 地址格式无效（应为 AA:BB:CC:DD:EE:FF）"
+        return 1
+    fi
+    mac=$(echo "$mac" | tr 'a-f' 'A-F')
+    local idx=0 hits=""
+    while uci -q get "dhcp.@host[$idx]" >/dev/null 2>&1; do
+        if [ "$(uci -q get dhcp.@host[$idx].mac | tr 'a-f' 'A-F')" = "$mac" ]; then
+            hits="$idx $hits"
+        fi
+        idx=$((idx+1))
+    done
+    if [ -z "$hits" ]; then
+        error "未找到 MAC $mac 的绑定条目"
+        return 1
+    fi
+    local n=0 i
+    for i in $hits; do
+        uci delete "dhcp.@host[$i]"
+        n=$((n+1))
+    done
+    uci commit dhcp
+    /etc/init.d/dnsmasq reload >/dev/null 2>&1
+    info "已解绑 $mac（删除 $n 条绑定），DHCP 已重载"
+    write_log "INFO" "static_unbind: mac=$mac removed=$n"
+    return 0
 }
 
 # ========== 10. 防火墙操作 ==========
@@ -2727,6 +2837,7 @@ china_apply_rules() {
         printf 'add rule inet netmanager china_forward iifname { %s } udp sport 67 udp dport 68 counter accept\n' "$ifname_set"
         printf 'add rule inet netmanager china_forward iifname { %s } ip saddr 169.254.0.0/16 counter accept\n' "$ifname_set"
         printf 'add rule inet netmanager china_forward iifname { %s } ct state new meta l4proto { tcp, udp } ip saddr != @china_v4 counter drop\n' "$ifname_set"
+        printf 'add rule inet netmanager china_input iifname { %s } ct state new meta l4proto { tcp, udp } ip saddr != @china_v4 limit rate 10/minute burst 20 packets log prefix "NM_DROP4: " level warn\n' "$ifname_set"
         printf 'add rule inet netmanager china_input iifname { %s } ct state new meta l4proto { tcp, udp } ip saddr != @china_v4 counter drop\n' "$ifname_set"
     } > "$rf"
     if ! nft -f "$rf" 2>/tmp/netmanager_china_rules.err; then
@@ -3179,6 +3290,7 @@ china6_apply_rules() {
         printf 'add rule inet netmanager6 china6_forward iifname { %s } ip6 saddr ff00::/8 counter accept\n' "$ifname_set"
         printf 'add rule inet netmanager6 china6_forward iifname { %s } udp sport 547 udp dport 546 counter accept\n' "$ifname_set"
         printf 'add rule inet netmanager6 china6_forward iifname { %s } ct state new meta l4proto { tcp, udp } ip6 saddr != @china_v6 counter drop\n' "$ifname_set"
+        printf 'add rule inet netmanager6 china6_input iifname { %s } ct state new meta l4proto { tcp, udp } ip6 saddr != @china_v6 limit rate 10/minute burst 20 packets log prefix "NM_DROP6: " level warn\n' "$ifname_set"
         printf 'add rule inet netmanager6 china6_input iifname { %s } ct state new meta l4proto { tcp, udp } ip6 saddr != @china_v6 counter drop\n' "$ifname_set"
     } > "$rf"
     if ! nft -f "$rf" 2>/tmp/netmanager_china6_rules.err; then
@@ -3810,6 +3922,9 @@ case "$1" in
     rule_edit)          shift; cmd_rule_edit "$@" ;;
     ssh_log)            shift; cmd_ssh_log "$@" ;;
     access_log)         shift; cmd_access_log "$@" ;;
+    block_detail)       shift; cmd_block_detail "$@" ;;
+    static_bind)        shift; cmd_static_bind "$@" ;;
+    static_unbind)      shift; cmd_static_unbind "$@" ;;
     log_set)            shift; cmd_log_set "$@" ;;
     log_get)            shift; cmd_log_get "$@" ;;
     log_query)          shift; cmd_log_query "$@" ;;

@@ -4,6 +4,9 @@
 
 local m, s, o
 
+-- v1.8.4：模块级 trim（IPv6 模式读取运行时配置用）
+local function trim(s) return (s or ""):gsub("^%s+", ""):gsub("%s+$", "") end
+
 -- ============================================================
 -- 第一部分：上网设置（WAN口 + LAN口，绑定 network 配置）
 -- v1.6.1：隐藏 Map 级别标题栏，统一用 section 级别标题（灰色标题栏）
@@ -175,6 +178,45 @@ o.datatype = "ip6addr"
 o.placeholder = "2400:3200::1"
 o:depends("enable", "1")
 
+-- ---------- IPv6 获取与分发模式（v1.8.4） ----------
+-- 与 iStoreOS 原生网络管理共用同一套 dhcp.lan / network.wan6 配置，两边互通：
+-- 这里改的模式，原生「网络→接口→LAN→DHCP服务器→IPv6设置」里同步可见，反之亦然。
+-- 选项值存 dnssettings.ipv6，点「应用配置」时由 dnssettings-apply.sh 翻译写入 dhcp/network。
+s = m2:section(NamedSection, "ipv6", "dnssettings", translate("IPv6 获取与分发"),
+    translate("管理 WAN 口 IPv6 前缀获取（PD）与 LAN 口 IPv6 分发模式。配置写入 iStoreOS 原生网络管理同一套参数，互不冲突。"))
+
+o = s:option(ListValue, "wan_prefix", translate("WAN 前缀请求长度 (PD)"))
+o:value("auto", translate("自动（运营商决定）"))
+o:value("60", "/60")
+o:value("56", "/56")
+o:value("64", "/64")
+o:value("no", translate("不请求前缀（关闭 PD）"))
+o.default = "auto"
+o.rmempty = false
+function o.cfgvalue(self, section)
+    local v = trim(luci.sys.exec("uci -q get network.wan6.reqprefix 2>/dev/null"))
+    return (v ~= "") and v or "auto"
+end
+o.description = translate("向运营商请求的 IPv6 前缀长度。前缀越短可划分的子网越多；「不请求」则关闭前缀委托。修改后应用会重新协商 wan6。")
+
+o = s:option(ListValue, "lan_mode", translate("LAN 口 IPv6 分发模式"))
+o:value("server", translate("服务器模式（RA + DHCPv6 状态化）"))
+o:value("slaac", translate("服务器模式（SLAAC 无状态）"))
+o:value("relay", translate("中继模式（透传上级路由 IPv6）"))
+o:value("disabled", translate("关闭 IPv6 分发"))
+o.default = "server"
+o.rmempty = false
+function o.cfgvalue(self, section)
+    local ra = trim(luci.sys.exec("uci -q get dhcp.lan.ra 2>/dev/null"))
+    local d6 = trim(luci.sys.exec("uci -q get dhcp.lan.dhcpv6 2>/dev/null"))
+    if ra == "relay" or d6 == "relay" then return "relay" end
+    if ra == "disabled" and (d6 == "disabled" or d6 == "") then return "disabled" end
+    if d6 == "server" then return "server" end
+    if ra == "server" then return "slaac" end
+    return "server"
+end
+o.description = translate("服务器模式：由本机给内网设备分配 IPv6（状态化=DHCPv6 分配地址；SLAAC=设备按 RA 前缀自行生成）。中继模式：上级路由已有 IPv6 时透传给内网（需上级支持）。关闭：内网不再分发 IPv6。")
+
 -- ---------- 操作按钮（v1.6.1 移除备份按钮，统一由设置页面备份模块管理） ----------
 -- ---------- v1.8.0：实际生效 DNS 只读面板 ----------
 -- 首页显示的是运行时真实上游，本页配置的是期望值，二者来源不同容易看着「冲突」。
@@ -292,6 +334,7 @@ local function _ensure_dns_defaults()
             dns1_v6 = "2400:3200::1", dns2_v6 = "2402:4e00::",
         },
         dnsmasq = { enable = "1", noresolv = "0" },
+        ipv6 = { lan_mode = "server", wan_prefix = "auto" },
     }
     local changed = false
 

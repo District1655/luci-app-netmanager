@@ -1,11 +1,11 @@
 <%#
-    netmanager/cbi_nav.htm - CBI 页面专用页内导航条
-    用途：DNS设置 / 静态IPv6分配 两个 CBI 表单页面无自绘视图的 nav.htm 页内导航，
-         从自绘页面进入后页签消失，本模板以 CBI Template 节点注入补齐。
-    特点：自带内联样式（CBI 页面不加载 common_head.htm，不能依赖外部样式类）；
-         active 判断与 nav.htm 一致（requestpath[3]）。
-    注意：LuCI 模板注释用井号语法，注释内容内不可出现百分号加大于号组合，
-         否则解析器会提前结束注释块导致后续内容语法错误。
+    netmanager/cbi_nav.htm - CBI 页面专用页内导航 + 布局对齐
+    v1.8.4：让 CBI 页面（上网设置 / 静态IPv6分配）与自绘页面（端口转发等）布局一致：
+            主题头 → 「网络管理」标题栏 → 导航条 → 单一白卡内容区（h2页标题 + 各h3子节）。
+    做法：模板输出标题栏+导航+样式+脚本；脚本在 DOMContentLoaded 把两个 cbi-map
+          （连同各自 form 整体移动，不破坏表单提交）合并进一个 .netmanager-content 卡片，
+          页标题/描述移到导航下方。CBI 页面不加载 common_head.htm，样式在此自带。
+    注意：LuCI 模板注释用井号语法，注释内不可出现百分号加大于号组合。
 %>
 <%
 local path = luci.dispatcher.context.requestpath
@@ -13,12 +13,10 @@ local cur = (type(path) == "table") and (path[3] or "") or ""
 local function url(...) return luci.dispatcher.build_url("admin", "netmanager", ...) end
 local function cls(id) return (cur == id) and ' class="active"' or '' end
 %>
-<style>
-.netmanager-nav { display: flex; gap: 2px; background: #fff; padding: 6px; border-radius: 8px; margin: 0 0 14px 0; box-shadow: 0 1px 2px rgba(0,0,0,0.06); border: 1px solid #e5e7eb; flex-wrap: wrap; }
-.netmanager-nav a { padding: 7px 14px; text-decoration: none; color: #6b7280; border-radius: 6px; font-size: 13px; transition: all 0.15s; }
-.netmanager-nav a:hover { background: #f3f4f6; color: #111827; }
-.netmanager-nav a.active { background: #2563eb; color: #fff; }
-</style>
+<div class="netmanager-header">
+    <h1>网络管理</h1>
+    <span class="netmanager-author">吾爱破解liyu0828</span>
+</div>
 <div class="netmanager-nav">
     <a href="<%=url('overview')%>"<%=cls('overview')%>>📊 系统概览</a>
     <a href="<%=url('port_forward')%>"<%=cls('port_forward')%>>🔄 端口转发</a>
@@ -26,6 +24,91 @@ local function cls(id) return (cur == id) and ' class="active"' or '' end
     <a href="<%=url('ssh_log')%>"<%=cls('ssh_log')%>>🔐 SSH登录日志</a>
     <a href="<%=url('access_log')%>"<%=cls('access_log')%>>🌐 端口访问日志</a>
     <a href="<%=url('dns')%>"<%=cls('dns')%>>🌐 上网设置</a>
-    <a href="<%=url('dns_staticv6')%>"<%=cls('dns_staticv6')%>>📮 静态IPv6分配</a>
+    <a href="<%=url('dns_staticv6')%>"<%=cls('dns_staticv6')%>>📮 静态IP分配</a>
     <a href="<%=url('settings')%>"<%=cls('settings')%>>⚙️ 设置</a>
 </div>
+<style>
+/* ===== 与 common_head.htm 一致的框架样式（CBI 页面不加载 common_head，自带） ===== */
+.netmanager-header { display:flex; justify-content:space-between; align-items:center; padding:14px 20px; background:#fff; border-radius:8px; margin-bottom:12px; box-shadow:0 1px 2px rgba(0,0,0,0.06); border:1px solid #e5e7eb; }
+.netmanager-header h1 { margin:0; font-size:18px; font-weight:600; color:#111827; }
+.netmanager-author { font-size:12px; color:#9ca3af; }
+.netmanager-nav { display:flex; gap:2px; background:#fff; padding:6px; border-radius:8px; margin-bottom:12px; box-shadow:0 1px 2px rgba(0,0,0,0.06); border:1px solid #e5e7eb; flex-wrap:wrap; }
+.netmanager-nav a { padding:7px 14px; text-decoration:none; color:#6b7280; border-radius:6px; font-size:13px; transition:all 0.15s; }
+.netmanager-nav a:hover { background:#f3f4f6; color:#111827; }
+.netmanager-nav a.active { background:#2563eb; color:#fff; }
+.netmanager-content { background:#fff; border-radius:8px; padding:20px; box-shadow:0 1px 2px rgba(0,0,0,0.06); border:1px solid #e5e7eb; max-width:1200px; }
+.netmanager-content > h2 { margin:0 0 16px 0; font-size:16px; font-weight:600; color:#111827; padding-bottom:12px; border-bottom:1px solid #f3f4f6; }
+.nm-page-intro { color:#6b7280; font-size:13px; line-height:1.7; margin:0 0 18px 0; }
+/* ===== CBI 元素改为内容卡内的扁平子节（对齐端口转发页的 h3 子节风格） ===== */
+.cbi-map { background:transparent !important; border:none !important; box-shadow:none !important; padding:0 !important; margin:0 !important; max-width:none; }
+.cbi-map > h2 { display:none; }
+.cbi-section { background:transparent !important; border:none !important; box-shadow:none !important; padding:0 !important; margin:0 0 22px 0 !important; }
+.cbi-section > h3 { color:#374151 !important; font-size:14px; font-weight:600; margin:0 0 10px 0; padding:0; border:none; }
+.cbi-section-descr { color:#6b7280; font-size:13px; line-height:1.6; margin-bottom:12px; }
+.cbi-value { padding:8px 0; border-bottom:1px solid #f9fafb; }
+.cbi-value-title { color:#374151; font-weight:500; font-size:13px; }
+.cbi-value-field { font-size:13px; color:#374151; }
+.cbi-input-text, .cbi-input-select, .cbi-input-textarea,
+input.cbi-input-text, select.cbi-input-select, textarea.cbi-input-textarea {
+    border:1px solid #d1d5db !important; border-radius:5px; padding:5px 9px; font-size:13px; background:#fff; color:#1f2937; }
+.cbi-input-text:focus, .cbi-input-select:focus, textarea:focus { outline:none; border-color:#2563eb !important; }
+.cbi-button { border-radius:6px; font-size:13px; padding:6px 14px; border:none; cursor:pointer; }
+.cbi-button-apply, .cbi-button-save { background:#2563eb !important; color:#fff !important; }
+.cbi-button-neutral { background:#6b7280 !important; color:#fff !important; }
+.cbi-button-reset, .cbi-button-link { background:#f3f4f6 !important; color:#374151 !important; }
+.cbi-section-table, table.cbi-section-table { width:100%; border-collapse:collapse; font-size:13px; }
+.cbi-section-table th { background:#f9fafb; color:#6b7280; font-weight:600; font-size:12px; padding:9px 12px; border-bottom:1px solid #e5e7eb; text-align:left; }
+.cbi-section-table td { padding:9px 12px; border-bottom:1px solid #f3f4f6; vertical-align:top; }
+.cbi-section-table tr:hover td { background:#f9fafb; }
+.cbi-page-actions { padding:12px 0 0 0; text-align:right; }
+</style>
+<script>
+/* v1.8.4：把 CBI 页面结构对齐自绘页面。
+   将标题栏/导航提到内容卡之外，两个 cbi-map（含 form 整体）合并进单一 .netmanager-content，
+   页标题取首个 map 的 h2（无则取导航 active 文本），描述作为引言置于标题下。
+   整体移动 map 节点（form 随之移动），不拆解 form，保证 CBI 表单提交不受影响。 */
+document.addEventListener('DOMContentLoaded', function () {
+    var maps = Array.prototype.slice.call(document.querySelectorAll('.cbi-map'));
+    if (!maps.length) return;
+    var nav = document.querySelector('.netmanager-nav');
+    var hdr = document.querySelector('.netmanager-header');
+    if (!nav || !hdr) return;
+    var first = maps[0];
+    var parent = first.parentNode;
+    if (!parent) return;
+
+    var content = document.createElement('div');
+    content.className = 'netmanager-content';
+    parent.insertBefore(hdr, first);
+    parent.insertBefore(nav, first);
+    parent.insertBefore(content, first);
+
+    /* 页标题：优先首个 map 自带 h2，否则用导航 active 文本（去掉开头 emoji） */
+    var mh = first.querySelector(':scope > h2');
+    var title = (mh && mh.textContent.trim()) ? mh.textContent.trim() : '';
+    if (!title) {
+        var active = nav.querySelector('a.active');
+        title = active ? active.textContent.trim() : '';
+        title = title.replace(/^[^一-龥A-Za-z]+/, '').trim();
+    }
+    if (title) {
+        var h2 = document.createElement('h2');
+        h2.textContent = title;
+        content.appendChild(h2);
+    }
+    /* 描述作为引言 */
+    var descr = first.querySelector('.cbi-map-descr');
+    if (descr) { descr.className = 'nm-page-intro'; content.appendChild(descr); }
+
+    /* 整体移动各 map（保留 form），去掉 map 级重复 h2 */
+    maps.forEach(function (mp) {
+        var h = mp.querySelector(':scope > h2');
+        if (h && h.parentNode) h.parentNode.removeChild(h);
+        content.appendChild(mp);
+    });
+
+    /* 框架保存按钮栏移入内容卡底部（与自绘页面按钮在卡内一致） */
+    var acts = document.querySelector('.cbi-page-actions');
+    if (acts) content.appendChild(acts);
+});
+</script>

@@ -1,6 +1,6 @@
 #!/bin/sh
 # ============================================================
-# DNS设置插件 - 应用配置脚本 (v1.8.3)
+# DNS设置插件 - 应用配置脚本 (v1.8.5)
 # 读取 /etc/config/dnssettings，写入系统 network/dhcp 配置并重载服务
 #
 # v1.7.3 更新：
@@ -25,7 +25,7 @@
 #   2. list 字段（network.wan.dns 等）改用 delete + add_list 正确写法，
 #      切换配置时先清残留，不再 set 单元素覆盖
 #   3. dnsmasq 转发关闭时清空旧 server 列表，使"关闭"真正生效
-#   4. 应用前自动备份 network/dhcp 到 /root/backup/（保留最近 5 份）
+#   4. 应用前自动备份 network/dhcp 到 /root/backup/（保留最近 3 份）
 # ============================================================
 
 CONFIG_FILE="/etc/config/dnssettings"
@@ -187,13 +187,13 @@ log "========== 开始应用 DNS 配置 =========="
 
 # ============================================================
 # 0. 应用前自动备份（network/dhcp/dnssettings 三配置）
-#    保留最近 5 份自动备份，防止堆积占满 /root
+#    保留最近 3 份自动备份，防止堆积占满 /root
 # ============================================================
 AUTO_BAK="$BACKUP_DIR/dnssettings-auto-$(date +%Y%m%d-%H%M%S).tar.gz"
 if mkdir -p "$BACKUP_DIR" && tar -czf "$AUTO_BAK" /etc/config/network /etc/config/dhcp "$CONFIG_FILE" 2>/dev/null; then
     log "已自动备份当前配置: $AUTO_BAK"
-    # 清理旧自动备份（按名字排序，保留最新 5 份）
-    ls -1t "$BACKUP_DIR"/dnssettings-auto-*.tar.gz 2>/dev/null | tail -n +6 | while read -r old; do
+    # 清理旧自动备份（按修改时间排序，保留最新 3 份）
+    ls -1t "$BACKUP_DIR"/dnssettings-auto-*.tar.gz 2>/dev/null | tail -n +4 | while read -r old; do
         rm -f "$old"
         log "清理旧自动备份: $old"
     done
@@ -329,28 +329,96 @@ else
 fi
 
 # ============================================================
-# 4. 配置 LAN 口 IPv6 RA/DHCPv6 下发 DNS
+# 4. 配置 LAN 口 IPv6（v1.8.4：分发模式 + RDNSS）
+#    与 iStoreOS 原生网络管理共用 dhcp.lan 配置。模式存 dnssettings.ipv6.lan_mode，
+#    旧版在此硬写 ra/dhcpv6=server，会覆盖用户所选模式，现改为按模式写入。
 # ============================================================
-if [ "$LAN_FORCE" = "1" ]; then
-    LAN_V6_DNS=""
-    [ -n "$LAN_DNS1_V6" ] && LAN_V6_DNS="$LAN_DNS1_V6"
-    [ -n "$LAN_DNS2_V6" ] && LAN_V6_DNS="$LAN_V6_DNS $LAN_DNS2_V6"
-    if [ -z "$LAN_V6_DNS" ]; then
-        log "WARN: 勾选强制下发但 LAN IPv6 DNS 为空，跳过（保持现状）"
-    else
-        # list 字段：清残留 + 逐个写入
+V6MODE=$(uci -q get dnssettings.ipv6.lan_mode)
+[ -z "$V6MODE" ] && V6MODE="server"
+case "$V6MODE" in
+    relay)
+        uci set dhcp.lan.ra='relay'
+        uci set dhcp.lan.dhcpv6='relay'
+        uci set dhcp.lan.ndp='relay'
+        uci delete dhcp.lan.ra_flags 2>/dev/null
         uci delete dhcp.lan.dns 2>/dev/null
-        for dns in $LAN_V6_DNS; do
-            uci add_list dhcp.lan.dns="$dns"
-        done
-        # 确保 RA 和 DHCPv6 服务开启
+        # 中继需上游接口作 master（iStoreOS 原生中继同样如此）
+        if uci -q get network.wan6 >/dev/null 2>&1; then
+            uci set dhcp.wan6=dhcp 2>/dev/null
+            uci set dhcp.wan6.interface='wan6'
+            uci set dhcp.wan6.ra='relay'
+            uci set dhcp.wan6.dhcpv6='relay'
+            uci set dhcp.wan6.ndp='relay'
+            uci set dhcp.wan6.master='1'
+        fi
+        log "LAN IPv6: 中继模式（ra/dhcpv6/ndp=relay，wan6=master）"
+        ;;
+    disabled)
+        uci set dhcp.lan.ra='disabled'
+        uci set dhcp.lan.dhcpv6='disabled'
+        uci set dhcp.lan.ndp='disabled'
+        uci delete dhcp.lan.ra_flags 2>/dev/null
+        uci delete dhcp.lan.dns 2>/dev/null
+        uci delete dhcp.wan6 2>/dev/null
+        log "LAN IPv6: 已关闭分发"
+        ;;
+    slaac)
+        uci set dhcp.lan.ra='server'
+        uci set dhcp.lan.dhcpv6='disabled'
+        uci set dhcp.lan.ndp='disabled'
+        uci delete dhcp.lan.ra_flags 2>/dev/null
+        uci add_list dhcp.lan.ra_flags='other-config'
+        uci set dhcp.lan.ra_slaac='1'
+        uci delete dhcp.wan6 2>/dev/null
+        log "LAN IPv6: 服务器模式（SLAAC 无状态）"
+        ;;
+    *)
         uci set dhcp.lan.ra='server'
         uci set dhcp.lan.dhcpv6='server'
-        log "LAN IPv6 RA/DHCPv6: $LAN_V6_DNS"
+        uci set dhcp.lan.ndp='disabled'
+        uci delete dhcp.lan.ra_flags 2>/dev/null
+        uci add_list dhcp.lan.ra_flags='managed-config'
+        uci add_list dhcp.lan.ra_flags='other-config'
+        uci set dhcp.lan.ra_slaac='1'
+        uci delete dhcp.wan6 2>/dev/null
+        log "LAN IPv6: 服务器模式（RA + DHCPv6 状态化）"
+        ;;
+esac
+
+# RDNSS：仅 server/slaac 模式给设备下发 IPv6 DNS
+if [ "$V6MODE" = "server" ] || [ "$V6MODE" = "slaac" ]; then
+    if [ "$LAN_FORCE" = "1" ]; then
+        LAN_V6_DNS=""
+        [ -n "$LAN_DNS1_V6" ] && LAN_V6_DNS="$LAN_DNS1_V6"
+        [ -n "$LAN_DNS2_V6" ] && LAN_V6_DNS="$LAN_V6_DNS $LAN_DNS2_V6"
+        if [ -z "$LAN_V6_DNS" ]; then
+            log "WARN: 勾选强制下发但 LAN IPv6 DNS 为空，跳过 RDNSS（保持现状）"
+        else
+            uci delete dhcp.lan.dns 2>/dev/null
+            for dns in $LAN_V6_DNS; do
+                uci add_list dhcp.lan.dns="$dns"
+            done
+            log "LAN IPv6 RDNSS: $LAN_V6_DNS"
+        fi
+    else
+        uci delete dhcp.lan.dns 2>/dev/null
+        log "LAN IPv6 RDNSS: 不强制下发（设备走路由器缓存）"
     fi
-else
-    uci delete dhcp.lan.dns 2>/dev/null
-    log "LAN IPv6 RA/DHCPv6: 不强制下发（设备走路由器缓存）"
+fi
+
+# ============================================================
+# 4.5 WAN IPv6 前缀请求长度（PD，v1.8.4）
+# ============================================================
+CHANGED_PREFIX=0
+V6PREFIX=$(uci -q get dnssettings.ipv6.wan_prefix)
+if [ -n "$V6PREFIX" ] && uci -q get network.wan6 >/dev/null 2>&1; then
+    CUR_PREFIX=$(uci -q get network.wan6.reqprefix)
+    [ -z "$CUR_PREFIX" ] && CUR_PREFIX="auto"
+    if [ "$V6PREFIX" != "$CUR_PREFIX" ]; then
+        uci set network.wan6.reqprefix="$V6PREFIX"
+        CHANGED_PREFIX=1
+        log "WAN6 前缀请求: $CUR_PREFIX -> $V6PREFIX"
+    fi
 fi
 
 # ============================================================
@@ -435,8 +503,9 @@ fi
 /usr/sbin/netmanager port_sync_v6 2>&1 | while read -r l; do log "  $l"; done
 
 # 【v1.7.3】wan6 绑定被修正后必须重新协商，否则新绑定不生效、PD 仍拿不到
-if [ "$FIXED_WAN6" = "1" ]; then
-    log "重启 wan6 接口以应用新绑定并重新获取 PD 前缀..."
+# 【v1.8.4】前缀请求长度变化同样需要重新协商 wan6
+if [ "$FIXED_WAN6" = "1" ] || [ "$CHANGED_PREFIX" = "1" ]; then
+    log "重启 wan6 接口以应用新绑定/前缀请求并重新获取 PD 前缀..."
     ifup wan6 2>/dev/null
     sleep 12
     PD_INFO=$(ifstatus wan6 2>/dev/null | awk '/"ipv6-prefix"/{f=1} f&&/"mask"/{print; exit}')

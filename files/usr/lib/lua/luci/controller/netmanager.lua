@@ -13,7 +13,7 @@ function index()
     entry({"admin", "netmanager", "access_log"}, template("netmanager/access_log"), _("端口访问日志"), 5)
     -- 上网设置（CBI 标准表单，绑定 network + dhcp + dnssettings）
     entry({"admin", "netmanager", "dns"}, cbi("netmanager/dns_settings"), _("上网设置"), 6)
-    entry({"admin", "netmanager", "dns_staticv6"}, cbi("netmanager/dns_staticv6"), _("静态IPv6分配"), 7)
+    entry({"admin", "netmanager", "dns_staticv6"}, cbi("netmanager/dns_staticv6"), _("静态IP分配"), 7)
     entry({"admin", "netmanager", "settings"}, template("netmanager/settings"), _("设置"), 8)
     entry({"admin", "netmanager", "api"}, call("api_handler"))
     -- 【v1.4.6】dns_apply / dns_backup 原 GET 路由已改为 api_handler 内 POST action
@@ -262,6 +262,22 @@ function api_handler()
         else
             cmd = string.format("/usr/sbin/netmanager access_log '' %s", shell_escape(limit))
         end
+    elseif action == "static_bind" then
+        -- v1.8.4：在线客户端一键绑定静态IP（创建 dhcp host）
+        local mac = luci.http.formvalue("mac") or ""
+        local ip = luci.http.formvalue("ip") or ""
+        local name = luci.http.formvalue("name") or ""
+        local duid = luci.http.formvalue("duid") or ""
+        cmd = string.format("/usr/sbin/netmanager static_bind %s %s %s %s",
+            shell_escape(mac), arg(ip), arg(name), arg(duid))
+    elseif action == "static_unbind" then
+        -- v1.8.5：在线客户端一键解绑（按 MAC 删除 dhcp host）
+        local mac = luci.http.formvalue("mac") or ""
+        cmd = string.format("/usr/sbin/netmanager static_unbind %s", shell_escape(mac))
+    elseif action == "block_detail" then
+        -- v1.8.5：拦截统计点击查看被拦截源IP明细（便于拉黑）
+        local key = luci.http.formvalue("key") or ""
+        cmd = string.format("/usr/sbin/netmanager block_detail %s", arg(key))
     elseif action == "restart" then
         cmd = "/usr/sbin/netmanager restart"
     elseif action == "reload" then

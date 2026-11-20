@@ -317,14 +317,27 @@ local function build_online_html()
     table.insert(out, '.nm-ov-online { display:inline-block; width:8px; height:8px; border-radius:50%; background:#10b981; margin-right:5px; box-shadow:0 0 4px #10b981; }')
     table.insert(out, '.nm-ov-offline { display:inline-block; width:8px; height:8px; border-radius:50%; background:#d1d5db; margin-right:5px; }')
     table.insert(out, '.nm-ov-duid { color:#9ca3af; font-size:10px; font-family:"Consolas",monospace; word-break:break-all; max-width:160px; }')
+    table.insert(out, '.nm-bind-btn { background:#2563eb; color:#fff; border:none; border-radius:5px; padding:3px 12px; font-size:12px; cursor:pointer; }')
+    table.insert(out, '.nm-bind-btn:hover { opacity:0.85; }')
+    table.insert(out, '.nm-bind-btn:disabled { opacity:0.5; cursor:default; }')
+    table.insert(out, '.nm-unbind-btn { background:#dc2626; color:#fff; border:none; border-radius:5px; padding:3px 12px; font-size:12px; cursor:pointer; }')
+    table.insert(out, '.nm-unbind-btn:hover { opacity:0.85; }')
+    table.insert(out, '.nm-unbind-btn:disabled { opacity:0.5; cursor:default; }')
     table.insert(out, '</style>')
 
+    -- v1.8.4：一键绑定 API 地址与 CSRF token（与控制器 csrf_token 同源）
+    local nm_api = luci.dispatcher.build_url("admin", "netmanager", "api")
+    local nm_tok = (luci.dispatcher.context and luci.dispatcher.context.authtoken) and tostring(luci.dispatcher.context.authtoken) or ""
     table.insert(out, '<script>')
     table.insert(out, 'function nmToggleV6(id){var el=document.getElementById(id);var btn=document.getElementById(id+"_btn");if(el.style.display==="block"){el.style.display="none";btn.textContent=btn.getAttribute("data-more");}else{el.style.display="block";btn.textContent="收起";}}')
+    table.insert(out, 'var NM_API="' .. nm_api .. '";var NM_TOKEN="' .. nm_tok .. '";')
+    table.insert(out, 'function nmBind(btn){var mac=btn.getAttribute("data-mac"),ip=btn.getAttribute("data-ip"),name=btn.getAttribute("data-name"),duid=btn.getAttribute("data-duid");btn.disabled=true;btn.textContent="绑定中";var body=new URLSearchParams();body.set("action","static_bind");body.set("token",NM_TOKEN);body.set("mac",mac);body.set("ip",ip||"");body.set("name",name||"");body.set("duid",duid||"");fetch(NM_API,{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded; charset=UTF-8"},body:body.toString(),credentials:"same-origin"}).then(function(r){return r.text();}).then(function(t){if(t.indexOf("[ERROR]")>=0){alert("绑定失败："+t.replace(/\\[CMD\\][^\\n]*\\n?/,"").trim());btn.disabled=false;btn.textContent="绑定";}else{location.reload();}}).catch(function(e){alert("请求失败："+e);btn.disabled=false;btn.textContent="绑定";});}')
+    table.insert(out, 'function nmUnbind(btn){var mac=btn.getAttribute("data-mac");if(!confirm("确定解绑 "+mac+" ？解绑后该设备恢复动态分配。"))return;btn.disabled=true;btn.textContent="解绑中";var body=new URLSearchParams();body.set("action","static_unbind");body.set("token",NM_TOKEN);body.set("mac",mac);fetch(NM_API,{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded; charset=UTF-8"},body:body.toString(),credentials:"same-origin"}).then(function(r){return r.text();}).then(function(t){if(t.indexOf("[ERROR]")>=0){alert("解绑失败："+t.replace(/\\[CMD\\][^\\n]*\\n?/,"").trim());btn.disabled=false;btn.textContent="解绑";}else{location.reload();}}).catch(function(e){alert("请求失败："+e);btn.disabled=false;btn.textContent="解绑";});}')
+    table.insert(out, 'document.addEventListener("click",function(e){if(!e.target.closest)return;var b=e.target.closest(".nm-bind-btn");if(b){nmBind(b);return;}var u=e.target.closest(".nm-unbind-btn");if(u){nmUnbind(u);}});')
     table.insert(out, '</script>')
 
     table.insert(out, '<table class="nm-ov-table">')
-    table.insert(out, '<tr><th style="width:130px">' .. translate("状态") .. '</th><th style="width:140px">MAC</th><th>' .. translate("主机名") .. '</th><th style="width:130px">IPv4</th><th>IPv6</th><th style="width:90px">' .. translate("绑定") .. '</th></tr>')
+    table.insert(out, '<tr><th style="width:130px">' .. translate("状态") .. '</th><th style="width:140px">MAC</th><th>' .. translate("主机名") .. '</th><th style="width:130px">IPv4</th><th>IPv6</th><th style="width:90px">' .. translate("绑定") .. '</th><th style="width:80px">' .. translate("操作") .. '</th></tr>')
 
     local row_idx = 0
     for _, r in ipairs(ov_rows) do
@@ -369,10 +382,19 @@ local function build_online_html()
             status_html = status_html .. '<br><span class="nm-ov-duid" title="DUID: ' .. esc(r.duid) .. '">DUID: ' .. esc(r.duid:sub(1, 16)) .. '...</span>'
         end
 
+        -- v1.8.5：操作列——已绑定设备可一键解绑，未绑定设备一键绑定（data 属性传参，委托点击）
+        local action_html
+        if r.bound then
+            action_html = '<button class="nm-unbind-btn" data-mac="' .. esc(r.mac) .. '">' .. translate("解绑") .. '</button>'
+        else
+            action_html = '<button class="nm-bind-btn" data-mac="' .. esc(r.mac) .. '" data-ip="' .. esc(r.ip)
+                .. '" data-name="' .. esc(r.name) .. '" data-duid="' .. esc(r.duid) .. '">' .. translate("绑定") .. '</button>'
+        end
+
         table.insert(out, string.format(
             '<tr><td>%s</td><td class="nm-ov-mono">%s</td><td>%s</td>' ..
-            '<td class="nm-ov-mono">%s</td><td>%s</td><td>%s</td></tr>',
-            status_html, esc(r.mac), name, v4, v6_html, badge))
+            '<td class="nm-ov-mono">%s</td><td>%s</td><td>%s</td><td>%s</td></tr>',
+            status_html, esc(r.mac), name, v4, v6_html, badge, action_html))
     end
     table.insert(out, '</table>')
     return table.concat(out, "\n")
@@ -565,6 +587,18 @@ function o_ip4.validate(self, value, section)
         end)
         if conflict then
             return nil, translate("该 IPv4 已被其他条目使用") .. ": " .. esc(conflict)
+        end
+        -- v1.8.4：校验落在 LAN 网段且不等于路由器自身地址
+        local lanip = sys.exec("uci -q get network.lan.ipaddr 2>/dev/null"):gsub("%s+", "")
+        if lanip ~= "" then
+            if value == lanip then
+                return nil, translate("该 IPv4 是路由器自身地址，不可绑定")
+            end
+            local lp = lanip:match("^(%d+%.%d+%.%d+)%.")
+            local vp = value:match("^(%d+%.%d+%.%d+)%.")
+            if lp and vp and lp ~= vp then
+                return nil, translate("该 IPv4 不在 LAN 网段") .. " " .. lp .. ".0/24 " .. translate("内")
+            end
         end
     end
     return value

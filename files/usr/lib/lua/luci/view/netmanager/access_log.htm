@@ -42,9 +42,17 @@
         <h3>当前活跃连接</h3>
         <div class="netmanager-log" id="active_log"><div class="text-muted">加载中...</div></div>
         <h3>防火墙拦截统计 (按端口)</h3>
+        <div class="text-muted" style="font-size:12px;margin-bottom:6px;">点击任意一行可查看被拦截的源 IP 明细并一键拉黑（境外IP拦截已启用限速源IP记录）。</div>
         <div class="netmanager-log" id="blocked_log"><div class="text-muted">加载中...</div></div>
+        <div id="block_detail_panel" style="display:none;margin-top:12px;border:1px solid #e5e7eb;border-radius:8px;padding:12px;background:#f9fafb;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                <b id="bd_title">拦截明细</b>
+                <button class="btn btn-secondary btn-sm" onclick="closeBlockDetail()">关闭</button>
+            </div>
+            <div id="bd_body" class="netmanager-log"></div>
+        </div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.3</div>
+    <div class="footer-sign">网络管理插件 v1.8.5</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -65,7 +73,6 @@ function loadAccessLog() {
         sections.forEach(section => {
             if (section.includes('ACTIVE')) current = 'active';
             else if (section.includes('BLOCKED')) current = 'blocked';
-            else if (section.includes('===END')) current = '';
             const lines = section.split('\n').filter(l => l.trim());
             lines.forEach(line => {
                 // 统计行（带=号）
@@ -90,10 +97,18 @@ function loadAccessLog() {
                 } else if (current === 'blocked' && parts.length >= 3) {
                     const proto = parts[0], dport = parts[1], pkts = parts[2];
                     if (parseInt(pkts) > 0) {
-                        blockedHtml += `<div><span class="log-fail">拦截</span> ${escapeHtml(proto.toUpperCase())} 端口 <b>${escapeHtml(dport)}</b> 累计 <b>${escapeHtml(pkts)}</b> 个包</div>`;
+                        // v1.8.4：dport 可能是端口号，也可能是用途标签（境外IP拦截/黑名单/WAN口丢弃）
+                        const target = /^\d+(-\d+)?$/.test(dport)
+                            ? ('端口 <b>' + escapeHtml(dport) + '</b>')
+                            : ('<b>' + escapeHtml(dport) + '</b>');
+                        const protoLabel = (proto === 'any') ? '全部协议' : escapeHtml(proto.toUpperCase());
+                        blockedHtml += `<div class="nm-block-row" data-key="${escapeHtml(dport)}" style="cursor:pointer;" title="点击查看被拦截源IP明细"><span class="log-fail">拦截</span> ${protoLabel} ${target} 累计 <b>${escapeHtml(pkts)}</b> 个包 <span style="color:#2563eb;font-size:11px;">🔍明细</span></div>`;
                     }
                 }
             });
+            // v1.8.4：===END 重置放在解析之后——拦截数据行与 ===END=== 同段，
+            // 若在段首重置 current 会漏掉本段拦截行（明细区一直空白的根因）
+            if (section.includes('===END')) current = '';
         });
         document.getElementById('active_count').textContent = activeCount;
         document.getElementById('inbound_count').textContent = inboundCount;
@@ -107,6 +122,50 @@ function toggleAuto() {
     if (autoTimer) { clearInterval(autoTimer); autoTimer = null; document.getElementById('auto_status').textContent = '自动刷新已关闭'; }
     else { autoTimer = setInterval(loadAccessLog, 5000); document.getElementById('auto_status').textContent = '自动刷新中(5s)'; }
 }
+// v1.8.5：点击拦截统计行 → 查看被拦截源IP明细 → 一键拉黑
+function showBlockDetail(key) {
+    const panel = document.getElementById('block_detail_panel');
+    panel.style.display = 'block';
+    document.getElementById('bd_title').textContent = '拦截明细 — ' + key;
+    document.getElementById('bd_body').innerHTML = '<div class="text-muted">加载中...</div>';
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=block_detail&key=' + encodeURIComponent(key)})
+    .then(r => r.text()).then(data => {
+        if (data.indexOf('NO_LOG=1') >= 0) {
+            document.getElementById('bd_body').innerHTML = '<div class="text-muted">暂无源IP日志。境外IP拦截启用限速记录(10条/分钟)，需有拦截发生后才记录；黑名单/WAN/Ping 等类别不记录源IP。</div>';
+            return;
+        }
+        const lines = data.split('\n').filter(l => l.includes('|'));
+        if (data.indexOf('NO_MATCH=1') >= 0 || lines.length === 0) {
+            document.getElementById('bd_body').innerHTML = '<div class="text-muted">该类别暂无匹配的源IP记录（可能拦截发生在日志记录之前，或属未启用源IP记录的类别）。</div>';
+            return;
+        }
+        let html = '<table style="width:100%;border-collapse:collapse;font-size:12px;"><tr style="background:#f3f4f6;"><th style="padding:6px;text-align:left;">源IP</th><th style="padding:6px;">协议</th><th style="padding:6px;">命中端口</th><th style="padding:6px;">次数</th><th style="padding:6px;">最近时间</th><th style="padding:6px;">操作</th></tr>';
+        lines.forEach(line => {
+            const p = line.split('|'); if (p.length < 5) return;
+            const src = p[0], proto = p[1], ports = p[2], cnt = p[3], last = p[4];
+            html += `<tr style="border-bottom:1px solid #e5e7eb;"><td style="padding:6px;font-family:monospace;">${escapeHtml(src)}</td><td style="text-align:center;">${escapeHtml(proto)}</td><td style="text-align:center;">${escapeHtml(ports)}</td><td style="text-align:center;"><b>${escapeHtml(cnt)}</b></td><td style="color:#6b7280;">${escapeHtml(last)}</td><td style="text-align:center;"><button class="btn btn-danger btn-sm nm-ban-btn" data-ip="${escapeHtml(src)}">拉黑</button></td></tr>`;
+        });
+        html += '</table>';
+        document.getElementById('bd_body').innerHTML = html;
+    });
+}
+function closeBlockDetail() { document.getElementById('block_detail_panel').style.display = 'none'; }
+function banIP(ip, btn) {
+    if (!confirm('确定拉黑 ' + ip + ' ？拉黑后该IP的所有访问将被丢弃。')) return;
+    if (btn) { btn.disabled = true; btn.textContent = '拉黑中'; }
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=blacklist_add&ip=' + encodeURIComponent(ip)})
+    .then(r => r.text()).then(data => {
+        if (data.indexOf('[ERROR]') >= 0) { alert('拉黑失败：' + data.replace(/\[CMD\][^\n]*\n?/,'').trim()); if (btn) { btn.disabled = false; btn.textContent = '拉黑'; } }
+        else { alert('已拉黑 ' + ip); if (btn) { btn.textContent = '已拉黑'; } loadAccessLog(); }
+    }).catch(e => { alert('请求失败：' + e); if (btn) { btn.disabled = false; btn.textContent = '拉黑'; } });
+}
+document.addEventListener('click', function(e) {
+    if (!e.target.closest) return;
+    const row = e.target.closest('.nm-block-row');
+    if (row) { showBlockDetail(row.getAttribute('data-key')); return; }
+    const ban = e.target.closest('.nm-ban-btn');
+    if (ban) { banIP(ban.getAttribute('data-ip'), ban); }
+});
 loadAccessLog();
 </script>
 <%+footer%>
