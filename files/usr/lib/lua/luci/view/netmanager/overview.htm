@@ -39,11 +39,6 @@
                 <div class="card-label">内存使用</div>
                 <div class="card-value" id="mem_percent">--</div>
             </div>
-            <div class="netmanager-card">
-                <div class="card-icon">🚫</div>
-                <div class="card-label">自动拉黑(内存)</div>
-                <div class="card-value orange" id="autoban_count">--</div>
-            </div>
         </div>
         <h3>网络信息</h3>
         <table class="netmanager-table">
@@ -75,7 +70,7 @@
         </div>
         <div id="action_result" class="netmanager-result"></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.8</div>
+    <div class="footer-sign">网络管理插件 v1.8.9</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';

@@ -12,7 +12,7 @@ LOG_FILE="$LOG_DIR/run.log"
 LOG_ENABLED=0
 
 # 在线更新配置：版本号与 GitHub 仓库（发版时同步修改 PLUGIN_VERSION）
-PLUGIN_VERSION="1.8.8"
+PLUGIN_VERSION="1.8.9"
 REPO_OWNER="District1655"
 REPO_NAME="luci-app-netmanager"
 REPO_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
@@ -258,11 +258,6 @@ cmd_overview() {
     [ -z "$dns_servers" ] && dns_servers="N/A"
     echo "DNS_MODE=$dns_mode"
     echo "DNS_SERVERS=$dns_servers"
-
-    # 【v1.8.8】自动拉黑内存计数
-    local ab_n
-    ab_n=$(ban_count_file "$AUTOBAN_FILE"); [ -z "$ab_n" ] && ab_n=0
-    echo "AUTOBAN_COUNT=$ab_n"
 
     echo "===END==="
 }
@@ -3775,23 +3770,11 @@ cmd_ban_list() {
         v6=${v6%,}
     fi
     nft list table inet netmanager_ban >/dev/null 2>&1 && active=1
-    # 【v1.8.8】自动拉黑内存条目（供查看页区分自动/手动）
-    local av4="" av6="" av4n=0 av6n=0
-    if [ -f "$AUTOBAN_FILE" ]; then
-        av4=$(awk -F'|' 'NF && $1!~/:/ {print $1}' "$AUTOBAN_FILE" 2>/dev/null | tr '\n' ','); av4=${av4%,}
-        av6=$(awk -F'|' 'NF && $1~/::/ {print $1}' "$AUTOBAN_FILE" 2>/dev/null | tr '\n' ','); av6=${av6%,}
-        [ -n "$av4" ] && av4n=$(echo "$av4" | tr ',' '\n' | grep -c .)
-        [ -n "$av6" ] && av6n=$(echo "$av6" | tr ',' '\n' | grep -c .)
-    fi
     echo "===BLACKLIST==="
     echo "V4_COUNT=$v4n"
     echo "V6_COUNT=$v6n"
     echo "V4=$v4"
     echo "V6=$v6"
-    echo "AUTO_V4_COUNT=$av4n"
-    echo "AUTO_V6_COUNT=$av6n"
-    echo "AUTO_V4=$av4"
-    echo "AUTO_V6=$av6"
     echo "ACTIVE=$active"
     echo "===END==="
 }
@@ -3846,14 +3829,6 @@ cmd_ban_del() {
         ban_apply_all >/dev/null 2>&1
         found=1
     fi
-    # 【v1.8.8】自动拉黑内存列表联动解封
-    if [ -f "$AUTOBAN_FILE" ] && awk -F'|' -v t="$entry" '$1==t{f=1} END{exit !f}' "$AUTOBAN_FILE" 2>/dev/null; then
-        awk -F'|' -v t="$entry" '$1!=t' "$AUTOBAN_FILE" > /tmp/.nm_ab_del 2>/dev/null
-        cat /tmp/.nm_ab_del > "$AUTOBAN_FILE" 2>/dev/null
-        rm -f /tmp/.nm_ab_del
-        autoban_apply >/dev/null 2>&1
-        found=1
-    fi
     [ "$found" = "1" ] || { error "条目不存在: $entry"; exit 1; }
     info "已移除黑名单条目: $entry"
 }
@@ -3884,281 +3859,6 @@ cmd_blacklist() {
     esac
 }
 
-# ========== 15.5 自动拉黑（端口扫描防护，v1.8.8） ==========
-# 纯内存(tmpfs)：列表/历史/日志均在 /tmp，重启清零，不写闪存。
-# 窗口期内同一境外源 IP 被拦截累计 >= 阈值次数 → 加入内存黑名单(nft inet netmanager_autoban)。
-# 支持 TTL 自动过期、条数上限、IPv6 /64 聚合、白名单保护。手动黑名单(闪存)不受影响。
-AUTOBAN_FILE="$LOG_DIR/autoban.list"   # 行格式: ip|epoch|hits|ports
-
-nm_v4_in_cidr() {
-    awk -v ip="$1" -v net="$2" -v m="$3" 'BEGIN{
-        split(ip,a,"."); split(net,b,".");
-        x=0; y=0; for(i=1;i<=4;i++){ x=x*256+a[i]; y=y*256+b[i]; }
-        d=2^(32-m);
-        if(int(x/d)==int(y/d)) print "yes"; else print "no";
-    }' 2>/dev/null | grep -q yes
-}
-
-nm_whitelist_match() {
-    local ip="$1" w
-    for w in $(uci -q get netmanager.settings.autoban_whitelist); do
-        [ "$w" = "$ip" ] && return 0
-        case "$w" in
-            */*)
-                case "$ip" in *:*) continue ;; esac
-                nm_v4_in_cidr "$ip" "${w%%/*}" "${w##*/}" && return 0
-                ;;
-        esac
-    done
-    return 1
-}
-
-nm_autoban_protected() {
-    local ip="$1" lanip lp
-    case "$ip" in
-        10.*|127.*|169.254.*|192.168.*|0.*|255.255.255.255) return 0 ;;
-        172.1[6-9].*|172.2[0-9].*|172.3[0-1].*) return 0 ;;
-        100.6[4-9].*|100.[7-9][0-9].*|100.1[0-1][0-9].*|100.12[0-7].*) return 0 ;;
-        22[4-9].*|23[0-9].*) return 0 ;;
-        ::1|fe80:*|fc*|fd*) return 0 ;;
-    esac
-    lanip=$(uci -q get network.lan.ipaddr)
-    if [ -n "$lanip" ]; then
-        lp=$(echo "$lanip" | cut -d. -f1-3)
-        case "$ip" in "$lp".*) return 0 ;; esac
-    fi
-    nm_whitelist_match "$ip" && return 0
-    return 1
-}
-
-# IPv6 归并到 /64（扫描源常在同 /64 换地址）
-nm_v6_to64() {
-    echo "$1" | awk '{
-        s=$0; sub(/\/[0-9]+$/,"",s);
-        if (index(s,"::")) {
-            p=index(s,"::");
-            left=substr(s,1,p-1); right=substr(s,p+2);
-            nl=split(left,L,":"); nr=split(right,R,":");
-            k=0; for(i=1;i<=nl;i++) if(L[i]!="") g[++k]=L[i];
-            rc=0; for(i=1;i<=nr;i++) if(R[i]!="") rc++;
-            z=8-k-rc; if(z<0) z=0;
-            for(i=0;i<z;i++) g[++k]="0";
-            for(i=1;i<=nr;i++) if(R[i]!="") g[++k]=R[i];
-        } else { k=split(s,g,":"); }
-        printf "%s:%s:%s:%s::/64\n", g[1],g[2],g[3],g[4];
-    }' 2>/dev/null
-}
-
-# 是否已被封禁（手动闪存黑名单 + 自动内存列表，含网段覆盖），避免重复封禁
-nm_already_banned() {
-    local ip="$1" e f
-    for f in "$BAN_V4_FILE" "$BAN_V6_FILE" "$AUTOBAN_FILE"; do
-        [ -f "$f" ] || continue
-        while IFS= read -r e; do
-            e=$(echo "$e" | cut -d'|' -f1 | tr -d ' \r')
-            case "$e" in ""|"#"*) continue ;; esac
-            [ "$e" = "$ip" ] && return 0
-            case "$ip" in
-                *:*)
-                    case "$e" in *::/64) [ "$(nm_v6_to64 "$ip")" = "$e" ] && return 0 ;; esac
-                    ;;
-                *)
-                    case "$e" in */*) nm_v4_in_cidr "$ip" "${e%%/*}" "${e##*/}" && return 0 ;; esac
-                    ;;
-            esac
-        done < "$f"
-    done
-    return 1
-}
-
-# TTL 过期清理（ttl 小时，0=不过期）
-autoban_expire() {
-    local ttl="$1" now cutoff
-    [ -f "$AUTOBAN_FILE" ] || return 0
-    [ "$ttl" -gt 0 ] 2>/dev/null || return 0
-    now=$(date +%s); cutoff=$((now - ttl * 3600))
-    awk -F'|' -v c="$cutoff" '$2>=c' "$AUTOBAN_FILE" > /tmp/.nm_ab_exp 2>/dev/null
-    cat /tmp/.nm_ab_exp > "$AUTOBAN_FILE" 2>/dev/null
-    rm -f /tmp/.nm_ab_exp
-}
-
-# 重建内存自动拉黑 nft 表（独立于手动黑名单表）
-autoban_apply() {
-    mkdir -p "$LOG_DIR" 2>/dev/null
-    local n
-    n=$(ban_count_file "$AUTOBAN_FILE"); [ -z "$n" ] && n=0
-    if [ "$n" -eq 0 ]; then nft delete table inet netmanager_autoban 2>/dev/null; return 0; fi
-    nft delete table inet netmanager_autoban 2>/dev/null
-    nft add table inet netmanager_autoban 2>/dev/null || return 1
-    nft 'add set inet netmanager_autoban ab_v4 { type ipv4_addr; flags interval, auto-merge; }' 2>/dev/null || \
-      nft 'add set inet netmanager_autoban ab_v4 { type ipv4_addr; flags interval; }' 2>/dev/null || return 1
-    nft 'add set inet netmanager_autoban ab_v6 { type ipv6_addr; flags interval, auto-merge; }' 2>/dev/null || \
-      nft 'add set inet netmanager_autoban ab_v6 { type ipv6_addr; flags interval; }' 2>/dev/null || return 1
-    nft 'add chain inet netmanager_autoban ab_input { type filter hook input priority -50; policy accept; }' 2>/dev/null || return 1
-    nft 'add chain inet netmanager_autoban ab_forward { type filter hook forward priority -50; policy accept; }' 2>/dev/null || return 1
-    local ef="/tmp/.nm_ab_ef" l
-    awk -F'|' 'NF && $1!~/^#/ && $1!~/:/ {print $1}' "$AUTOBAN_FILE" > /tmp/.nm_ab_v4 2>/dev/null
-    awk -F'|' 'NF && $1!~/^#/ && $1~/::/ {print $1}' "$AUTOBAN_FILE" > /tmp/.nm_ab_v6 2>/dev/null
-    if [ -s /tmp/.nm_ab_v4 ]; then
-        { printf 'add element inet netmanager_autoban ab_v4 { '; awk '{printf "%s%s",(c++?", ":""),$1}' /tmp/.nm_ab_v4; printf ' }\n'; } > "$ef"
-        nft -f "$ef" 2>/dev/null || while IFS= read -r l; do [ -n "$l" ] && nft "add element inet netmanager_autoban ab_v4 { $l }" 2>/dev/null; done < /tmp/.nm_ab_v4
-    fi
-    if [ -s /tmp/.nm_ab_v6 ]; then
-        { printf 'add element inet netmanager_autoban ab_v6 { '; awk '{printf "%s%s",(c++?", ":""),$1}' /tmp/.nm_ab_v6; printf ' }\n'; } > "$ef"
-        nft -f "$ef" 2>/dev/null || while IFS= read -r l; do [ -n "$l" ] && nft "add element inet netmanager_autoban ab_v6 { $l }" 2>/dev/null; done < /tmp/.nm_ab_v6
-    fi
-    rm -f "$ef" /tmp/.nm_ab_v4 /tmp/.nm_ab_v6
-    nft add rule inet netmanager_autoban ab_input ip saddr @ab_v4 counter drop 2>/dev/null
-    nft add rule inet netmanager_autoban ab_input ip6 saddr @ab_v6 counter drop 2>/dev/null
-    nft add rule inet netmanager_autoban ab_forward ip saddr @ab_v4 counter drop 2>/dev/null
-    nft add rule inet netmanager_autoban ab_forward ip6 saddr @ab_v6 counter drop 2>/dev/null
-    return 0
-}
-
-cmd_autoban_run() {
-    local quiet=0
-    [ "$1" = "--quiet" ] && quiet=1
-    load_config
-    local en hits window max ttl v6agg
-    en=$(uci -q get netmanager.settings.autoban_enabled); [ -z "$en" ] && en=1
-    if [ "$en" != "1" ]; then
-        [ $quiet -eq 0 ] && info "自动拉黑未启用"
-        echo "===AUTOBAN_RUN==="; echo "BANNED=0"; echo "===END==="
-        return 0
-    fi
-    hits=$(uci -q get netmanager.settings.autoban_hits); [ -z "$hits" ] && hits=5
-    window=$(uci -q get netmanager.settings.autoban_window); [ -z "$window" ] && window=10
-    max=$(uci -q get netmanager.settings.autoban_max); [ -z "$max" ] && max=1000
-    ttl=$(uci -q get netmanager.settings.autoban_ttl); [ -z "$ttl" ] && ttl=24
-    v6agg=$(uci -q get netmanager.settings.autoban_v6agg); [ -z "$v6agg" ] && v6agg=1
-    mkdir -p "$LOG_DIR" 2>/dev/null
-    autoban_expire "$ttl"
-    local now cutoff cutnum
-    now=$(date +%s); cutoff=$((now - window * 60))
-    cutnum=$(date -d "@$cutoff" +%Y%m%d%H%M%S 2>/dev/null)
-    [ -z "$cutnum" ] && cutnum=$(date -u -d "@$cutoff" +%Y%m%d%H%M%S 2>/dev/null)
-    if [ -z "$cutnum" ]; then
-        [ $quiet -eq 0 ] && warn "无法计算时间窗口，跳过自动拉黑"
-        autoban_apply
-        echo "===AUTOBAN_RUN==="; echo "BANNED=0"; echo "===END==="
-        return 0
-    fi
-    local raw
-    raw=$(logread 2>/dev/null | grep -E 'NM_DROP[46]:' | tail -n 3000)
-    if [ -z "$raw" ]; then
-        [ $quiet -eq 0 ] && info "窗口内无拦截日志"
-        autoban_apply
-        echo "===AUTOBAN_RUN==="; echo "BANNED=0"; echo "===END==="
-        return 0
-    fi
-    # 聚合窗口内每源 IP 拦截次数 + 命中端口（次数>=阈值才候选）
-    printf '%s\n' "$raw" | awk -v cut="$cutnum" -v th="$hits" '
-        BEGIN{ m["Jan"]=1;m["Feb"]=2;m["Mar"]=3;m["Apr"]=4;m["May"]=5;m["Jun"]=6;
-               m["Jul"]=7;m["Aug"]=8;m["Sep"]=9;m["Oct"]=10;m["Nov"]=11;m["Dec"]=12 }
-        {
-            line=$0
-            mon=m[$2]; if(mon==0) next
-            split($4,t,":")
-            num=$5*10000000000+mon*100000000+$3*1000000+t[1]*10000+t[2]*100+t[3]
-            if(num<cut) next
-            src=""; dpt=""
-            if(match(line,/SRC=[^ ]+/)) src=substr(line,RSTART+4,RLENGTH-4)
-            if(match(line,/DPT=[0-9]+/)) dpt=substr(line,RSTART+4,RLENGTH-4)
-            if(src=="") next
-            cnt[src]++
-            if(dpt!="" && index(","ports[src]",", ","dpt",")==0)
-                ports[src]=ports[src] (ports[src]==""?"":",") dpt
-        }
-        END{ for(s in cnt) if(cnt[s]>=th) printf "%s|%d|%s\n", s, cnt[s], ports[s] }
-    ' > /tmp/.nm_autoban_cand 2>/dev/null
-
-    local banned=0 ip n plist ban_ip cnt
-    while IFS='|' read -r ip n plist; do
-        [ -z "$ip" ] && continue
-        ban_ip="$ip"
-        case "$ip" in *:*) [ "$v6agg" = "1" ] && ban_ip=$(nm_v6_to64 "$ip") ;; esac
-        nm_autoban_protected "$ban_ip" && continue
-        nm_already_banned "$ban_ip" && continue
-        echo "$ban_ip|$now|$n|$plist" >> "$AUTOBAN_FILE"
-        banned=$((banned + 1))
-        write_log "INFO" "autoban: 自动拉黑 $ban_ip（${window}分钟内拦截${n}次，端口 $plist）"
-        [ $quiet -eq 0 ] && info "自动拉黑 $ban_ip（${n}次拦截）"
-    done < /tmp/.nm_autoban_cand
-    rm -f /tmp/.nm_autoban_cand
-    # 条数上限：保留最新 max 条，防内存膨胀
-    if [ -f "$AUTOBAN_FILE" ]; then
-        cnt=$(ban_count_file "$AUTOBAN_FILE")
-        if [ "$cnt" -gt "$max" ] 2>/dev/null; then
-            tail -n "$max" "$AUTOBAN_FILE" > /tmp/.nm_ab_cap 2>/dev/null
-            cat /tmp/.nm_ab_cap > "$AUTOBAN_FILE" 2>/dev/null
-            rm -f /tmp/.nm_ab_cap
-        fi
-    fi
-    autoban_apply
-    [ $quiet -eq 0 ] && info "自动拉黑完成：新增 $banned 个"
-    echo "===AUTOBAN_RUN==="; echo "BANNED=$banned"; echo "===END==="
-}
-
-cmd_autoban_status() {
-    load_config
-    local en hits window max ttl v6agg wl total c4 c6 china_on
-    en=$(uci -q get netmanager.settings.autoban_enabled); [ -z "$en" ] && en=1
-    hits=$(uci -q get netmanager.settings.autoban_hits); [ -z "$hits" ] && hits=5
-    window=$(uci -q get netmanager.settings.autoban_window); [ -z "$window" ] && window=10
-    max=$(uci -q get netmanager.settings.autoban_max); [ -z "$max" ] && max=1000
-    ttl=$(uci -q get netmanager.settings.autoban_ttl); [ -z "$ttl" ] && ttl=24
-    v6agg=$(uci -q get netmanager.settings.autoban_v6agg); [ -z "$v6agg" ] && v6agg=1
-    wl=$(uci -q get netmanager.settings.autoban_whitelist)
-    total=$(ban_count_file "$AUTOBAN_FILE"); [ -z "$total" ] && total=0
-    c4=$(uci -q get netmanager.settings.china_filter_enable)
-    c6=$(uci -q get netmanager.settings.china6_filter_enable)
-    china_on=0; { [ "$c4" = "1" ] || [ "$c6" = "1" ]; } && china_on=1
-    echo "===AUTOBAN==="
-    echo "ENABLED=$en"
-    echo "HITS=$hits"
-    echo "WINDOW=$window"
-    echo "MAX=$max"
-    echo "TTL=$ttl"
-    echo "V6AGG=$v6agg"
-    echo "WHITELIST=$wl"
-    echo "TOTAL=$total"
-    echo "CHINA_ON=$china_on"
-    echo "RECENT_BEGIN"
-    [ -f "$AUTOBAN_FILE" ] && tail -5 "$AUTOBAN_FILE"
-    echo "RECENT_END"
-    echo "===END==="
-}
-
-cmd_autoban() {
-    local sub="${1:-status}"
-    shift 2>/dev/null
-    case "$sub" in
-        run)     cmd_autoban_run "$@" ;;
-        status)  cmd_autoban_status ;;
-        apply)   load_config; autoban_expire "$(uci -q get netmanager.settings.autoban_ttl)"; autoban_apply; info "自动拉黑规则已应用" ;;
-        clear)   rm -f "$AUTOBAN_FILE"; autoban_apply; info "自动拉黑内存列表已清空" ;;
-        enable)  uci set netmanager.settings.autoban_enabled='1'; uci commit netmanager; info "自动拉黑已启用" ;;
-        disable) uci set netmanager.settings.autoban_enabled='0'; uci commit netmanager; info "自动拉黑已停用" ;;
-        config)
-            local en="$1" hits="$2" win="$3" max="$4" ttl="$5" v6agg="$6" wl="$7" v
-            case "$en" in 0|1) ;; *) error "enabled 须为 0/1"; return 1 ;; esac
-            for v in "$hits" "$win" "$max" "$ttl"; do
-                echo "$v" | grep -Eq '^[0-9]+$' || { error "次数/窗口/上限/TTL 须为非负整数"; return 1; }
-            done
-            case "$v6agg" in 0|1) ;; *) error "v6agg 须为 0/1"; return 1 ;; esac
-            uci set netmanager.settings.autoban_enabled="$en"
-            uci set netmanager.settings.autoban_hits="$hits"
-            uci set netmanager.settings.autoban_window="$win"
-            uci set netmanager.settings.autoban_max="$max"
-            uci set netmanager.settings.autoban_ttl="$ttl"
-            uci set netmanager.settings.autoban_v6agg="$v6agg"
-            uci set netmanager.settings.autoban_whitelist="$wl"
-            uci commit netmanager
-            info "自动拉黑配置已保存: enabled=$en 次数=$hits 窗口=${win}分 上限=$max TTL=${ttl}h v6agg=$v6agg"
-            ;;
-        *) echo "用法: netmanager autoban run|status|apply|clear|enable|disable|config <0|1> <次数> <窗口分> <上限> <TTL时> <v6agg0|1> <白名单>"; exit 1 ;;
-    esac
-}
 
 # ========== 16. 卸载插件 ==========
 # 用法: netmanager uninstall [full|keep]
@@ -4192,15 +3892,13 @@ cmd_uninstall() {
     rm -f /etc/init.d/netmanager-china
     rm -f /etc/hotplug.d/iface/95-netmanager-china
     rm -f /etc/hotplug.d/iface/96-netmanager-v6sync
-    # v1.8.3：移除 IPv6 目标同步定时任务；v1.8.8：移除自动拉黑定时任务与历史
-    if [ -f /etc/crontabs/root ] && grep -qE 'netmanager port_sync_v6|netmanager autoban' /etc/crontabs/root 2>/dev/null; then
-        grep -vE 'netmanager port_sync_v6|netmanager autoban' /etc/crontabs/root > /tmp/.nm_cron 2>/dev/null
+    # v1.8.3：移除 IPv6 目标同步定时任务
+    if [ -f /etc/crontabs/root ] && grep -qF 'netmanager port_sync_v6' /etc/crontabs/root 2>/dev/null; then
+        grep -vF 'netmanager port_sync_v6' /etc/crontabs/root > /tmp/.nm_cron 2>/dev/null
         cat /tmp/.nm_cron > /etc/crontabs/root
         rm -f /tmp/.nm_cron
         /etc/init.d/cron restart >/dev/null 2>&1
     fi
-    rm -f "$AUTOBAN_FILE"
-    nft delete table inet netmanager_autoban 2>/dev/null
     rm -f /usr/sbin/dnssettings-apply.sh
     rm -f /usr/sbin/dnssettings-backup.sh
 
@@ -4287,7 +3985,6 @@ usage() {
     echo "中国IPv4过滤: china_filter status | enable | disable | update | set_url <url> | set_cron <expr>"
     echo "中国IPv6过滤: china6_filter status | enable | disable | update | set_url <url> | set_cron <expr>"
     echo "手动黑名单: blacklist list | add <ip/cidr> | del <ip/cidr> | clear [v4|v6|all] | apply"
-    echo "自动拉黑: autoban run [--quiet] | status | enable | disable | config <0|1> <次数> <窗口分钟>"
     echo "卸载: uninstall [full|keep]   # full=全删(默认) keep=保留配置与备份"
 }
 
@@ -4335,7 +4032,6 @@ case "$1" in
     china_filter)       shift; cmd_china_filter "$@" ;;
     china6_filter)      shift; cmd_china6_filter "$@" ;;
     blacklist)          shift; cmd_blacklist "$@" ;;
-    autoban)            shift; cmd_autoban "$@" ;;
     uninstall)          shift; cmd_uninstall "$@" ;;
     *)                  usage ;;
 esac

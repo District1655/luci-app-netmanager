@@ -1,11 +1,11 @@
 #!/bin/ash
 # ============================================================
-# 网络管理插件 (luci-app-netmanager) - 一键安装脚本 v1.8.8
+# 网络管理插件 (luci-app-netmanager) - 一键安装脚本 v1.8.9
 # 由 luci-app-fwmanager (防火墙管理) 与 luci-app-dnssettings (DNS设置) 合并而成
 # ============================================================
 
 echo "============================================"
-echo "  网络管理插件 (luci-app-netmanager) v1.8.8"
+echo "  网络管理插件 (luci-app-netmanager) v1.8.9"
 echo "  防火墙管理 + DNS设置 一体化"
 echo "============================================"
 echo ""
@@ -101,23 +101,16 @@ else
     echo "  ✓ 已创建 crontab 并添加 IPv6 目标同步任务"
 fi
 
-# 【v1.8.8】自动拉黑定时扫描（每5分钟，纯内存）
-AB_CRON='*/5 * * * * /usr/sbin/netmanager autoban run --quiet >/dev/null 2>&1'
-if [ -f /etc/crontabs/root ]; then
-    if ! grep -qF 'netmanager autoban' /etc/crontabs/root 2>/dev/null; then
-        echo "$AB_CRON" >> /etc/crontabs/root
-        /etc/init.d/cron restart >/dev/null 2>&1
-        echo "  ✓ 已添加自动拉黑定时扫描（每5分钟）"
-    else
-        echo "  - 自动拉黑定时扫描已存在"
-    fi
-else
-    mkdir -p /etc/crontabs
-    echo "$AB_CRON" > /etc/crontabs/root
-    /etc/init.d/cron enable >/dev/null 2>&1
+# 【v1.8.9】自动拉黑功能下线，清理 v1.8.8 残留（定时任务/内存表/历史）
+if [ -f /etc/crontabs/root ] && grep -qF 'netmanager autoban' /etc/crontabs/root 2>/dev/null; then
+    grep -vF 'netmanager autoban' /etc/crontabs/root > /tmp/.nm_ab_cron 2>/dev/null
+    cat /tmp/.nm_ab_cron > /etc/crontabs/root
+    rm -f /tmp/.nm_ab_cron
     /etc/init.d/cron restart >/dev/null 2>&1
-    echo "  ✓ 已创建 crontab 并添加自动拉黑扫描"
+    echo "  ✓ 已移除自动拉黑定时扫描"
 fi
+rm -f /tmp/netmanager/autoban.list 2>/dev/null
+nft delete table inet netmanager_autoban 2>/dev/null
 
 echo "[7/7] 重启LuCI..."
 rm -rf /tmp/luci-indexcache /tmp/luci-modulecache 2>/dev/null
