@@ -1,6 +1,6 @@
 # 网络管理插件 (luci-app-netmanager)
 
-> 版本：v1.8.10
+> 版本：v1.8.11
 >
 > 适配：iStoreOS / OpenWrt (fw4/nftables, Lua LuCI)
 >
@@ -271,6 +271,10 @@ IPv4（每行一个 CIDR）：
 5. 更新前建议先备份配置；只支持 `.tar.gz` 或 `.tgz` 格式
 
 ## 更新日志
+
+### v1.8.11 (2026-11-23)
+- **IPv6 转发自动配套直连放行规则**：fw4 的 DNAT 无目的地址门槛，直连目标主机 GUA 的入站包同样会被翻译端口（外部→内部），故 forward 链看到的是内部端口。此前 v1.8.10 只建 DNAT，对「无翻译端口」（如 51116→51116，DNAT 空操作不打 ct 标记）直连路径会被默认丢弃（典型表现：RustDesk 等服务的 IPv6 直连不通）。现 port_add 创建 IPv6 DNAT 映射时同步生成 `Allow-IPv6-<外部端口>-<协议>` 放行规则，**dest_port 用内部端口**（匹配 DNAT 翻译后的包）、dest_ip 限定目标 GUA，并纳入 v6track 前缀跟踪；port_edit/port_del 按族联动更新/清理。有翻译端口由 DNAT+ct 放行、本规则兜底，无翻译端口由本规则放行。
+- 放行规则按名称前缀（外部端口）精确匹配清理与同步，不误伤用户自定义规则；port_sync_v6 改按名称匹配改写 dest_ip，兼容翻译端口（内部端口≠外部端口）。
 
 ### v1.8.10 (2026-11-23)
 - **端口转发页支持真正的 IPv6 端口映射**：添加转发选 IPv6/both 时创建 `redirect family=ipv6` 的 DNAT 映射（ipv6:port），与 IPv4 对称；不再默认生成「IPv6 端口放行」ACCEPT 规则。目标填 IPv4 时自动解析该主机当前公网 IPv6 并登记跟踪锚点；解析不到明确报错（DNAT 必须有目标地址）。

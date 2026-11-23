@@ -12,7 +12,7 @@ LOG_FILE="$LOG_DIR/run.log"
 LOG_ENABLED=0
 
 # 在线更新配置：版本号与 GitHub 仓库（发版时同步修改 PLUGIN_VERSION）
-PLUGIN_VERSION="1.8.10"
+PLUGIN_VERSION="1.8.11"
 REPO_OWNER="District1655"
 REPO_NAME="luci-app-netmanager"
 REPO_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
@@ -483,6 +483,64 @@ cmd_port_list() {
     write_log "DEBUG" "port_list: 列表加载完成"
 }
 
+# ========== IPv6 直连放行规则辅助（v1.8.11 新增）==========
+# 机制：fw4 的 dstnat_wan 无目的地址门槛，直连目标 GUA 的入站包同样会被 DNAT
+# 翻译端口（外部端口→内部端口），故 forward 链看到的是「内部端口」。配套放行规则
+# 的 dest_port 必须用内部端口（翻译后），dest_ip 限定目标 GUA。
+# - 有翻译端口（如 53→38953）：DNAT 真实生效打 ct status dnat，ct accept 即可放行，
+#   本规则为显式兜底；
+# - 无翻译端口（如 51116→51116）：DNAT 为空操作不打标记，直连路径必须靠本规则放行。
+# 规则名按「外部端口」命名（Allow-IPv6-<外部端口>-<协议>）便于增删改生命周期匹配，
+# 并随 v6track 锚点跟随前缀变化（port_sync_v6 按名称匹配改写 dest_ip）。
+# $1=外部端口(命名用) $2=协议 $3=目标GUA $4=内部端口(dest_port，留空同外部)
+v6_ensure_allow_rule() {
+    _ap="$1"; _apr="$2"; _agua="$3"; _adp="$4"
+    { [ -z "$_ap" ] || [ -z "$_agua" ]; } && return 0
+    [ -z "$_adp" ] && _adp="$_ap"
+    _aname="Allow-IPv6-${_ap}-${_apr}"
+    _ai=0; _asec=""
+    while uci -q get "firewall.@rule[$_ai]" >/dev/null 2>&1; do
+        if [ "$(uci -q get firewall.@rule[$_ai].name)" = "$_aname" ]; then
+            _asec="@rule[$_ai]"; break
+        fi
+        _ai=$((_ai+1))
+    done
+    if [ -z "$_asec" ]; then
+        uci add firewall rule >/dev/null
+        _asec="@rule[-1]"
+        uci set "firewall.$_asec.name=$_aname"
+        uci set "firewall.$_asec.src=wan"
+        uci set "firewall.$_asec.dest=lan"
+        uci set "firewall.$_asec.target=ACCEPT"
+        uci set "firewall.$_asec.family=ipv6"
+    fi
+    uci set "firewall.$_asec.proto=$_apr"
+    uci set "firewall.$_asec.dest_port=$_adp"
+    uci set "firewall.$_asec.dest_ip=$_agua"
+}
+# 删除指定端口的配套直连放行规则；$2 为协议列表（空=该端口全部协议）
+v6_remove_allow_rule() {
+    _rp="$1"; _rprs="$2"
+    [ -z "$_rp" ] && return 0
+    _ri=0
+    while uci -q get "firewall.@rule[$_ri]" >/dev/null 2>&1; do
+        _rn=$(uci -q get "firewall.@rule[$_ri].name")
+        _rpr=$(uci -q get "firewall.@rule[$_ri].proto")
+        _hit=0
+        case "$_rn" in Allow-IPv6-${_rp}-*) _hit=1 ;; esac
+        if [ "$_hit" = "1" ] && [ -n "$_rprs" ]; then
+            _hit=0
+            for _m in $_rprs; do proto_match "$_rpr" "$_m" && _hit=1; done
+        fi
+        if [ "$_hit" = "1" ]; then
+            uci delete "firewall.@rule[$_ri]"
+            info "删除IPv6直连放行: $_rn"
+        else
+            _ri=$((_ri+1))
+        fi
+    done
+}
+
 # ========== 3. 添加端口转发 ==========
 cmd_port_add() {
     port="$1"; proto="$2"; target="$3"; ipver="$4"; dport="$5"
@@ -557,8 +615,9 @@ cmd_port_add() {
                 idx=$((idx+1))
             done
             if [ $exists -eq 0 ]; then
-                # v1.8.10：IPv6 与 IPv4 对称，创建 DNAT 端口映射（redirect family=ipv6），
-                # 不再创建 ACCEPT 放行规则（放行归「防火墙规则管理」页）。
+                # v1.8.10：IPv6 与 IPv4 对称，创建 DNAT 端口映射（redirect family=ipv6）。
+                # v1.8.11：同时配套创建 Allow-IPv6 直连放行规则（见 v6_ensure_allow_rule），
+                # 覆盖 DDNS 直连目标 GUA 的路径；DNAT 覆盖连路由 WAN GUA 的路径。
                 # dest_ip 必须是 IPv6 地址：传入 IPv6 直用；传入 IPv4/留空默认目标时
                 # 按该主机解析当前公网 IPv6（SLAAC 优先），并登记跟踪锚点跟随前缀变化。
                 v6_target=""
@@ -603,6 +662,8 @@ cmd_port_add() {
                 uci set firewall.@redirect[-1].family="ipv6"
                 uci set firewall.@redirect[-1].target="DNAT"
                 info "IPv6 DNAT: $port/$p -> [$v6_target]:$dport"
+                # v1.8.11：配套直连放行规则（dest_port 用内部端口，匹配 DNAT 翻译后的包）
+                v6_ensure_allow_rule "$port" "$p" "$v6_target" "$dport"
             else
                 warn "IPv6映射已存在: $port/$p"
             fi
@@ -671,6 +732,12 @@ cmd_port_edit() {
     done
     [ -z "$old_idx" ] && { error "未找到旧转发条目: $old_port/$old_proto ($old_ipver)"; exit 1; }
 
+    # v1.8.11：旧条目为 IPv6 时先清掉其配套直连放行规则（端口/协议可能变化），
+    # 若新族仍为 v6 会在下方按新参数重建。
+    if [ "$old_ipver" = "v6" ]; then
+        v6_remove_allow_rule "$old_port" ""
+    fi
+
     # 目标族解析：both=保留原族；v4/v6=切换到指定族
     want_v6=0
     case "$new_ipver" in
@@ -716,6 +783,8 @@ cmd_port_edit() {
                 uci commit netmanager
                 ;;
         esac
+        # v1.8.11：按新参数重建配套直连放行规则（dest_port 用新内部端口）
+        v6_ensure_allow_rule "$new_port" "$new_proto" "$v6_target" "$new_dport"
     else
         uci set firewall.@redirect[$old_idx].name="Forward-${new_port}"
         uci delete firewall.@redirect[$old_idx].family 2>/dev/null
@@ -795,32 +864,10 @@ cmd_port_del() {
         info "删除转发: $name"
     done
 
-    # both 模式（CLI 兼容）：顺带清理同端口的旧版 IPv6 放行规则。
-    # v4/v6 精确模式不动放行规则（归「防火墙规则管理」页管理）。
-    if [ "$ipver" = "both" ]; then
-        del_rule_indices=""
-        idx=0
-        while true; do
-            name=$(uci get firewall.@rule[$idx].name 2>/dev/null)
-            uci -q get "firewall.@rule[$idx]" >/dev/null 2>&1 || break
-            fam=$(uci get firewall.@rule[$idx].family 2>/dev/null)
-            dp=$(uci get firewall.@rule[$idx].dest_port 2>/dev/null)
-            pr=$(uci get firewall.@rule[$idx].proto 2>/dev/null)
-            if [ "$fam" = "ipv6" ] && [ "$dp" = "$port" ]; then
-                for mp in $match_protos; do
-                    if proto_match "$pr" "$mp"; then
-                        del_rule_indices="$idx $del_rule_indices"
-                        break
-                    fi
-                done
-            fi
-            idx=$((idx+1))
-        done
-        for didx in $del_rule_indices; do
-            name=$(uci get firewall.@rule[$didx].name 2>/dev/null)
-            uci delete firewall.@rule[$didx]
-            info "删除IPv6放行: $name"
-        done
+    # v1.8.11：删除 v6/both 映射时同步清理配套的 Allow-IPv6 直连放行规则
+    # （由 port_add 随映射创建，按名称前缀精确匹配，不误伤用户自定义规则）。
+    if [ "$ipver" != "v4" ]; then
+        v6_remove_allow_rule "$port" "$match_protos"
     fi
 
     # v1.8.10：删除 v6/both 映射时同步清理跟踪锚点，避免遗留无效 v6track
@@ -1062,13 +1109,19 @@ cmd_port_sync_v6() {
             continue
         fi
 
-        # 定位对应的 IPv6 放行规则并改写 dest_ip
+        # 定位对应的 IPv6 放行规则并改写 dest_ip。
+        # v1.8.11：配套规则按名称 Allow-IPv6-<外部端口>-* 匹配（其 dest_port 为内部端口，
+        # 翻译端口下不等于外部端口，故不能按 dest_port 匹配）；兼容旧版按 dest_port 匹配。
         idx=0
         while uci -q get "firewall.@rule[$idx]" >/dev/null 2>&1; do
             fam=$(uci -q get "firewall.@rule[$idx].family")
             dp=$(uci -q get "firewall.@rule[$idx].dest_port")
             pr=$(uci -q get "firewall.@rule[$idx].proto")
-            if [ "$fam" = "ipv6" ] && [ "$dp" = "$port" ] && proto_match "$pr" "$proto"; then
+            rn=$(uci -q get "firewall.@rule[$idx].name")
+            _namehit=0
+            case "$rn" in Allow-IPv6-${port}-*) _namehit=1 ;; esac
+            if [ "$fam" = "ipv6" ] && proto_match "$pr" "$proto" && \
+               { [ "$_namehit" = "1" ] || [ "$dp" = "$port" ]; }; then
                 local old
                 old=$(uci -q get "firewall.@rule[$idx].dest_ip")
                 if [ "$old" != "$resolved" ]; then

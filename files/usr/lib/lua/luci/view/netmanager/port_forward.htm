@@ -71,7 +71,8 @@
         <h3>IPv6 端口映射 (DNAT)</h3>
         <div class="text-muted" style="margin-bottom:6px;">
             与 IPv4 对称：外部端口映射到内网主机的 IPv6 地址（ipv6:port）。目标填 IPv4 时自动解析该主机当前公网 IPv6，
-            并登记「跟踪锚点」，运营商前缀变化时自动跟随。IPv6 端口放行（ACCEPT 规则）请在「规则管理」页维护。
+            并登记「跟踪锚点」，运营商前缀变化时自动跟随。添加 IPv6 映射时会同步在「规则管理」页生成配套的
+            Allow-IPv6 直连放行规则（供 DDNS 直连目标主机 GUA 的路径使用，随映射自动增删与前缀跟随），无需手动维护。
             <button class="btn btn-secondary btn-sm" onclick="syncV6()">立即同步</button>
         </div>
         <table class="netmanager-table" id="ipv6dnat_table">
@@ -80,7 +81,7 @@
         </table>
         <div id="action_result" class="netmanager-result"></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.10</div>
+    <div class="footer-sign">网络管理插件 v1.8.11</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
