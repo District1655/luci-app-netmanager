@@ -178,6 +178,10 @@ function nmFetch(opts) {
 	var isForm = (opts.body instanceof FormData);
 	if (isForm) {
 		opts.body.append('token', CSRF_TOKEN);
+	} else if (typeof URLSearchParams !== 'undefined' && opts.body instanceof URLSearchParams) {
+		// v1.8.10：URLSearchParams 形态此前漏补 token → 403 静默失败（规则页"添加无反应"根因）
+		opts.body.set('token', CSRF_TOKEN);
+		opts.body = opts.body.toString();
 	} else if (typeof opts.body === 'string') {
 		opts.body = opts.body + (opts.body ? '&' : '') + 'token=' + encodeURIComponent(CSRF_TOKEN);
 	}

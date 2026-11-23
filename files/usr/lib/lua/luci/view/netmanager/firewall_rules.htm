@@ -8,6 +8,7 @@
     <%+netmanager/nav%>
     <div class="netmanager-content">
         <h2>防火墙规则管理</h2>
+        <div class="text-muted" style="margin-bottom:8px;">管理 ACCEPT / DROP / REJECT 规则，含 IPv6 端口放行（原「端口转发」页的放行规则已迁移至此）。</div>
         <!-- 添加表单 -->
         <div class="netmanager-form" id="add_form">
             <div style="margin-bottom:8px;"><b>添加自定义规则</b></div>
@@ -114,7 +115,7 @@
         </div>
         <div id="action_result" class="netmanager-result"></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.9</div>
+    <div class="footer-sign">网络管理插件 v1.8.10</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -158,6 +159,8 @@ function addRule() {
         document.getElementById('rule_name').value = '';
         document.getElementById('rule_port').value = '';
         setTimeout(loadRuleList, 1500);
+    }).catch(e => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">[ERROR] ' + escapeHtml(e.message || String(e)) + '</pre>';
     });
 }
 function delRule(idx) {
@@ -166,6 +169,8 @@ function delRule(idx) {
     .then(r => r.text()).then(data => {
         document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         setTimeout(loadRuleList, 1500);
+    }).catch(e => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">[ERROR] ' + escapeHtml(e.message || String(e)) + '</pre>';
     });
 }
 function editRule(idx, rowId) {
@@ -205,6 +210,8 @@ function saveRuleEdit() {
         document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         cancelRuleEdit();
         setTimeout(loadRuleList, 1500);
+    }).catch(e => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">[ERROR] ' + escapeHtml(e.message || String(e)) + '</pre>';
     });
 }
 function applyTemplate(type) {

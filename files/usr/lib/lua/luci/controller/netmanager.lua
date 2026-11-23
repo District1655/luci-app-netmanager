@@ -197,7 +197,8 @@ function api_handler()
     elseif action == "port_del" then
         local port = luci.http.formvalue("port") or ""
         local proto = luci.http.formvalue("proto") or "tcp"
-        cmd = string.format("/usr/sbin/netmanager port_del %s %s", shell_escape(port), shell_escape(proto))
+        local ipver = luci.http.formvalue("ipver") or "both"
+        cmd = string.format("/usr/sbin/netmanager port_del %s %s %s", shell_escape(port), shell_escape(proto), shell_escape(ipver))
     elseif action == "port_edit" then
         local old_port = luci.http.formvalue("old_port") or ""
         local old_proto = luci.http.formvalue("old_proto") or "tcp"
@@ -206,11 +207,12 @@ function api_handler()
         local new_target = luci.http.formvalue("new_target") or ""
         local new_ipver = luci.http.formvalue("new_ipver") or "both"
         local new_dport = luci.http.formvalue("new_dport") or ""
+        local old_ipver = luci.http.formvalue("old_ipver") or "v4"
 
-        cmd = string.format("/usr/sbin/netmanager port_edit %s %s %s %s %s %s %s",
+        cmd = string.format("/usr/sbin/netmanager port_edit %s %s %s %s %s %s %s %s",
             shell_escape(old_port), shell_escape(old_proto),
             shell_escape(new_port), shell_escape(new_proto),
-            arg(new_target), shell_escape(new_ipver), arg(new_dport))
+            arg(new_target), shell_escape(new_ipver), arg(new_dport), shell_escape(old_ipver))
     elseif action == "port_track_v6" then
         -- v1.8.0：登记/取消 IPv6 转发目标跟踪锚点
         local port = luci.http.formvalue("port") or ""

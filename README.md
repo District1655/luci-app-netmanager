@@ -1,6 +1,6 @@
 # 网络管理插件 (luci-app-netmanager)
 
-> 版本：v1.8.9
+> 版本：v1.8.10
 >
 > 适配：iStoreOS / OpenWrt (fw4/nftables, Lua LuCI)
 >
@@ -271,6 +271,12 @@ IPv4（每行一个 CIDR）：
 5. 更新前建议先备份配置；只支持 `.tar.gz` 或 `.tgz` 格式
 
 ## 更新日志
+
+### v1.8.10 (2026-11-23)
+- **端口转发页支持真正的 IPv6 端口映射**：添加转发选 IPv6/both 时创建 `redirect family=ipv6` 的 DNAT 映射（ipv6:port），与 IPv4 对称；不再默认生成「IPv6 端口放行」ACCEPT 规则。目标填 IPv4 时自动解析该主机当前公网 IPv6 并登记跟踪锚点；解析不到明确报错（DNAT 必须有目标地址）。
+- **IPv6 端口放行移出端口转发页**：放行（ACCEPT）规则统一由「规则管理」页维护；端口转发页只保留 IPv4 DNAT 与 IPv6 DNAT 两张表，IPv6 映射表补齐 编辑/删除/跟踪 操作。
+- **修复规则管理页「添加规则」无反应**：根因是 `nmFetch` 只给 FormData/string 形态补 CSRF token，`URLSearchParams` 形态漏补 → 403 静默失败。nmFetch 增加 URLSearchParams 分支，并为各操作补 catch 错误回显。
+- **编辑/删除按族隔离**：port_edit/port_del 增加族参数，v4/v6 同端口条目互不误伤；删除 v6 映射时同步清理跟踪锚点。
 
 ### v1.8.9 (2026-11-21)
 - **移除自动拉黑功能**（v1.8.8 引入）：经评估在 china 白名单模型下冗余——白名单外的境外流量默认已丢弃，自动拉黑只是把已丢弃的包再记一遍，无安全增量；SSH 为局域网绑定+仅密钥登录、无爆破面，改 SSH 防爆破同样空转。故整体下线（后端 autoban、cron、设置页面板/查看弹窗、概览计数卡片），安装时自动清理 v1.8.8 残留（定时任务/内存表/历史）。

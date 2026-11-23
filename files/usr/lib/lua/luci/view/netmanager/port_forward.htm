@@ -61,26 +61,18 @@
             </div>
             <input type="hidden" id="edit_old_port">
             <input type="hidden" id="edit_old_proto">
+            <input type="hidden" id="edit_old_ipver">
         </div>
         <h3>IPv4 端口转发 (DNAT)</h3>
         <table class="netmanager-table" id="ipv4_table">
             <thead><tr><th>名称</th><th>协议</th><th>外部端口</th><th>目标地址</th><th>命中数</th><th>状态</th><th>操作</th></tr></thead>
             <tbody><tr><td colspan="7" class="empty-state">—</td></tr></tbody>
         </table>
-        <h3>IPv6 端口放行</h3>
-        <div class="text-muted" style="margin-bottom:6px;">
-            运营商 IPv6 前缀会变化。为目标登记「跟踪锚点」（目标主机的内网 IPv4 / MAC / 主机名）后，
-            前缀变更时会自动重算该主机当前的 IPv6 并改写放行目标，无需手动维护。
-            <button class="btn btn-secondary btn-sm" onclick="syncV6()">立即同步</button>
-        </div>
-        <table class="netmanager-table" id="ipv6_table">
-            <thead><tr><th>名称</th><th>协议</th><th>端口</th><th>目标地址</th><th>跟踪锚点</th><th>命中数</th><th>状态</th><th>操作</th></tr></thead>
-            <tbody><tr><td colspan="8" class="empty-state">—</td></tr></tbody>
-        </table>
         <h3>IPv6 端口映射 (DNAT)</h3>
         <div class="text-muted" style="margin-bottom:6px;">
-            外部端口映射到内网主机的 IPv6 地址。同样支持「跟踪锚点」自动跟随前缀变化。
-            为避免与同端口的 IPv4 条目混淆误删，此处只提供跟踪操作，增删请在「网络 → 防火墙 → 端口转发」中进行。
+            与 IPv4 对称：外部端口映射到内网主机的 IPv6 地址（ipv6:port）。目标填 IPv4 时自动解析该主机当前公网 IPv6，
+            并登记「跟踪锚点」，运营商前缀变化时自动跟随。IPv6 端口放行（ACCEPT 规则）请在「规则管理」页维护。
+            <button class="btn btn-secondary btn-sm" onclick="syncV6()">立即同步</button>
         </div>
         <table class="netmanager-table" id="ipv6dnat_table">
             <thead><tr><th>名称</th><th>协议</th><th>外部端口</th><th>目标地址</th><th>跟踪锚点</th><th>命中数</th><th>状态</th><th>操作</th></tr></thead>
@@ -88,7 +80,7 @@
         </table>
         <div id="action_result" class="netmanager-result"></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.9</div>
+    <div class="footer-sign">网络管理插件 v1.8.10</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -96,14 +88,14 @@ function loadPortList() {
     nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=port_list'})
     .then(r => r.text()).then(data => {
         const sections = data.split('---');
-        let ipv4Html = '', ipv6Html = '', ipv6dHtml = '';
+        let ipv4Html = '', ipv6dHtml = '';
         let currentSection = '';
         // 【安全】行数据存入 JS 数组，onclick 只传纯数字下标，杜绝自由文本注入 onclick
         window.PORT_ROWS = [];
         sections.forEach(section => {
             if (section.includes('IPV6DNAT')) currentSection = 'ipv6dnat';
             else if (section.includes('IPV4')) currentSection = 'ipv4';
-            else if (section.includes('IPV6')) currentSection = 'ipv6';
+            else if (section.includes('IPV6')) currentSection = 'ipv6allow_skip'; // v1.8.10：放行规则归规则管理页，此处不渲染
             else if (section.includes('DEFAULT_TARGET')) {
                 const m = section.match(/DEFAULT_TARGET=(.+)/);
                 if (m) document.getElementById('default_target_display').textContent = m[1].trim();
@@ -117,34 +109,22 @@ function loadPortList() {
                     const protoBadge = proto === 'tcp' ? '<span class="badge badge-blue">TCP</span>' : proto === 'udp' ? '<span class="badge badge-purple">UDP</span>' : '<span class="badge badge-blue">TCP+UDP</span>';
                     // 【安全 v1.4.7 P1-2】delPort 改数组下标传参（escapeHtml 在 onclick 属性上下文
                     // 可被 &#39; 实体还原绕过，自由文本入 onclick 仍可注入）
-                    const rowId = window.PORT_ROWS.push({sp: sp, proto: proto, dip: dip, dp: dp}) - 1;
+                    const rowId = window.PORT_ROWS.push({sp: sp, proto: proto, dip: dip, dp: dp, v6: false}) - 1;
                     ipv4Html += `<tr><td>${escapeHtml(name)}</td><td>${protoBadge}</td><td><b>${escapeHtml(sp)}</b></td><td>${escapeHtml(dip)}:${escapeHtml(dp)}</td><td>${escapeHtml(pkts)}</td><td>${status}</td><td><button class="btn btn-primary btn-sm" onclick="editPort(${rowId})">编辑</button> <button class="btn btn-danger btn-sm" onclick="delPort(${rowId})">删除</button></td></tr>`;
-                } else if (currentSection === 'ipv6' && parts.length >= 6) {
-                    const [idx, name, proto, dp, enabled, pkts, dip, anchor] = parts;
-                    const status = enabled === '1' ? '<span class="badge badge-green">启用</span>' : '<span class="badge badge-gray">禁用</span>';
-                    const protoBadge = proto === 'tcp' ? '<span class="badge badge-blue">TCP</span>' : proto === 'udp' ? '<span class="badge badge-purple">UDP</span>' : '<span class="badge badge-blue">TCP+UDP</span>';
-                    const rowId = window.PORT_ROWS.push({sp: dp, proto: proto, dip: dip || '', dp: dp, v6: true, anchor: anchor || ''}) - 1;
-                    // 目标为空意味着对整个内网放行，明确标红提示
-                    const dipCell = dip ? escapeHtml(dip) : '<span class="badge badge-red">未限定目标</span>';
-                    const anchorCell = anchor
-                        ? '<span class="badge badge-green">跟随 ' + escapeHtml(anchor) + '</span>'
-                        : '<span class="text-muted">未跟踪</span>';
-                    ipv6Html += `<tr><td>${escapeHtml(name)}</td><td>${protoBadge}</td><td><b>${escapeHtml(dp)}</b></td><td>${dipCell}</td><td>${anchorCell}</td><td>${escapeHtml(pkts)}</td><td>${status}</td><td><button class="btn btn-success btn-sm" onclick="trackV6(${rowId})">跟踪</button> <button class="btn btn-primary btn-sm" onclick="editPort(${rowId})">编辑</button> <button class="btn btn-danger btn-sm" onclick="delPort(${rowId})">删除</button></td></tr>`;
                 } else if (currentSection === 'ipv6dnat' && parts.length >= 9) {
                     const [idx, name, proto, sp, enabled, pkts, dip, anchor, dp] = parts;
                     const status = enabled === '1' ? '<span class="badge badge-green">启用</span>' : '<span class="badge badge-gray">禁用</span>';
                     const protoBadge = proto === 'tcp' ? '<span class="badge badge-blue">TCP</span>' : proto === 'udp' ? '<span class="badge badge-purple">UDP</span>' : '<span class="badge badge-blue">TCP+UDP</span>';
                     const rowId = window.PORT_ROWS.push({sp: sp, proto: proto, dip: dip || '', dp: dp, v6: true, anchor: anchor || ''}) - 1;
-                    const dipCell = dip ? escapeHtml(dip) + ':' + escapeHtml(dp) : '<span class="badge badge-red">未设置目标</span>';
+                    const dipCell = dip ? '[' + escapeHtml(dip) + ']:' + escapeHtml(dp) : '<span class="badge badge-red">未设置目标</span>';
                     const anchorCell = anchor
                         ? '<span class="badge badge-green">跟随 ' + escapeHtml(anchor) + '</span>'
                         : '<span class="text-muted">未跟踪</span>';
-                    ipv6dHtml += `<tr><td>${escapeHtml(name)}</td><td>${protoBadge}</td><td><b>${escapeHtml(sp)}</b></td><td>${dipCell}</td><td>${anchorCell}</td><td>${escapeHtml(pkts)}</td><td>${status}</td><td><button class="btn btn-success btn-sm" onclick="trackV6(${rowId})">跟踪</button></td></tr>`;
+                    ipv6dHtml += `<tr><td>${escapeHtml(name)}</td><td>${protoBadge}</td><td><b>${escapeHtml(sp)}</b></td><td>${dipCell}</td><td>${anchorCell}</td><td>${escapeHtml(pkts)}</td><td>${status}</td><td><button class="btn btn-success btn-sm" onclick="trackV6(${rowId})">跟踪</button> <button class="btn btn-primary btn-sm" onclick="editPort(${rowId})">编辑</button> <button class="btn btn-danger btn-sm" onclick="delPort(${rowId})">删除</button></td></tr>`;
                 }
             });
         });
         document.querySelector('#ipv4_table tbody').innerHTML = ipv4Html || '<tr><td colspan="7" class="empty-state">暂无规则</td></tr>';
-        document.querySelector('#ipv6_table tbody').innerHTML = ipv6Html || '<tr><td colspan="8" class="empty-state">暂无规则</td></tr>';
         document.querySelector('#ipv6dnat_table tbody').innerHTML = ipv6dHtml || '<tr><td colspan="8" class="empty-state">暂无规则</td></tr>';
     });
 }
@@ -155,7 +135,7 @@ function trackV6(rowId) {
     const cur = r.anchor || '';
     const input = prompt('请输入跟踪锚点（目标主机的内网 IPv4 / MAC / 主机名）\n'
         + '例如 192.168.31.3；输入 off 取消跟踪。\n\n'
-        + '登记后，运营商前缀变化时会自动重算该主机的 IPv6 并更新放行目标。', cur);
+        + '登记后，运营商前缀变化时会自动重算该主机的 IPv6 并更新映射目标。', cur);
     if (input === null) return;
     const anchor = input.trim();
     if (!anchor) { alert('锚点不能为空（取消跟踪请输入 off）'); return; }
@@ -189,6 +169,8 @@ function addPortForward() {
         document.getElementById('add_dport').value = '';
         document.getElementById('add_target').value = '';
         setTimeout(loadPortList, 400);
+    }).catch(e => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">[ERROR] ' + escapeHtml(e.message || String(e)) + '</pre>';
     });
 }
 function delPort(rowId) {
@@ -196,11 +178,14 @@ function delPort(rowId) {
     const r = (window.PORT_ROWS && window.PORT_ROWS[rowId]) || {};
     const port = r.sp, proto = r.proto;
     if (!port || !proto) return;
-    if (!confirm('确定删除端口 ' + port + '/' + proto + ' ?')) return;
-    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=port_del&port=' + encodeURIComponent(port) + '&proto=' + encodeURIComponent(proto)})
+    const ipver = r.v6 ? 'v6' : 'v4';
+    if (!confirm('确定删除 ' + (r.v6 ? 'IPv6' : 'IPv4') + ' 端口映射 ' + port + '/' + proto + ' ?')) return;
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=port_del&port=' + encodeURIComponent(port) + '&proto=' + encodeURIComponent(proto) + '&ipver=' + ipver})
     .then(r => r.text()).then(data => {
         document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         setTimeout(loadPortList, 300);
+    }).catch(e => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">[ERROR] ' + escapeHtml(e.message || String(e)) + '</pre>';
     });
 }
 function editPort(rowId) {
@@ -211,11 +196,13 @@ function editPort(rowId) {
     document.getElementById('edit_form').style.display = 'block';
     document.getElementById('edit_old_port').value = port;
     document.getElementById('edit_old_proto').value = proto;
+    document.getElementById('edit_old_ipver').value = r.v6 ? 'v6' : 'v4';
     document.getElementById('edit_port').value = port;
     document.getElementById('edit_proto').value = proto;
+    document.getElementById('edit_ipver').value = r.v6 ? 'v6' : 'v4';
     document.getElementById('edit_target').value = target || '';
     document.getElementById('edit_dport').value = dport || '';
-    document.getElementById('edit_old_info').textContent = '(原: ' + port + '/' + proto + ')';
+    document.getElementById('edit_old_info').textContent = '(原: ' + (r.v6 ? 'IPv6 ' : 'IPv4 ') + port + '/' + proto + ')';
     document.getElementById('edit_form').scrollIntoView({behavior:'smooth', block:'center'});
 }
 function cancelPortEdit() {
@@ -231,12 +218,14 @@ function savePortEdit() {
     const new_target = document.getElementById('edit_target').value.trim();
     const new_ipver = document.getElementById('edit_ipver').value;
     if (!new_port) { alert('请输入新端口号'); return; }
-    const body = 'action=port_edit&old_port=' + encodeURIComponent(old_port) + '&old_proto=' + old_proto + '&new_port=' + encodeURIComponent(new_port) + '&new_dport=' + encodeURIComponent(new_dport) + '&new_proto=' + new_proto + '&new_target=' + encodeURIComponent(new_target) + '&new_ipver=' + new_ipver;
+    const body = 'action=port_edit&old_port=' + encodeURIComponent(old_port) + '&old_proto=' + old_proto + '&old_ipver=' + document.getElementById('edit_old_ipver').value + '&new_port=' + encodeURIComponent(new_port) + '&new_dport=' + encodeURIComponent(new_dport) + '&new_proto=' + new_proto + '&new_target=' + encodeURIComponent(new_target) + '&new_ipver=' + new_ipver;
     nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
     .then(r => r.text()).then(data => {
         document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         cancelPortEdit();
         setTimeout(loadPortList, 300);
+    }).catch(e => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">[ERROR] ' + escapeHtml(e.message || String(e)) + '</pre>';
     });
 }
 loadPortList();
