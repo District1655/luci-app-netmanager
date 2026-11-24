@@ -4,9 +4,9 @@
 >
 > 适配：iStoreOS / OpenWrt (fw4/nftables, Lua LuCI)
 >
-> 由 **luci-app-fwmanager**（防火墙管理）与 **luci-app-dnssettings**（DNS设置）合并而成的网络管理一体化 LuCI 插件。
+> 由 **luci-app-fwmanager**（防火墙管理）与 **luci-app-dnssettings**（上网设置）合并而成的网络管理一体化 LuCI 插件。
 
-一站式管理路由器网络：端口转发、防火墙规则、SSH/访问日志、中国 IPv4/IPv6 访问限制、手动黑名单、WAN/LAN 双栈 DNS 统一管理、静态 IP 分配（IPv4/IPv6）、配置备份恢复、插件在线更新、一键卸载。
+一站式管理路由器网络：端口转发、防火墙规则、SSH/访问日志、中国 IPv4/IPv6 访问限制、手动黑名单、WAN/LAN 口上网方式与双栈 DNS 统一管理、静态 IP 分配（IPv4/IPv6）、配置备份恢复、插件在线更新、一键卸载。
 
 ---
 
@@ -24,9 +24,12 @@
 8. **手动黑名单（v1.7.0 新增）**：支持 IPv4/IPv6 单个 IP 与 CIDR 网段（如 `1.2.3.0/24`、`2001:db8::/32`）手动拉黑，入站与转发流量直接丢弃；独立 nft 表 `inet netmanager_ban`（fw4 reload 不影响），条目持久化并开机/WAN 重连自动恢复
 9. **设置**：默认目标 IP / 配置备份 / 插件在线更新 / 运行日志排错 / 一键卸载
 
-### DNS 设置（原 luci-app-dnssettings，CBI 标准表单）
+### 上网设置（原 luci-app-dnssettings，CBI 标准表单）
 
-10. **DNS 设置**：
+10. **上网设置**：
+   - WAN 口上网方式：PPPoE 拨号 / DHCP 自动获取 / 静态 IP
+   - LAN 口地址：LAN 口 IP 地址与子网掩码
+   - IPv6 获取与分发：WAN 前缀请求长度（PD）+ LAN 分发模式（状态化 / SLAAC / 中继 / 关闭）
    - WAN 口上游 DNS：PPPoE/DHCP 拨号自定义 IPv4/IPv6 DNS，或使用运营商下发（peerdns）
    - LAN 口设备 DNS：通过 DHCP option 6 与 RA 强制下发自定义 DNS，或走路由器缓存
    - dnsmasq 全局转发：统一配置上游解析服务器
@@ -50,12 +53,12 @@ luci-app-netmanager/
 ├── files/
 │   ├── usr/sbin/
 │   │   ├── netmanager                        # 后端核心脚本（防火墙管理，含日志/更新/备份/卸载）
-│   │   ├── dnssettings-apply.sh              # DNS 应用配置脚本（独立保留）
-│   │   └── dnssettings-backup.sh             # DNS 备份脚本（独立保留）
+│   │   ├── dnssettings-apply.sh              # 上网设置应用配置脚本（独立保留）
+│   │   └── dnssettings-backup.sh             # 上网设置备份脚本（独立保留）
 │   ├── usr/lib/lua/luci/
-│   │   ├── controller/netmanager.lua         # LuCI 控制器（菜单+API+multipart上传+DNS动作）
+│   │   ├── controller/netmanager.lua         # LuCI 控制器（菜单+API+multipart上传+上网设置动作）
 │   │   ├── model/cbi/netmanager/
-│   │   │   ├── dns_settings.lua              # DNS 设置 CBI 模型（绑定 /etc/config/dnssettings）
+│   │   │   ├── dns_settings.lua              # 上网设置 CBI 模型（绑定 /etc/config/dnssettings）
 │   │   │   └── dns_staticv6.lua              # 静态 IP 分配 CBI 模型（绑定 dhcp.host）
 │   │   └── view/netmanager/
 │   │       ├── overview.htm                  # 系统概览
@@ -66,10 +69,10 @@ luci-app-netmanager/
 │   │       ├── settings.htm                  # 设置（备份/更新/运行日志/中国IPv4过滤/卸载）
 │   │       ├── common_head.htm               # 公共样式
 │   │       ├── cbi_nav.htm                   # CBI 页面公共导航
-│   │       └── nav.htm                       # 公共导航（含 DNS 两个入口）
+│   │       └── nav.htm                       # 公共导航（含上网设置、静态IP分配入口）
 │   ├── etc/config/
 │   │   ├── netmanager                        # 防火墙模块配置
-│   │   └── dnssettings                       # DNS 模块配置（独立保留）
+│   │   └── dnssettings                       # 上网设置模块配置（独立保留）
 │   ├── etc/init.d/netmanager-china           # 中国IPv4/IPv6过滤 + 黑名单 开机自启
 │   ├── etc/hotplug.d/iface/95-netmanager-china # WAN上线重应用过滤/黑名单规则
 │   └── etc/hotplug.d/iface/96-netmanager-v6sync # WAN上线同步 IPv6 转发目标跟踪
@@ -199,7 +202,7 @@ netmanager blacklist apply                     # 重建黑名单 nft 规则
 netmanager static_bind <MAC> [IPv4] [主机名] [DUID]   # 按 MAC 创建 dhcp host 静态绑定
 netmanager static_unbind <MAC>                        # 按 MAC 删除全部静态绑定条目
 
-# DNS 设置（命令行方式应用，等价于页面「应用配置」按钮）
+# 上网设置（命令行应用脚本，等价于页面「应用配置」按钮）
 /usr/sbin/dnssettings-apply.sh                 # 应用 /etc/config/dnssettings 到系统
 /usr/sbin/dnssettings-backup.sh                # 备份 network/dhcp 配置到 /root/backup/
 
@@ -234,7 +237,7 @@ config netmanager 'settings'
 
 > **手动黑名单存储**：条目持久化在 `/etc/netmanager/blacklist_v4.list` 与 `/etc/netmanager/blacklist_v6.list`（每行一个 IP 或 CIDR），无需 UCI 配置，页面增删即时生效。
 
-### DNS 模块：`/etc/config/dnssettings`
+### 上网设置模块：`/etc/config/dnssettings`
 
 ```
 config wan 'wan'          # WAN 口上游 DNS（peerdns / dns1_v4 / dns2_v4 / dns1_v6 / dns2_v6）
@@ -243,7 +246,7 @@ config dnsmasq 'dnsmasq'  # dnsmasq 全局转发（enable / forward_v4 列表 / 
 config actions 'actions'  # 操作按钮占位
 ```
 
-> **DNS 应用原理**：点击「应用配置」后，`dnssettings-apply.sh` 将上述配置写入 `network.wan/wan6`（peerdns/dns/dns6）、`dhcp.lan`（dhcp_option/dns/ra/dhcpv6）与 `dhcp.@dnsmasq[0].server`，然后重启 network/dnsmasq/odhcpd。局域网设备需断开重连网络才能获取新 DNS。
+> **上网设置应用原理**：点击「应用配置」后，`dnssettings-apply.sh` 将上述配置写入 `network.wan/wan6`（peerdns/dns/dns6）、`dhcp.lan`（dhcp_option/dns/ra/dhcpv6）与 `dhcp.@dnsmasq[0].server`，然后重启 network/dnsmasq/odhcpd。局域网设备需断开重连网络才能获取新 DNS。
 
 > **中国IPv4过滤原理**：独立 nft 表 `inet netmanager`（与 fw4 分离，fw4 reload 不影响）含 `china_v4` CIDR 集合 + input/forward 两条 base chain(priority -50)，规则 `iifname {wan} ct state new {tcp,udp} ip saddr != @china_v4 drop`。CIDR 列表存 `/etc/netmanager/china_v4.list`，开机 init + WAN 上线 hotplug 自动重应用。兼容新旧 nft：modern(`flags interval, auto-merge` 分片加载) / compat(`flags interval` 单次原子加载 + 逐行回退)。
 
@@ -276,7 +279,7 @@ IPv4（每行一个 CIDR）：
 - Web 界面：「设置」页面 →「卸载插件」区块（支持「保留配置」勾选）
 - 命令行：`netmanager uninstall [full|keep]`
 
-卸载会完整清理：后端脚本、LuCI 控制器/CBI 模型/视图、init/hotplug、DNS 应用与备份脚本、nft 规则、cron 任务、配置文件。用户在 `/etc/config/firewall` 中的端口转发与防火墙规则不受影响。
+卸载会完整清理：后端脚本、LuCI 控制器/CBI 模型/视图、init/hotplug、上网设置应用与备份脚本、nft 规则、cron 任务、配置文件。用户在 `/etc/config/firewall` 中的端口转发与防火墙规则不受影响。
 
 ---
 
