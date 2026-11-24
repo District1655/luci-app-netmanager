@@ -6,7 +6,7 @@
 >
 > 由 **luci-app-fwmanager**（防火墙管理）与 **luci-app-dnssettings**（DNS设置）合并而成的网络管理一体化 LuCI 插件。
 
-一站式管理路由器网络：端口转发、防火墙规则、SSH/访问日志、中国 IPv4/IPv6 访问限制、手动黑名单、WAN/LAN 双栈 DNS 统一管理、静态 IPv6 分配、配置备份恢复、插件在线更新、一键卸载。
+一站式管理路由器网络：端口转发、防火墙规则、SSH/访问日志、中国 IPv4/IPv6 访问限制、手动黑名单、WAN/LAN 双栈 DNS 统一管理、静态 IP 分配（IPv4/IPv6）、配置备份恢复、插件在线更新、一键卸载。
 
 ---
 
@@ -15,7 +15,7 @@
 ### 防火墙管理（原 luci-app-fwmanager）
 
 1. **系统概览**：防火墙状态 / 端口统计 / 网络信息 / 快捷操作
-2. **端口转发管理**：IPv4 DNAT + IPv6 放行统一管理，支持 TCP/UDP/双协议、单端口与端口范围
+2. **端口转发管理**：IPv4 / IPv6 DNAT 端口映射统一管理，支持 TCP/UDP/双协议、单端口与端口范围；IPv6 配套放行规则由「规则管理」页维护
 3. **防火墙规则管理**：自定义通信规则增删改 + 常用模板一键应用
 4. **SSH 登录日志**：成功/失败记录 + 失败 IP 排行 Top 10 + 自动刷新
 5. **端口访问日志**：活跃连接 / 入站出站计数 / 拦截统计
@@ -32,7 +32,7 @@
    - dnsmasq 全局转发：统一配置上游解析服务器
    - 配置备份：一键备份当前系统 network/dhcp 配置到 `/root/backup/`
    - 应用配置：一键写入系统并重启 network/dnsmasq/odhcpd
-11. **静态 IPv6 分配**：基于 MAC 绑定 hostid/ip6/DUID，自动合并重复条目、在线状态显示、hostid 冲突检测
+11. **静态 IP 分配（IPv4 + IPv6）**：基于 MAC 绑定 IPv4 地址 / hostid / ip6 / DUID，支持在线客户端一键绑定与解绑、自动合并重复条目、在线状态显示、地址与 hostid 冲突检测；公网 GUA 随运营商前缀变化，静态 IPv6 仅允许绑定 ULA 后缀
 
 ### 默认 DNS
 
@@ -56,7 +56,7 @@ luci-app-netmanager/
 │   │   ├── controller/netmanager.lua         # LuCI 控制器（菜单+API+multipart上传+DNS动作）
 │   │   ├── model/cbi/netmanager/
 │   │   │   ├── dns_settings.lua              # DNS 设置 CBI 模型（绑定 /etc/config/dnssettings）
-│   │   │   └── dns_staticv6.lua              # 静态 IPv6 分配 CBI 模型（绑定 dhcp.host）
+│   │   │   └── dns_staticv6.lua              # 静态 IP 分配 CBI 模型（绑定 dhcp.host）
 │   │   └── view/netmanager/
 │   │       ├── overview.htm                  # 系统概览
 │   │       ├── port_forward.htm              # 端口转发
@@ -65,12 +65,14 @@ luci-app-netmanager/
 │   │       ├── access_log.htm                # 访问日志
 │   │       ├── settings.htm                  # 设置（备份/更新/运行日志/中国IPv4过滤/卸载）
 │   │       ├── common_head.htm               # 公共样式
+│   │       ├── cbi_nav.htm                   # CBI 页面公共导航
 │   │       └── nav.htm                       # 公共导航（含 DNS 两个入口）
 │   ├── etc/config/
 │   │   ├── netmanager                        # 防火墙模块配置
 │   │   └── dnssettings                       # DNS 模块配置（独立保留）
 │   ├── etc/init.d/netmanager-china           # 中国IPv4/IPv6过滤 + 黑名单 开机自启
-│   └── etc/hotplug.d/iface/95-netmanager-china # WAN上线重应用
+│   ├── etc/hotplug.d/iface/95-netmanager-china # WAN上线重应用过滤/黑名单规则
+│   └── etc/hotplug.d/iface/96-netmanager-v6sync # WAN上线同步 IPv6 转发目标跟踪
 ├── .github/workflows/build.yml               # GitHub Actions 自动打包
 ├── install.sh                                # 一键安装脚本（支持 SKIP_UHTTPD_RESTART）
 └── README.md
@@ -110,12 +112,20 @@ sh install.sh
 ```bash
 # 系统概览
 netmanager overview
+netmanager version              # 查看插件版本
 
 # 端口转发
 netmanager port_list
 netmanager port_add <外部端口> <tcp|udp|both> <目标IP> <ipv4|ipv6|both> [内部端口]
 netmanager port_del <外部端口> <协议>
 netmanager port_edit <旧端口> <旧协议> <新端口> <新协议> <目标IP> <类型> [新内部端口]
+
+# IPv6 转发目标跟踪（v1.8.0+，前缀变化自动跟随）
+netmanager port_track_v6 <端口> <tcp|udp> <锚点|off>   # 设置/清除 IPv6 跟踪锚点（MAC/主机名/IPv4）
+netmanager port_sync_v6 [--quiet]                       # 立即按锚点重算并同步 IPv6 目标地址
+
+# IPv6 网关自愈（v1.8.7+）
+netmanager v6gw [--quiet]        # 补 PPPoE 缺失的 IPv6 默认路由，并强制 ra_default=1 宣告网关
 
 # 防火墙规则
 netmanager rule_list
@@ -126,10 +136,13 @@ netmanager rule_edit <索引> <名称> <源> <目标> <协议> <端口> <动作>
 # 日志
 netmanager ssh_log [条数]
 netmanager access_log [筛选端口] [条数]
+netmanager block_detail <端口|v4|v6>   # 查看被拦截源 IP 明细（源/协议/端口/次数/最近时间）
 
 # 运行日志
 netmanager log_set 1|0          # 开启/关闭运行日志（持久化到UCI）
 netmanager log_get [行数]       # 查看最后 N 行运行日志
+netmanager log_query [级别] [关键词] [行数]  # 按级别（INFO/WARN/ERROR/DEBUG）与关键词过滤查询
+netmanager log_export           # 导出完整运行日志（输出 base64，供前端下载）
 netmanager log_clear            # 清空运行日志
 
 # 设置
@@ -145,6 +158,8 @@ netmanager backup                    # 立即备份当前配置
 netmanager backup_list               # 查看所有备份
 netmanager backup_restore <文件名>   # 从备份恢复
 netmanager backup_delete <文件名>    # 删除备份
+netmanager backup_import <文件名>     # 将已上传的备份包导入备份目录（校验 tar.gz 与配置内容）
+netmanager backup_prune [保留数]     # 清理旧备份，默认保留最近 20 份
 
 # 插件管理
 netmanager upload_file <文件名>      # 上传文件（通过stdin）
@@ -180,6 +195,10 @@ netmanager blacklist del <IP|CIDR>             # 移除条目
 netmanager blacklist clear [v4|v6|all]         # 清空黑名单
 netmanager blacklist apply                     # 重建黑名单 nft 规则
 
+# 静态 IP 绑定（等价于页面在线客户端「一键绑定 / 解绑」）
+netmanager static_bind <MAC> [IPv4] [主机名] [DUID]   # 按 MAC 创建 dhcp host 静态绑定
+netmanager static_unbind <MAC>                        # 按 MAC 删除全部静态绑定条目
+
 # DNS 设置（命令行方式应用，等价于页面「应用配置」按钮）
 /usr/sbin/dnssettings-apply.sh                 # 应用 /etc/config/dnssettings 到系统
 /usr/sbin/dnssettings-backup.sh                # 备份 network/dhcp 配置到 /root/backup/
@@ -199,8 +218,6 @@ netmanager uninstall keep           # 保留 /etc/config/netmanager、/etc/netma
 config netmanager 'settings'
     option default_target '192.168.31.196'   # 默认转发目标IP
     option log_days '7'                       # 日志保留天数（预留）
-    option auto_ban '0'                       # 是否自动封禁 SSH 爆破
-    option auto_ban_threshold '5'             # 自动封禁失败次数阈值
     option log_enable '0'                     # 运行日志开关：0关闭 / 1开启
     option china_filter_enable '0'            # 中国IPv4过滤开关：0关闭 / 1开启
     option china_filter_url 'https://metowolf.github.io/iplist/data/special/china.txt'  # IP库订阅链接
@@ -212,6 +229,7 @@ config netmanager 'settings'
     option china6_filter_cron '0 3 * * 0'     # IPv6 更新计划cron表达式
     option china6_filter_last_update ''       # IPv6 上次成功下载时间
     option china6_filter_count '0'            # IPv6 当前列表CIDR条数
+    option update_mirror ''                    # 在线更新镜像/加速前缀（空=直连，需在白名单域名内）
 ```
 
 > **手动黑名单存储**：条目持久化在 `/etc/netmanager/blacklist_v4.list` 与 `/etc/netmanager/blacklist_v6.list`（每行一个 IP 或 CIDR），无需 UCI 配置，页面增删即时生效。
