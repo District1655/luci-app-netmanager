@@ -133,9 +133,9 @@ function loadPortList() {
                         ? '<span class="badge badge-green">跟随 ' + escapeHtml(anchor) + '</span>'
                         : '<span class="text-muted">未跟踪</span>';
                     ipv6dHtml += `<tr><td>${escapeHtml(name)}</td><td>${protoBadge}</td><td><b>${escapeHtml(sp)}</b></td><td>${dipCell}</td><td>${anchorCell}</td><td>${escapeHtml(pkts)}</td><td>${status}</td><td><button class="btn btn-success btn-sm" onclick="trackV6(${rowId})">跟踪</button> <button class="btn btn-primary btn-sm" onclick="editPort(${rowId})">编辑</button> <button class="btn btn-danger btn-sm" onclick="delPort(${rowId})">删除</button></td></tr>`;
-                } else if (currentSection === 'ipv6allow' && parts.length >= 6) {
-                    // v1.8.13：IPv6 端口放行区（idx|name|proto|dp|en|dip）
-                    const [idx, name, proto, dp, en, dip] = parts;
+                } else if (currentSection === 'ipv6allow' && parts.length >= 8) {
+                    // v1.8.13：IPv6 端口放行区（idx|name|proto|dp|en|pkts|dip|anchor）
+                    const [idx, name, proto, dp, en, pkts, dip, anchor] = parts;
                     const auto = (name === 'Allow-IPv6-' + dp + '-' + proto);
                     const status = en === '1' ? '<span class="badge badge-green">启用</span>' : '<span class="badge badge-gray">禁用</span>';
                     const protoBadge = proto === 'tcp' ? '<span class="badge badge-blue">TCP</span>' : proto === 'udp' ? '<span class="badge badge-purple">UDP</span>' : '<span class="badge badge-blue">TCP+UDP</span>';

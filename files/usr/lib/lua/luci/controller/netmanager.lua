@@ -5,6 +5,10 @@
 module("luci.controller.netmanager", package.seeall)
 
 function index()
+    -- v1.8.13：插件页禁止浏览器缓存，避免更新后旧标签页滞留旧版 JS，
+    -- 用旧解析逻辑读新后端输出导致编辑表单/列表状态错乱
+    luci.http.header("Cache-Control", "no-store, no-cache, must-revalidate")
+    luci.http.header("Pragma", "no-cache")
     entry({"admin", "netmanager"}, alias("admin", "netmanager", "overview"), _("网络管理"), 60).dependent = true
     entry({"admin", "netmanager", "overview"}, template("netmanager/overview"), _("系统概览"), 1)
     entry({"admin", "netmanager", "port_forward"}, template("netmanager/port_forward"), _("端口转发"), 2)
