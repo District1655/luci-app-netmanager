@@ -12,7 +12,7 @@ LOG_FILE="$LOG_DIR/run.log"
 LOG_ENABLED=0
 
 # 在线更新配置：版本号与 GitHub 仓库（发版时同步修改 PLUGIN_VERSION）
-PLUGIN_VERSION="1.8.11"
+PLUGIN_VERSION="1.8.12"
 REPO_OWNER="District1655"
 REPO_NAME="luci-app-netmanager"
 REPO_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
@@ -483,13 +483,15 @@ cmd_port_list() {
     write_log "DEBUG" "port_list: 列表加载完成"
 }
 
-# ========== IPv6 直连放行规则辅助（v1.8.11 新增）==========
-# 机制：fw4 的 dstnat_wan 无目的地址门槛，直连目标 GUA 的入站包同样会被 DNAT
-# 翻译端口（外部端口→内部端口），故 forward 链看到的是「内部端口」。配套放行规则
-# 的 dest_port 必须用内部端口（翻译后），dest_ip 限定目标 GUA。
-# - 有翻译端口（如 53→38953）：DNAT 真实生效打 ct status dnat，ct accept 即可放行，
-#   本规则为显式兜底；
-# - 无翻译端口（如 51116→51116）：DNAT 为空操作不打标记，直连路径必须靠本规则放行。
+# ========== IPv6 直连放行规则辅助（v1.8.11 新增，v1.8.12 收敛适用范围）==========
+# 机制：fw4 的 dstnat_wan 无目的地址门槛，直连目标 GUA 的入站包同样会被 DNAT。
+# - 有翻译端口（如 853→38853）：DNAT 真实生效打 ct status dnat，fw4 内建
+#   "ct status dnat accept" 已放行（含直连目标 GUA:外部端口被翻译的路径），
+#   绝不能再建 dest_port=内部端口 的 ACCEPT 规则——那会把内部端口直接暴露
+#   公网直连（直连目标 GUA:38853 也被放行，绕过端口翻译）。v1.8.12 起对
+#   翻译端口映射不生成配套规则，并清理历史残留。
+# - 无翻译端口（如 51116→51116）：DNAT 为空操作不打标记，直连路径必须靠
+#   本规则放行，dest_ip 限定目标 GUA。
 # 规则名按「外部端口」命名（Allow-IPv6-<外部端口>-<协议>）便于增删改生命周期匹配，
 # 并随 v6track 锚点跟随前缀变化（port_sync_v6 按名称匹配改写 dest_ip）。
 # $1=外部端口(命名用) $2=协议 $3=目标GUA $4=内部端口(dest_port，留空同外部)
@@ -497,6 +499,12 @@ v6_ensure_allow_rule() {
     _ap="$1"; _apr="$2"; _agua="$3"; _adp="$4"
     { [ -z "$_ap" ] || [ -z "$_agua" ]; } && return 0
     [ -z "$_adp" ] && _adp="$_ap"
+    # v1.8.12：翻译端口映射不需要也不允许配套放行规则（见上方注释），
+    # 存在历史残留（v1.8.11 生成）则删除。
+    if [ "$_adp" != "$_ap" ]; then
+        v6_remove_allow_rule "$_ap" "$_apr"
+        return 0
+    fi
     _aname="Allow-IPv6-${_ap}-${_apr}"
     _ai=0; _asec=""
     while uci -q get "firewall.@rule[$_ai]" >/dev/null 2>&1; do
@@ -616,8 +624,9 @@ cmd_port_add() {
             done
             if [ $exists -eq 0 ]; then
                 # v1.8.10：IPv6 与 IPv4 对称，创建 DNAT 端口映射（redirect family=ipv6）。
-                # v1.8.11：同时配套创建 Allow-IPv6 直连放行规则（见 v6_ensure_allow_rule），
-                # 覆盖 DDNS 直连目标 GUA 的路径；DNAT 覆盖连路由 WAN GUA 的路径。
+                # v1.8.12：仅无翻译端口（外部=内部）配套创建 Allow-IPv6 直连放行规则
+                # （见 v6_ensure_allow_rule）；翻译端口由 DNAT + ct status dnat accept
+                # 放行，不再生成（避免内部端口暴露公网直连）。
                 # dest_ip 必须是 IPv6 地址：传入 IPv6 直用；传入 IPv4/留空默认目标时
                 # 按该主机解析当前公网 IPv6（SLAAC 优先），并登记跟踪锚点跟随前缀变化。
                 v6_target=""
@@ -662,7 +671,7 @@ cmd_port_add() {
                 uci set firewall.@redirect[-1].family="ipv6"
                 uci set firewall.@redirect[-1].target="DNAT"
                 info "IPv6 DNAT: $port/$p -> [$v6_target]:$dport"
-                # v1.8.11：配套直连放行规则（dest_port 用内部端口，匹配 DNAT 翻译后的包）
+                # v1.8.12：仅无翻译端口生成配套直连放行规则；翻译端口清理历史残留
                 v6_ensure_allow_rule "$port" "$p" "$v6_target" "$dport"
             else
                 warn "IPv6映射已存在: $port/$p"
@@ -1084,6 +1093,7 @@ cmd_port_sync_v6() {
     local quiet=0
     [ "$1" = "--quiet" ] && quiet=1
     local i port proto anchor enabled resolved idx fam dp pr changed=0 checked=0
+    local sp _cprs _ri _rn _rpr _hit _m
     local prefix
     prefix=$(v6_current_prefix)
     if [ -z "$prefix" ]; then
@@ -1151,6 +1161,41 @@ cmd_port_sync_v6() {
             fi
             idx=$((idx+1))
         done
+    done
+
+    # v1.8.12：清理翻译端口映射历史残留的配套放行规则（v1.8.11 曾为所有
+    # IPv6 映射生成 Allow-IPv6 规则）。翻译端口由 DNAT + ct status dnat accept
+    # 放行，dest_port=内部端口 的 ACCEPT 规则会把内部端口暴露公网直连
+    # （如 853→38853 时直连 38853 也通）。扫描全部 IPv6 映射（不限于跟踪
+    # 锚点），存量安装升级后随 cron / hotplug 同步自愈。
+    idx=0
+    while uci -q get "firewall.@redirect[$idx]" >/dev/null 2>&1; do
+        fam=$(uci -q get "firewall.@redirect[$idx].family")
+        sp=$(uci -q get "firewall.@redirect[$idx].src_dport")
+        dp=$(uci -q get "firewall.@redirect[$idx].dest_port")
+        pr=$(uci -q get "firewall.@redirect[$idx].proto")
+        if [ "$fam" = "ipv6" ] && [ -n "$sp" ] && [ -n "$dp" ] && [ "$dp" != "$sp" ]; then
+            case "$pr" in both|tcpudp) _cprs="tcp udp" ;; *) _cprs="$pr" ;; esac
+            _ri=0
+            while uci -q get "firewall.@rule[$_ri]" >/dev/null 2>&1; do
+                _rn=$(uci -q get "firewall.@rule[$_ri].name")
+                _rpr=$(uci -q get "firewall.@rule[$_ri].proto")
+                _hit=0
+                case "$_rn" in Allow-IPv6-${sp}-*) _hit=1 ;; esac
+                if [ "$_hit" = "1" ]; then
+                    _hit=0
+                    for _m in $_cprs; do proto_match "$_rpr" "$_m" && _hit=1; done
+                fi
+                if [ "$_hit" = "1" ]; then
+                    v6_remove_allow_rule "$sp" "$_cprs"
+                    changed=$((changed+1))
+                    [ $quiet -eq 0 ] && info "清理翻译端口映射 $sp->$dp 的多余直连放行规则（内部端口不再暴露直连）"
+                    break
+                fi
+                _ri=$((_ri+1))
+            done
+        fi
+        idx=$((idx+1))
     done
 
     if [ $changed -gt 0 ]; then
