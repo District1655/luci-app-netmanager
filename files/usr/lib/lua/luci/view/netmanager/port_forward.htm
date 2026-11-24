@@ -71,17 +71,27 @@
         <h3>IPv6 端口映射 (DNAT)</h3>
         <div class="text-muted" style="margin-bottom:6px;">
             与 IPv4 对称：外部端口映射到内网主机的 IPv6 地址（ipv6:port）。目标填 IPv4 时自动解析该主机当前公网 IPv6，
-            并登记「跟踪锚点」，运营商前缀变化时自动跟随。添加 IPv6 映射时会同步在「规则管理」页生成配套的
-            Allow-IPv6 直连放行规则（供 DDNS 直连目标主机 GUA 的路径使用，随映射自动增删与前缀跟随），无需手动维护。
+            并登记「跟踪锚点」，运营商前缀变化时自动跟随。添加无翻译端口（外部=内部）的 IPv6 映射时，会在下方
+            「IPv6 端口放行」区同步生成配套 Allow-IPv6 直连放行规则（随映射自动增删与前缀跟随），无需手动维护。
             <button class="btn btn-secondary btn-sm" onclick="syncV6()">立即同步</button>
         </div>
         <table class="netmanager-table" id="ipv6dnat_table">
             <thead><tr><th>名称</th><th>协议</th><th>外部端口</th><th>目标地址</th><th>跟踪锚点</th><th>命中数</th><th>状态</th><th>操作</th></tr></thead>
             <tbody><tr><td colspan="8" class="empty-state">—</td></tr></tbody>
         </table>
+        <h3>IPv6 端口放行（直连）</h3>
+        <div class="text-muted" style="margin-bottom:6px;">
+            转发是转发，放行是放行：上表 DNAT 管「连路由器 WAN 地址」的翻译路径；本表放行规则管「域名直连内网主机 GUA」
+            的路径（无翻译端口时 DNAT 为空操作、不打 ct 标记，必须靠放行规则）。目的IP 锁定单台主机，非整段放行。
+            「自动配套」规则随 IPv6 映射自动增删；禁用只断直连路径，不影响转发。
+        </div>
+        <table class="netmanager-table" id="ipv6allow_table">
+            <thead><tr><th>名称</th><th>协议</th><th>放行端口</th><th>目的IP</th><th>来源</th><th>状态</th><th>操作</th></tr></thead>
+            <tbody><tr><td colspan="7" class="empty-state">—</td></tr></tbody>
+        </table>
         <div id="action_result" class="netmanager-result"></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.11</div>
+    <div class="footer-sign">网络管理插件 v1.8.13</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -89,14 +99,15 @@ function loadPortList() {
     nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=port_list'})
     .then(r => r.text()).then(data => {
         const sections = data.split('---');
-        let ipv4Html = '', ipv6dHtml = '';
+        let ipv4Html = '', ipv6dHtml = '', ipv6aHtml = '';
         let currentSection = '';
         // 【安全】行数据存入 JS 数组，onclick 只传纯数字下标，杜绝自由文本注入 onclick
         window.PORT_ROWS = [];
+        window.ALLOW_ROWS = [];
         sections.forEach(section => {
             if (section.includes('IPV6DNAT')) currentSection = 'ipv6dnat';
             else if (section.includes('IPV4')) currentSection = 'ipv4';
-            else if (section.includes('IPV6')) currentSection = 'ipv6allow_skip'; // v1.8.10：放行规则归规则管理页，此处不渲染
+            else if (section.includes('IPV6')) currentSection = 'ipv6allow'; // v1.8.13：放行规则回归本页「IPv6 端口放行」区
             else if (section.includes('DEFAULT_TARGET')) {
                 const m = section.match(/DEFAULT_TARGET=(.+)/);
                 if (m) document.getElementById('default_target_display').textContent = m[1].trim();
@@ -122,11 +133,50 @@ function loadPortList() {
                         ? '<span class="badge badge-green">跟随 ' + escapeHtml(anchor) + '</span>'
                         : '<span class="text-muted">未跟踪</span>';
                     ipv6dHtml += `<tr><td>${escapeHtml(name)}</td><td>${protoBadge}</td><td><b>${escapeHtml(sp)}</b></td><td>${dipCell}</td><td>${anchorCell}</td><td>${escapeHtml(pkts)}</td><td>${status}</td><td><button class="btn btn-success btn-sm" onclick="trackV6(${rowId})">跟踪</button> <button class="btn btn-primary btn-sm" onclick="editPort(${rowId})">编辑</button> <button class="btn btn-danger btn-sm" onclick="delPort(${rowId})">删除</button></td></tr>`;
+                } else if (currentSection === 'ipv6allow' && parts.length >= 6) {
+                    // v1.8.13：IPv6 端口放行区（idx|name|proto|dp|en|dip）
+                    const [idx, name, proto, dp, en, dip] = parts;
+                    const auto = (name === 'Allow-IPv6-' + dp + '-' + proto);
+                    const status = en === '1' ? '<span class="badge badge-green">启用</span>' : '<span class="badge badge-gray">禁用</span>';
+                    const protoBadge = proto === 'tcp' ? '<span class="badge badge-blue">TCP</span>' : proto === 'udp' ? '<span class="badge badge-purple">UDP</span>' : '<span class="badge badge-blue">TCP+UDP</span>';
+                    const srcBadge = auto ? '<span class="badge badge-blue">自动配套</span>' : '<span class="badge badge-gray">自定义</span>';
+                    const aRowId = window.ALLOW_ROWS.push({idx: idx, en: en, auto: auto, name: name}) - 1;
+                    const toggleLabel = en === '1' ? '禁用' : '启用';
+                    let ops = `<button class="btn btn-secondary btn-sm" onclick="toggleAllow(${aRowId})">${toggleLabel}</button>`;
+                    if (!auto) ops += ` <button class="btn btn-danger btn-sm" onclick="delAllow(${aRowId})">删除</button>`;
+                    ipv6aHtml += `<tr><td><b>${escapeHtml(name)}</b></td><td>${protoBadge}</td><td><b>${escapeHtml(dp)}</b></td><td>${dip ? escapeHtml(dip) : '<span class="text-muted">任意</span>'}</td><td>${srcBadge}</td><td>${status}</td><td>${ops}</td></tr>`;
                 }
             });
         });
         document.querySelector('#ipv4_table tbody').innerHTML = ipv4Html || '<tr><td colspan="7" class="empty-state">暂无规则</td></tr>';
         document.querySelector('#ipv6dnat_table tbody').innerHTML = ipv6dHtml || '<tr><td colspan="8" class="empty-state">暂无规则</td></tr>';
+        document.querySelector('#ipv6allow_table tbody').innerHTML = ipv6aHtml || '<tr><td colspan="7" class="empty-state">暂无放行规则</td></tr>';
+    });
+}
+// v1.8.13：IPv6 端口放行区 启用/禁用 与 删除（仅自定义规则可删）
+function toggleAllow(rowId) {
+    const r = window.ALLOW_ROWS && window.ALLOW_ROWS[rowId];
+    if (!r) return;
+    const en = r.en === '1' ? '0' : '1';
+    if (en === '0' && r.auto && !confirm('禁用自动配套放行规则 ' + r.name + ' 后，域名直连该主机 IPv6 的路径将不通（转发路径不受影响）。确定禁用？')) return;
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=rule_toggle&idx=' + encodeURIComponent(r.idx) + '&en=' + en})
+    .then(r2 => r2.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        setTimeout(loadPortList, 500);
+    }).catch(e => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">[ERROR] ' + escapeHtml(e.message || String(e)) + '</pre>';
+    });
+}
+function delAllow(rowId) {
+    const r = window.ALLOW_ROWS && window.ALLOW_ROWS[rowId];
+    if (!r || r.auto) return;
+    if (!confirm('确定删除放行规则 ' + r.name + ' ?')) return;
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=rule_del&idx=' + encodeURIComponent(r.idx)})
+    .then(r2 => r2.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        setTimeout(loadPortList, 500);
+    }).catch(e => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">[ERROR] ' + escapeHtml(e.message || String(e)) + '</pre>';
     });
 }
 // v1.8.3：登记/取消 IPv6 目标跟踪锚点

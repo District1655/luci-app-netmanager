@@ -8,7 +8,8 @@
     <%+netmanager/nav%>
     <div class="netmanager-content">
         <h2>防火墙规则管理</h2>
-        <div class="text-muted" style="margin-bottom:8px;">管理 ACCEPT / DROP / REJECT 规则，含 IPv6 端口放行（原「端口转发」页的放行规则已迁移至此）。</div>
+        <div class="text-muted" style="margin-bottom:8px;">管理 ACCEPT / DROP / REJECT 通用通信规则。IPv6 端口放行规则（wan→lan 带端口）在「端口转发」页「IPv6 端口放行」区管理，转发与放行分离。</div>
+        <div class="text-muted" id="allow_moved_hint" style="margin-bottom:6px;display:none;"></div>
         <!-- 添加表单 -->
         <div class="netmanager-form" id="add_form">
             <div style="margin-bottom:8px;"><b>添加自定义规则</b></div>
@@ -103,8 +104,8 @@
         </div>
         <h3>当前所有规则</h3>
         <table class="netmanager-table" id="rule_table">
-            <thead><tr><th>#</th><th>名称</th><th>源</th><th>目标</th><th>协议</th><th>端口</th><th>动作</th><th>IP版本</th><th>状态</th><th>操作</th></tr></thead>
-            <tbody><tr><td colspan="10" class="empty-state">加载中...</td></tr></tbody>
+            <thead><tr><th>#</th><th>名称</th><th>源</th><th>目标</th><th>协议</th><th>端口</th><th>源IP</th><th>目的IP</th><th>动作</th><th>IP版本</th><th>状态</th><th>操作</th></tr></thead>
+            <tbody><tr><td colspan="12" class="empty-state">加载中...</td></tr></tbody>
         </table>
         <h3>常用规则模板</h3>
         <div class="netmanager-toolbar">
@@ -115,7 +116,7 @@
         </div>
         <div id="action_result" class="netmanager-result"></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.11</div>
+    <div class="footer-sign">网络管理插件 v1.8.13</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -123,6 +124,7 @@ function loadRuleList() {
     nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=rule_list'})
     .then(r => r.text()).then(data => {
         let html = '';
+        let allowMoved = 0;
         // 【安全】行数据存入 JS 数组，onclick 只传纯数字下标，杜绝 UCI 自由文本注入 onclick
         window.RULE_ROWS = [];
         const lines = data.split('\n').filter(l => l.includes('|') && !l.includes('---'));
@@ -130,15 +132,28 @@ function loadRuleList() {
             const parts = line.split('|');
             if (parts.length >= 9) {
                 const [idx, name, src, dst, proto, port, target, fam, enabled] = parts;
+                // v1.8.13：IPv6 端口放行规则（与 port_list IPV6 区同口径）移至端口转发页，本页不渲染
+                if (fam === 'ipv6' && port && dst === 'lan') { allowMoved++; return; }
+                // v1.8.13：末尾追加的源IP/目的IP（旧后端无这两字段时显示「任意」）
+                const sip = parts[9] || '', dip = parts[10] || '';
                 const tBadge = target === 'ACCEPT' ? '<span class="badge badge-green">ACCEPT</span>' : target === 'DROP' ? '<span class="badge badge-red">DROP</span>' : '<span class="badge badge-orange">REJECT</span>';
                 const fBadge = fam === 'any' ? '全部' : escapeHtml(fam.toUpperCase());
                 const status = enabled === '1' ? '<span class="badge badge-green">启用</span>' : '<span class="badge badge-gray">禁用</span>';
+                const sipCell = sip ? escapeHtml(sip) : '<span class="text-muted">任意</span>';
+                const dipCell = dip ? escapeHtml(dip) : '<span class="text-muted">任意</span>';
                 const rowId = window.RULE_ROWS.length;
-                window.RULE_ROWS.push({idx: idx, name: name, src: src, dst: dst, proto: proto, port: port, target: target, fam: fam});
-                html += `<tr><td>${escapeHtml(idx)}</td><td><b>${escapeHtml(name)}</b></td><td>${escapeHtml(src || '-')}</td><td>${escapeHtml(dst || '-')}</td><td>${escapeHtml(proto || '-')}</td><td>${escapeHtml(port || '-')}</td><td>${tBadge}</td><td>${fBadge}</td><td>${status}</td><td><button class="btn btn-primary btn-sm" onclick="editRule(${parseInt(idx)},${rowId})">编辑</button> <button class="btn btn-danger btn-sm" onclick="delRule(${parseInt(idx)})">删除</button></td></tr>`;
+                window.RULE_ROWS.push({idx: idx, name: name, src: src, dst: dst, proto: proto, port: port, target: target, fam: fam, sip: sip, dip: dip});
+                html += `<tr><td>${escapeHtml(idx)}</td><td><b>${escapeHtml(name)}</b></td><td>${escapeHtml(src || '-')}</td><td>${escapeHtml(dst || '-')}</td><td>${escapeHtml(proto || '-')}</td><td>${escapeHtml(port || '-')}</td><td>${sipCell}</td><td>${dipCell}</td><td>${tBadge}</td><td>${fBadge}</td><td>${status}</td><td><button class="btn btn-primary btn-sm" onclick="editRule(${parseInt(idx)},${rowId})">编辑</button> <button class="btn btn-danger btn-sm" onclick="delRule(${parseInt(idx)})">删除</button></td></tr>`;
             }
         });
-        document.querySelector('#rule_table tbody').innerHTML = html || '<tr><td colspan="10" class="empty-state">暂无规则</td></tr>';
+        document.querySelector('#rule_table tbody').innerHTML = html || '<tr><td colspan="12" class="empty-state">暂无规则</td></tr>';
+        const hint = document.getElementById('allow_moved_hint');
+        if (allowMoved > 0) {
+            hint.textContent = '另有 ' + allowMoved + ' 条 IPv6 端口放行规则已在「端口转发」页「IPv6 端口放行」区管理（含自动配套直连放行），本页不再列出。';
+            hint.style.display = 'block';
+        } else {
+            hint.style.display = 'none';
+        }
     });
 }
 function addRule() {

@@ -253,6 +253,10 @@ function api_handler()
         cmd = string.format("/usr/sbin/netmanager rule_edit %s %s %s %s %s %s %s %s",
             shell_escape(idx), arg(name), arg(src), arg(dst),
             arg(proto), arg(port), arg(target), arg(fam))
+    elseif action == "rule_toggle" then
+        local idx = luci.http.formvalue("idx") or ""
+        local en = luci.http.formvalue("en") or ""
+        cmd = string.format("/usr/sbin/netmanager rule_toggle %s %s", shell_escape(idx), shell_escape(en))
     elseif action == "ssh_log" then
         local limit = luci.http.formvalue("limit") or "50"
         cmd = string.format("/usr/sbin/netmanager ssh_log %s", shell_escape(limit))

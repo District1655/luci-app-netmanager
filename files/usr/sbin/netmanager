@@ -12,7 +12,7 @@ LOG_FILE="$LOG_DIR/run.log"
 LOG_ENABLED=0
 
 # 在线更新配置：版本号与 GitHub 仓库（发版时同步修改 PLUGIN_VERSION）
-PLUGIN_VERSION="1.8.12"
+PLUGIN_VERSION="1.8.13"
 REPO_OWNER="District1655"
 REPO_NAME="luci-app-netmanager"
 REPO_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
@@ -1357,11 +1357,14 @@ cmd_rule_list() {
         target=$(uci get firewall.@rule[$idx].target 2>/dev/null)
         fam=$(uci get firewall.@rule[$idx].family 2>/dev/null)
         enabled=$(uci get firewall.@rule[$idx].enabled 2>/dev/null)
+        sip=$(uci get firewall.@rule[$idx].src_ip 2>/dev/null)
+        dip=$(uci get firewall.@rule[$idx].dest_ip 2>/dev/null)
         [ -z "$enabled" ] && enabled="1"
         [ -z "$fam" ] && fam="any"
         # 【v1.4.6 P1】输出侧兜底：UCI 直接编辑塞入管道符的历史数据替换为全角，防列表错位
         name=$(echo "$name" | tr '|' '｜')
-        echo "$idx|$name|$src|$dst|$proto|$dp|$target|$fam|$enabled"
+        # v1.8.13：末尾追加 src_ip/dest_ip（旧版前端按前 9 字段解析，向后兼容）
+        echo "$idx|$name|$src|$dst|$proto|$dp|$target|$fam|$enabled|$sip|$dip"
         idx=$((idx+1))
     done
     echo "===END==="
@@ -1441,6 +1444,25 @@ cmd_rule_edit() {
     rm -f /tmp/.uci/firewall 2>/dev/null
     /etc/init.d/firewall reload > /dev/null 2>&1
     info "规则已更新: ${name:-$old_name} ($target)"
+}
+
+# ========== 7.5 启用/禁用防火墙规则（v1.8.13 新增）==========
+# 供端口转发页「IPv6 端口放行」区的开关使用；enabled=1 以删除选项表示（默认启用）
+cmd_rule_toggle() {
+    idx="$1"; en="$2"
+    [ -z "$idx" ] && { error "用法: netmanager rule_toggle <索引> <1|0>"; exit 1; }
+    case "$en" in 0|1) ;; *) error "启用值必须为 1 或 0"; exit 1 ;; esac
+    name=$(uci get firewall.@rule[$idx].name 2>/dev/null)
+    [ -z "$name" ] && { error "规则索引 $idx 不存在"; exit 1; }
+    if [ "$en" = "1" ]; then
+        uci delete firewall.@rule[$idx].enabled 2>/dev/null
+    else
+        uci set firewall.@rule[$idx].enabled='0'
+    fi
+    uci commit firewall
+    rm -f /tmp/.uci/firewall 2>/dev/null
+    /etc/init.d/firewall reload > /dev/null 2>&1
+    if [ "$en" = "1" ]; then info "规则已启用: $name"; else info "规则已禁用: $name"; fi
 }
 
 # ========== 8. 删除防火墙规则 ==========
@@ -4107,6 +4129,7 @@ case "$1" in
     rule_add)           shift; cmd_rule_add "$@" ;;
     rule_del)           shift; cmd_rule_del "$@" ;;
     rule_edit)          shift; cmd_rule_edit "$@" ;;
+    rule_toggle)        shift; cmd_rule_toggle "$@" ;;
     ssh_log)            shift; cmd_ssh_log "$@" ;;
     access_log)         shift; cmd_access_log "$@" ;;
     block_detail)       shift; cmd_block_detail "$@" ;;
