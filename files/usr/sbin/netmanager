@@ -12,7 +12,7 @@ LOG_FILE="$LOG_DIR/run.log"
 LOG_ENABLED=0
 
 # 在线更新配置：版本号与 GitHub 仓库（发版时同步修改 PLUGIN_VERSION）
-PLUGIN_VERSION="1.8.13"
+PLUGIN_VERSION="1.8.14"
 REPO_OWNER="District1655"
 REPO_NAME="luci-app-netmanager"
 REPO_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
@@ -1849,12 +1849,26 @@ cmd_backup() {
         fi
     done
 
+    # v1.8.14：整插件备份——/etc/netmanager 状态文件（手动黑名单 + 中国IPv4/IPv6白名单列表）
+    # 随包携带，跨机恢复/离线恢复后白名单与黑名单无需重新下载即可生效
+    # 子目录名用 state：work_dir/netmanager 已被同名 UCI 配置文件占用（文件），不能同名建目录
+    local state_dir="$work_dir/state"
+    local state_copied=0
+    mkdir -p "$state_dir" 2>/dev/null
+    for sf in blacklist_v4.list blacklist_v6.list china_v4.list china_v6.list; do
+        if [ -f "$CHINA_LIST_DIR/$sf" ]; then
+            cp "$CHINA_LIST_DIR/$sf" "$state_dir/$sf" 2>/dev/null && state_copied=$((state_copied+1))
+        fi
+    done
+
     # 写入元信息
     cat > "$work_dir/MANIFEST.txt" <<EOF
 BACKUP_TIME=$(date '+%Y-%m-%d %H:%M:%S')
 BACKUP_VERSION=v$PLUGIN_VERSION
-CONFIG_FILES=$(ls "$work_dir" 2>/dev/null | grep -v MANIFEST | tr '\n' ' ')
+CONFIG_FILES=$(ls "$work_dir" 2>/dev/null | grep -v MANIFEST | grep -v '^state$' | tr '\n' ' ')
 CONFIG_COUNT=$copied
+STATE_FILES=$(ls "$state_dir" 2>/dev/null | tr '\n' ' ')
+STATE_COUNT=$state_copied
 HOSTNAME=$(cat /proc/sys/kernel/hostname 2>/dev/null || echo unknown)
 EOF
 
@@ -1870,7 +1884,7 @@ EOF
     fi
 
     local size=$(wc -c < "$backup_file" 2>/dev/null || echo 0)
-    info "已创建全配置备份: $backup_file (${size}字节, ${copied}个配置文件)"
+    info "已创建整插件备份: $backup_file (${size}字节, ${copied}个配置文件 + ${state_copied}个列表文件)"
     echo "$backup_file"
 
     # v1.5.0 自动保留策略：超过 20 个自动清理最旧的
@@ -1896,10 +1910,15 @@ cmd_backup_list() {
             local fname=$(basename "$f")
             local size=$(wc -c < "$f" 2>/dev/null || echo 0)
             local mtime=$(date -r "$f" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo unknown)
-            # 从 MANIFEST 读取配置数量
-            local cfg_count=$(tar xzf "$f" -O MANIFEST.txt 2>/dev/null | grep '^CONFIG_COUNT=' | cut -d= -f2)
+            # 从 MANIFEST 读取配置数量（tar -C . 打包成员带 ./ 前缀，两种名字都试）
+            local mf=$(tar xzf "$f" -O ./MANIFEST.txt 2>/dev/null)
+            [ -z "$mf" ] && mf=$(tar xzf "$f" -O MANIFEST.txt 2>/dev/null)
+            local cfg_count=$(echo "$mf" | grep '^CONFIG_COUNT=' | cut -d= -f2)
             [ -z "$cfg_count" ] && cfg_count="?"
-            echo "${fname}|${size}|${mtime}|full|${cfg_count}"
+            # v1.8.14：列表文件数（旧备份无 STATE_COUNT 记 0）
+            local state_count=$(echo "$mf" | grep '^STATE_COUNT=' | cut -d= -f2)
+            [ -z "$state_count" ] && state_count="0"
+            echo "${fname}|${size}|${mtime}|full|${cfg_count}|${state_count}"
             count=$((count+1))
         done
     fi
@@ -1954,6 +1973,12 @@ cmd_backup_restore() {
         # v1.5.0 全配置恢复：解压 tar.gz，逐个恢复配置文件
         local work_dir="/tmp/netmanager_restore_$$"
         mkdir -p "$work_dir" 2>/dev/null
+        # v1.8.14 安全加固：解压前成员路径预检，拒绝 ../ 与绝对路径成员（防写穿工作目录）
+        if tar tzf "$backup_file" 2>/dev/null | grep -Eq '(^|/)\.\./|^/'; then
+            error "备份包含非法路径成员（../ 或绝对路径），已拒绝恢复"
+            rm -rf "$work_dir" 2>/dev/null
+            exit 1
+        fi
         tar xzf "$backup_file" -C "$work_dir" 2>/dev/null
         if [ $? -ne 0 ]; then
             error "备份文件解压失败（可能已损坏）"
@@ -1967,6 +1992,16 @@ cmd_backup_restore() {
                 cp "$work_dir/$cfg" "/etc/config/$cfg" 2>/dev/null && restored=$((restored+1))
             fi
         done
+        # v1.8.14：恢复 /etc/netmanager 状态文件（黑名单/白名单列表）；旧备份无此目录则保留现状
+        local state_restored=0
+        if [ -d "$work_dir/state" ]; then
+            mkdir -p "$CHINA_LIST_DIR" 2>/dev/null
+            for sf in blacklist_v4.list blacklist_v6.list china_v4.list china_v6.list; do
+                if [ -f "$work_dir/state/$sf" ]; then
+                    cp "$work_dir/state/$sf" "$CHINA_LIST_DIR/$sf" 2>/dev/null && state_restored=$((state_restored+1))
+                fi
+            done
+        fi
         rm -rf "$work_dir" 2>/dev/null
 
         # 提交所有配置
@@ -1982,7 +2017,21 @@ cmd_backup_restore() {
         /etc/init.d/dnsmasq reload > /dev/null 2>&1
         /etc/init.d/odhcpd restart > /dev/null 2>&1
 
-        info "已从全配置备份 $backup_name 恢复 ${restored} 个配置文件"
+        # v1.8.14：按恢复后的配置重应用黑名单/白名单规则并重建 cron（跨机恢复后无需手动再保存）
+        if [ -s "$BAN_V4_FILE" ] || [ -s "$BAN_V6_FILE" ]; then
+            ban_apply_all > /dev/null 2>&1
+        fi
+        if [ "$(china_get_enable)" = "1" ] && [ -f "$CHINA_LIST_FILE" ]; then
+            china_apply_rules > /dev/null 2>&1
+            china_cron_install > /dev/null 2>&1
+        fi
+        if [ "$(china6_get_enable)" = "1" ] && [ -f "$CHINA6_LIST_FILE" ]; then
+            china6_apply_rules > /dev/null 2>&1
+            china6_cron_install > /dev/null 2>&1
+        fi
+        v6sync_cron_ensure
+
+        info "已从整插件备份 $backup_name 恢复 ${restored} 个配置文件 + ${state_restored} 个列表文件"
     else
         # 旧格式：仅 firewall 配置
         cp "$backup_file" /etc/config/firewall
@@ -3239,6 +3288,18 @@ cmd_china_update() {
     fi
 }
 
+# v1.8.14：确保 */10 兜底 cron 存在（install.sh 全新安装时会装；
+# 恢复/开机路径补建，避免跨机恢复或卸载重装后兜底缺失）
+v6sync_cron_ensure() {
+    local cr="/etc/crontabs/root"
+    mkdir -p /etc/crontabs 2>/dev/null
+    [ -f "$cr" ] || touch "$cr"
+    grep -qF 'netmanager port_sync_v6' "$cr" 2>/dev/null && return 0
+    echo '*/10 * * * * /usr/sbin/netmanager port_sync_v6 --quiet >/dev/null 2>&1' >> "$cr"
+    /etc/init.d/cron reload 2>/dev/null
+    write_log "INFO" "v6sync: 已补建 */10 兜底 cron"
+}
+
 cmd_china_boot() {
     load_config
     # IPv4 白名单
@@ -3264,6 +3325,8 @@ cmd_china_boot() {
         ban_apply_all >/dev/null 2>&1
         write_log "INFO" "blacklist boot: 已重新应用黑名单规则"
     fi
+    # v1.8.14：开机补建 */10 兜底 cron
+    v6sync_cron_ensure
     return 0
 }
 

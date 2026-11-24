@@ -1,6 +1,6 @@
 # 网络管理插件 (luci-app-netmanager)
 
-> 版本：v1.8.13
+> 版本：v1.8.14
 >
 > 适配：iStoreOS / OpenWrt (fw4/nftables, Lua LuCI)
 >
@@ -22,7 +22,7 @@
 6. **中国 IPv4 访问限制**：仅允许中国大陆 IPv4 访问已开放端口，境外 IPv4 新建连接丢弃；独立 nft 表 `inet netmanager`（fw4 reload 不影响）；订阅链接与 cron 更新计划可自定义；开机 init + WAN hotplug 自愈；旧版 nft 自动降级兼容
 7. **中国 IPv6 访问限制（v1.7.0 新增）**：与 IPv4 版本对称，仅允许中国大陆 IPv6 访问已开放端口；独立 nft 表 `inet netmanager6`（与 IPv4/ fw4 互不影响）；订阅链接与 cron 更新计划可自定义；默认订阅 `https://ispip.clang.cn/all_cn_ipv6.txt`；开机 init + WAN hotplug 自愈
 8. **手动黑名单（v1.7.0 新增）**：支持 IPv4/IPv6 单个 IP 与 CIDR 网段（如 `1.2.3.0/24`、`2001:db8::/32`）手动拉黑，入站与转发流量直接丢弃；独立 nft 表 `inet netmanager_ban`（fw4 reload 不影响），条目持久化并开机/WAN 重连自动恢复
-9. **设置**：默认目标 IP / 配置备份 / 插件在线更新 / 运行日志排错 / 一键卸载
+9. **设置**：默认目标 IP / 整插件配置备份（UCI 配置 + 黑名单/白名单列表，恢复后自动重应用规则与 cron） / 插件在线更新 / 运行日志排错 / 一键卸载
 
 ### 上网设置（原 luci-app-dnssettings，CBI 标准表单）
 
@@ -158,7 +158,7 @@ netmanager restart    # 重启防火墙
 netmanager reload     # 重载防火墙
 
 # 备份管理
-netmanager backup                    # 立即备份当前配置
+netmanager backup                    # 立即备份整插件配置（5 个 UCI 配置 + /etc/netmanager 黑名单/白名单列表）
 netmanager backup_list               # 查看所有备份
 netmanager backup_restore <文件名>   # 从备份恢复
 netmanager backup_delete <文件名>    # 删除备份
@@ -293,6 +293,12 @@ IPv4（每行一个 CIDR）：
 5. 更新前建议先备份配置；只支持 `.tar.gz` 或 `.tgz` 格式
 
 ## 更新日志
+
+### v1.8.14 (2026-11-24)
+- **备份/恢复覆盖整个插件**：备份包在原有 5 个 UCI 配置（firewall/network/dhcp/dnssettings/netmanager，含 v6track 跟踪锚点）之外，新增 `/etc/netmanager/` 状态文件——手动黑名单 `blacklist_v4/v6.list` 与中国 IPv4/IPv6 白名单 `china_v4/v6.list`（tar 内 `state/` 子目录，MANIFEST 增加 `STATE_COUNT`/`STATE_FILES`）。跨机恢复或离线恢复后白名单/黑名单无需重新下载订阅即可生效。
+- **恢复后自动重应用与重建 cron**：恢复列表文件后按恢复出的配置重应用黑名单（`ban_apply_all`）与已启用的中国 IPv4/IPv6 白名单规则，并重建对应更新 cron；新增 `v6sync_cron_ensure` 在恢复与开机路径补建 `*/10` 前缀同步兜底 cron（此前仅 install.sh 安装时写入，跨机恢复/卸载重装后会缺失）。
+- **恢复安全加固**：解压前对 tar 成员做路径预检，拒绝 `../` 与绝对路径成员，防止恶意备份包写穿临时工作目录（与 v1.4.4 更新包预检同口径）。
+- **设置页备份列表**：「配置数」列改为「配置/列表」双计数，备份说明注明覆盖范围；旧格式备份（无 STATE_COUNT）列表数记 0，恢复旧备份时保留当前列表文件不动。
 
 ### v1.8.13 (2026-11-24)
 - **转发与放行分页展示**：自动配套的 `Allow-IPv6-*` 直连放行规则不再显示在「防火墙规则管理」页，移至「端口转发」页新增的「IPv6 端口放行（直连）」区（复用 `port_list` 的 IPV6 段，口径不变：family=ipv6 且 dest=lan 带端口）。该区标注「自动配套 / 自定义」来源，自动配套规则提供启用/禁用开关（新增 `netmanager rule_toggle <索引> <1|0>`，禁用只断直连路径不影响转发，且有确认提示），自定义放行规则可删除；规则页对移出的规则显示条数迁移提示。

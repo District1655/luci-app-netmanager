@@ -173,7 +173,7 @@
                 <button class="btn btn-secondary btn-sm" onclick="runAction('cleanup_uploads')">清理临时文件</button>
                 <input type="file" id="backup_import_file" style="display:none;" accept=".tar.gz,.tgz" onchange="importBackup(this)">
             </div>
-            <div style="margin-top:6px;font-size:11px;color:#9ca3af;">备份目录: <code>/root/backup/</code> | 自动保留最近 20 个 | 恢复前自动备份当前配置</div>
+            <div style="margin-top:6px;font-size:11px;color:#9ca3af;">备份内容: firewall/network/dhcp/dnssettings/netmanager 配置 + 黑名单/中国白名单列表（/etc/netmanager/） | 目录: <code>/root/backup/</code> | 自动保留最近 20 个 | 恢复前自动备份当前配置</div>
             <div id="backup_list" style="margin-top:10px;"></div>
         </div>
 
@@ -183,7 +183,7 @@
             <table class="netmanager-table" style="margin-bottom:10px;">
                 <tr>
                     <td width="30%">当前版本</td>
-                    <td><b id="online_cur_version">v1.8.13</b></td>
+                    <td><b id="online_cur_version">v1.8.14</b></td>
                 </tr>
                 <tr>
                     <td>最新版本</td>
@@ -302,7 +302,7 @@
         <h3>关于插件</h3>
         <table class="netmanager-table">
             <tr><td width="30%">插件名称</td><td>网络管理 (luci-app-netmanager)</td></tr>
-            <tr><td>版本</td><td id="plugin_version">v1.8.13</td></tr>
+            <tr><td>版本</td><td id="plugin_version">v1.8.14</td></tr>
             <tr><td>作者</td><td><b>吾爱破解liyu0828</b></td></tr>
             <tr><td>仓库地址</td><td><a href="https://github.com/District1655/luci-app-netmanager" target="_blank" style="color:#2563eb;">https://github.com/District1655/luci-app-netmanager</a></td></tr>
             <tr><td>适配系统</td><td>iStoreOS / OpenWrt (fw4/nftables)</td></tr>
@@ -335,7 +335,7 @@
             </div>
         </div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.13<br><span style="font-size:10px;">适配 iStoreOS / OpenWrt | 基于 fw4/nftables</span></div>
+    <div class="footer-sign">网络管理插件 v1.8.14<br><span style="font-size:10px;">适配 iStoreOS / OpenWrt | 基于 fw4/nftables</span></div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -603,7 +603,7 @@ function listBackups() {
                 const parts = line.split('|');
                 // v1.6.1 新格式：文件名|大小|时间|类型|配置数；旧格式：文件名|大小
                 if (parts.length >= 5 && (parts[0].startsWith('netmanager-') || parts[0].startsWith('firewall-'))) {
-                    backups.push({name: parts[0], size: parseInt(parts[1]) || 0, time: parts[2], type: parts[3], cfgCount: parts[4]});
+                    backups.push({name: parts[0], size: parseInt(parts[1]) || 0, time: parts[2], type: parts[3], cfgCount: parts[4], stateCount: parts[5] || '0'});
                 } else if (parts.length >= 2 && parts[0].startsWith('firewall-')) {
                     backups.push({name: parts[0], size: parseInt(parts[1]) || 0, time: '—', type: 'legacy', cfgCount: '1'});
                 }
@@ -616,7 +616,7 @@ function listBackups() {
         if (backups.length === 0) {
             html = '<div class="text-muted" style="padding:15px;text-align:center;">暂无备份文件，点击上方「立即备份」创建</div>';
         } else {
-            html = `<table class="netmanager-table"><thead><tr><th>备份文件名</th><th style="width:140px;">创建时间</th><th style="width:70px;">类型</th><th style="width:60px;">配置数</th><th style="width:80px;">大小</th><th style="width:160px;">操作</th></tr></thead><tbody>`;
+            html = `<table class="netmanager-table"><thead><tr><th>备份文件名</th><th style="width:140px;">创建时间</th><th style="width:70px;">类型</th><th style="width:80px;">配置/列表</th><th style="width:80px;">大小</th><th style="width:160px;">操作</th></tr></thead><tbody>`;
             window.BACKUP_ROWS = [];
             backups.forEach(b => {
                 const rowId = window.BACKUP_ROWS.push(b.name) - 1;
@@ -627,7 +627,7 @@ function listBackups() {
                     <td><code style="font-size:11px;">${escapeHtml(b.name)}</code></td>
                     <td style="font-size:12px;color:#6b7280;">${escapeHtml(b.time)}</td>
                     <td>${typeBadge}</td>
-                    <td style="text-align:center;"><b>${escapeHtml(b.cfgCount)}</b></td>
+                    <td style="text-align:center;"><b>${escapeHtml(b.cfgCount)}</b> / ${escapeHtml(b.stateCount)}</td>
                     <td>${escapeHtml(formatSize(b.size))}</td>
                     <td>
                         <button class="btn btn-primary btn-sm" onclick="restoreBackup(${rowId})">恢复</button>
