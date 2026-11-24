@@ -117,7 +117,7 @@ netmanager version              # 查看插件版本
 # 端口转发
 netmanager port_list
 netmanager port_add <外部端口> <tcp|udp|both> <目标IP> <ipv4|ipv6|both> [内部端口]
-netmanager port_del <外部端口> <协议>
+netmanager port_del <外部端口> <协议> [ipv4|ipv6|both]
 netmanager port_edit <旧端口> <旧协议> <新端口> <新协议> <目标IP> <类型> [新内部端口]
 
 # IPv6 转发目标跟踪（v1.8.0+，前缀变化自动跟随）
