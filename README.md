@@ -1,6 +1,6 @@
 # 网络管理插件 (luci-app-netmanager)
 
-> 版本：v1.8.14
+> 版本：v1.8.15
 >
 > 适配：iStoreOS 25.12+（apk）/ iStoreOS 24.10 及 OpenWrt 23.05+（opkg / ipk），fw4 + nftables，Lua LuCI
 >
@@ -385,14 +385,14 @@ IPv4（每行一个 CIDR）：
 
 ## 更新日志
 
-完整历史版本记录（v1.8.14 → v1.4.0 → 继承 fwmanager v1.3.33）已归档到 **[`docs/CHANGELOG.md`](docs/CHANGELOG.md)**，`build.yml` 从那里提取当前版本段落作为 GitHub Release body。
+完整历史版本记录（v1.8.15 → v1.4.0 → 继承 fwmanager v1.3.33）已归档到 **[`docs/CHANGELOG.md`](docs/CHANGELOG.md)**，`build.yml` 从那里提取当前版本段落作为 GitHub Release body。
 
-**最近一版：v1.8.14（2026-11-24，交付形态同时升级为 apk/ipk 双格式）**
+**最近一版：v1.8.15（2026-11-26）**
 
-- 备份/恢复覆盖整插件：UCI 配置 + 手动黑名单/IP 白名单列表（`state/` 子目录），跨机或离线恢复后规则即生效
-- 恢复后自动重应用黑名单与已启用的中国 IPv4/IPv6 规则，并补建 `*/10` 前缀同步 cron
-- 恢复安全加固：解压前预检 tar 成员，拒绝 `../` 与绝对路径
-- 设置页备份列表改「配置/列表」双计数
+- **Release 同时提供 `.apk` 与 `.ipk`**：25.12+ 用 apk，24.10 及更早用 ipk，`tar.gz` 保留兜底
+- **iStore 软件中心上架进行中**：`istore/app-meta/` 元数据 + 官方目录规范出包，发版后自动向 `istoreos/istore-repo`、`istoreos/openwrt-app-meta` 提 PR
+- **发版全自动**：Release 发布即构建 ipk/apk、上传资产、提 PR；忘写更新日志时 CI 自动按提交记录补一节
+- **修复**：install.sh 横幅与各页面页脚版本号统一到 1.8.15
 
 ## 许可证
 

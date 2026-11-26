@@ -7,6 +7,14 @@
 
 > **2026-11-26 工程更新（版本号不变，交付形态与 CI 变更）**：新增 ipk/apk 双格式打包（`tools/`）、iStore 软件中心上架元数据（`istore/app-meta/`）、Release 后自动构建并提 PR 到 `istoreos/istore-repo` 与 `istoreos/openwrt-app-meta` 的流水线（`.github/workflows/publish-istore.yml`）；README 安装章节按 apk/opkg 双体系重写。
 
+### v1.8.15 (2026-11-26)
+- **新增 ipk / apk 双格式安装包（随 Release 自动产出）**：iStoreOS 25.12+（apk-tools，系统内无 opkg）装 `luci-app-netmanager-<版本>-r<rel>.apk`；iStoreOS 24.10 / OpenWrt 23.05–24.10 装 `luci-app-netmanager_<版本>-r<rel>_all.ipk`；`tar.gz + install.sh` 保留为未适配架构与开发态的兜底路径。产物由 `tools/build_ipk.py`、`tools/build_apk.sh` 生成（固定 mtime、目录 755 / 文件 644、conffiles 与 postinst/prerm 钩子）。
+- **iStore 软件中心上架材料**：新增 `istore/app-meta/`（META_TITLE/DESCRIPTION/AUTHOR/DEPENDS/TAGS/LUCI_ENTRY/WEBSITE + 256×256 图标），按官方目录规范（`all/nas_luci`）出包；`.github/workflows/publish-istore.yml` 在 Release 发布后自动向 `istoreos/istore-repo`（base `pending`）与 `istoreos/openwrt-app-meta`（base `main`）提收录 PR。
+- **发版全自动化**：push main → 打 tag / 发 Release → 构建 ipk+apk → 上传 Release 资产 → 自动提 PR，一条链路到底；忘写更新日志时 CI 用 `tools/ensure_changelog.py` 按提交记录自动补一节（提交带 `[skip ci]`，不二次触发），不再出现空 Release body。
+- **安装/卸载钩子在 25.12 真机验证**：`apk add` 后依赖全满足、自动清 LuCI 缓存、启用并启动 `netmanager-china`、重建 `inet netmanager`/`netmanager6`/`netmanager_ban` 三张表；`apk del` 清表并保留 `/etc/config/netmanager`、`/etc/config/dnssettings`。
+- **修复**：`install.sh` 横幅、六个页面页脚与设置页版本显示统一到 1.8.15（此前分别滞留 1.8.11 / 1.8.14）。
+- **文档归档**：源码全录移入 `docs/source-full.md`（PROJECT.md 第 5 章改为索引，全文从 1.2 万行降到 830 行），版本历史移入本文件（README 只留最近一版摘要）。
+
 ### v1.8.14 (2026-11-24)
 - **备份/恢复覆盖整个插件**：备份包在原有 5 个 UCI 配置（firewall/network/dhcp/dnssettings/netmanager，含 v6track 跟踪锚点）之外，新增 `/etc/netmanager/` 状态文件——手动黑名单 `blacklist_v4/v6.list` 与中国 IPv4/IPv6 白名单 `china_v4/v6.list`（tar 内 `state/` 子目录，MANIFEST 增加 `STATE_COUNT`/`STATE_FILES`）。跨机恢复或离线恢复后白名单/黑名单无需重新下载订阅即可生效。
 - **恢复后自动重应用与重建 cron**：恢复列表文件后按恢复出的配置重应用黑名单（`ban_apply_all`）与已启用的中国 IPv4/IPv6 白名单规则，并重建对应更新 cron；新增 `v6sync_cron_ensure` 在恢复与开机路径补建 `*/10` 前缀同步兜底 cron（此前仅 install.sh 安装时写入，跨机恢复/卸载重装后会缺失）。

@@ -26,7 +26,7 @@ LOG_FILE="$LOG_DIR/run.log"
 LOG_ENABLED=0
 
 # 在线更新配置：版本号与 GitHub 仓库（发版时同步修改 PLUGIN_VERSION）
-PLUGIN_VERSION="1.8.14"
+PLUGIN_VERSION="1.8.15"
 REPO_OWNER="District1655"
 REPO_NAME="luci-app-netmanager"
 REPO_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
@@ -6967,7 +6967,7 @@ document.addEventListener('DOMContentLoaded', function () {
         </div>
         <div id="action_result" class="netmanager-result"></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.14</div>
+    <div class="footer-sign">网络管理插件 v1.8.15</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -7117,7 +7117,7 @@ setInterval(loadOverview, 30000);
         </table>
         <div id="action_result" class="netmanager-result"></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.14</div>
+    <div class="footer-sign">网络管理插件 v1.8.15</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -7437,7 +7437,7 @@ loadPortList();
         </div>
         <div id="action_result" class="netmanager-result"></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.14</div>
+    <div class="footer-sign">网络管理插件 v1.8.15</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -7627,7 +7627,7 @@ loadRuleList();
         <h3>失败登录记录</h3>
         <div class="netmanager-log" id="failed_log"><div class="text-muted">加载中...</div></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.14</div>
+    <div class="footer-sign">网络管理插件 v1.8.15</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -7749,7 +7749,7 @@ loadSshLog();
             <div id="bd_body" style="background:#ffffff;border:1px solid #e5e7eb;border-radius:6px;padding:4px;color:#1f2937;max-height:420px;overflow-y:auto;"></div>
         </div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.14</div>
+    <div class="footer-sign">网络管理插件 v1.8.15</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -8062,7 +8062,7 @@ loadAccessLog();
             <table class="netmanager-table" style="margin-bottom:10px;">
                 <tr>
                     <td width="30%">当前版本</td>
-                    <td><b id="online_cur_version">v1.8.14</b></td>
+                    <td><b id="online_cur_version">v1.8.15</b></td>
                 </tr>
                 <tr>
                     <td>最新版本</td>
@@ -8181,7 +8181,7 @@ loadAccessLog();
         <h3>关于插件</h3>
         <table class="netmanager-table">
             <tr><td width="30%">插件名称</td><td>网络管理 (luci-app-netmanager)</td></tr>
-            <tr><td>版本</td><td id="plugin_version">v1.8.14</td></tr>
+            <tr><td>版本</td><td id="plugin_version">v1.8.15</td></tr>
             <tr><td>作者</td><td><b>吾爱破解liyu0828</b></td></tr>
             <tr><td>仓库地址</td><td><a href="https://github.com/District1655/luci-app-netmanager" target="_blank" style="color:#2563eb;">https://github.com/District1655/luci-app-netmanager</a></td></tr>
             <tr><td>适配系统</td><td>iStoreOS / OpenWrt (fw4/nftables)</td></tr>
@@ -8214,7 +8214,7 @@ loadAccessLog();
             </div>
         </div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.14<br><span style="font-size:10px;">适配 iStoreOS / OpenWrt | 基于 fw4/nftables</span></div>
+    <div class="footer-sign">网络管理插件 v1.8.15<br><span style="font-size:10px;">适配 iStoreOS / OpenWrt | 基于 fw4/nftables</span></div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -9209,12 +9209,12 @@ exit 0
 ```bash
 #!/bin/ash
 # ============================================================
-# 网络管理插件 (luci-app-netmanager) - 一键安装脚本 v1.8.14
+# 网络管理插件 (luci-app-netmanager) - 一键安装脚本 v1.8.15
 # 由 luci-app-fwmanager (防火墙管理) 与 luci-app-dnssettings (DNS设置) 合并而成
 # ============================================================
 
 echo "============================================"
-echo "  网络管理插件 (luci-app-netmanager) v1.8.14"
+echo "  网络管理插件 (luci-app-netmanager) v1.8.15"
 echo "  防火墙管理 + DNS设置 一体化"
 echo "============================================"
 echo ""
@@ -10695,7 +10695,7 @@ if __name__ == "__main__":
 ### 5.31 docs/CHANGELOG.md
 
 - **用途**：全部历史版本记录（v1.8.14 → v1.4.0 → 继承 fwmanager v1.3.33），GitHub Release body 的来源
-- **规模**：380 行
+- **规模**：388 行
 - **维护要点**：段落标题必须保持 `### vX.Y.Z (日期)`（build.yml 的 awk 按此匹配）；每版在顶部新增小节
 
 ```markdown
@@ -10707,6 +10707,14 @@ if __name__ == "__main__":
 > `README.md` 只保留「最近一版要点 + 指向本文件的链接」。
 
 > **2026-11-26 工程更新（版本号不变，交付形态与 CI 变更）**：新增 ipk/apk 双格式打包（`tools/`）、iStore 软件中心上架元数据（`istore/app-meta/`）、Release 后自动构建并提 PR 到 `istoreos/istore-repo` 与 `istoreos/openwrt-app-meta` 的流水线（`.github/workflows/publish-istore.yml`）；README 安装章节按 apk/opkg 双体系重写。
+
+### v1.8.15 (2026-11-26)
+- **新增 ipk / apk 双格式安装包（随 Release 自动产出）**：iStoreOS 25.12+（apk-tools，系统内无 opkg）装 `luci-app-netmanager-<版本>-r<rel>.apk`；iStoreOS 24.10 / OpenWrt 23.05–24.10 装 `luci-app-netmanager_<版本>-r<rel>_all.ipk`；`tar.gz + install.sh` 保留为未适配架构与开发态的兜底路径。产物由 `tools/build_ipk.py`、`tools/build_apk.sh` 生成（固定 mtime、目录 755 / 文件 644、conffiles 与 postinst/prerm 钩子）。
+- **iStore 软件中心上架材料**：新增 `istore/app-meta/`（META_TITLE/DESCRIPTION/AUTHOR/DEPENDS/TAGS/LUCI_ENTRY/WEBSITE + 256×256 图标），按官方目录规范（`all/nas_luci`）出包；`.github/workflows/publish-istore.yml` 在 Release 发布后自动向 `istoreos/istore-repo`（base `pending`）与 `istoreos/openwrt-app-meta`（base `main`）提收录 PR。
+- **发版全自动化**：push main → 打 tag / 发 Release → 构建 ipk+apk → 上传 Release 资产 → 自动提 PR，一条链路到底；忘写更新日志时 CI 用 `tools/ensure_changelog.py` 按提交记录自动补一节（提交带 `[skip ci]`，不二次触发），不再出现空 Release body。
+- **安装/卸载钩子在 25.12 真机验证**：`apk add` 后依赖全满足、自动清 LuCI 缓存、启用并启动 `netmanager-china`、重建 `inet netmanager`/`netmanager6`/`netmanager_ban` 三张表；`apk del` 清表并保留 `/etc/config/netmanager`、`/etc/config/dnssettings`。
+- **修复**：`install.sh` 横幅、六个页面页脚与设置页版本显示统一到 1.8.15（此前分别滞留 1.8.11 / 1.8.14）。
+- **文档归档**：源码全录移入 `docs/source-full.md`（PROJECT.md 第 5 章改为索引，全文从 1.2 万行降到 830 行），版本历史移入本文件（README 只留最近一版摘要）。
 
 ### v1.8.14 (2026-11-24)
 - **备份/恢复覆盖整个插件**：备份包在原有 5 个 UCI 配置（firewall/network/dhcp/dnssettings/netmanager，含 v6track 跟踪锚点）之外，新增 `/etc/netmanager/` 状态文件——手动黑名单 `blacklist_v4/v6.list` 与中国 IPv4/IPv6 白名单 `china_v4/v6.list`（tar 内 `state/` 子目录，MANIFEST 增加 `STATE_COUNT`/`STATE_FILES`）。跨机恢复或离线恢复后白名单/黑名单无需重新下载订阅即可生效。
@@ -11198,7 +11206,7 @@ dist/
 ````markdown
 # 网络管理插件 (luci-app-netmanager)
 
-> 版本：v1.8.14
+> 版本：v1.8.15
 >
 > 适配：iStoreOS 25.12+（apk）/ iStoreOS 24.10 及 OpenWrt 23.05+（opkg / ipk），fw4 + nftables，Lua LuCI
 >
@@ -11583,14 +11591,14 @@ IPv4（每行一个 CIDR）：
 
 ## 更新日志
 
-完整历史版本记录（v1.8.14 → v1.4.0 → 继承 fwmanager v1.3.33）已归档到 **[`docs/CHANGELOG.md`](docs/CHANGELOG.md)**，`build.yml` 从那里提取当前版本段落作为 GitHub Release body。
+完整历史版本记录（v1.8.15 → v1.4.0 → 继承 fwmanager v1.3.33）已归档到 **[`docs/CHANGELOG.md`](docs/CHANGELOG.md)**，`build.yml` 从那里提取当前版本段落作为 GitHub Release body。
 
-**最近一版：v1.8.14（2026-11-24，交付形态同时升级为 apk/ipk 双格式）**
+**最近一版：v1.8.15（2026-11-26）**
 
-- 备份/恢复覆盖整插件：UCI 配置 + 手动黑名单/IP 白名单列表（`state/` 子目录），跨机或离线恢复后规则即生效
-- 恢复后自动重应用黑名单与已启用的中国 IPv4/IPv6 规则，并补建 `*/10` 前缀同步 cron
-- 恢复安全加固：解压前预检 tar 成员，拒绝 `../` 与绝对路径
-- 设置页备份列表改「配置/列表」双计数
+- **Release 同时提供 `.apk` 与 `.ipk`**：25.12+ 用 apk，24.10 及更早用 ipk，`tar.gz` 保留兜底
+- **iStore 软件中心上架进行中**：`istore/app-meta/` 元数据 + 官方目录规范出包，发版后自动向 `istoreos/istore-repo`、`istoreos/openwrt-app-meta` 提 PR
+- **发版全自动**：Release 发布即构建 ipk/apk、上传资产、提 PR；忘写更新日志时 CI 自动按提交记录补一节
+- **修复**：install.sh 横幅与各页面页脚版本号统一到 1.8.15
 
 ## 许可证
 
