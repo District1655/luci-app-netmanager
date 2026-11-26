@@ -72,11 +72,22 @@ jobs:
       - name: 产物清单
         run: ls -lh dist
 
+      # 两种触发方式都要能挂资产：release 事件用 event.release.tag_name，
+      # workflow_dispatch（含 build.yml 末尾显式触发）用计算出的 v<version>
       - name: 追加到 Release 资产
-        if: github.event_name == 'release'
+        if: inputs.dry_run != true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${{ github.event.release.tag_name }}" dist/* --clobber
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          [ -n "$TAG" ] || TAG="v${{ steps.ver.outputs.version }}"
+          echo "上传到 Release: $TAG"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+            gh release view "$TAG" --json assets --jq '.assets[]|"\(.name)  \(.size)"'
+          else
+            echo "::warning::Release $TAG 不存在，跳过上传（先让 build.yml 发版）"
+          fi
 
       - name: 检查是否配置了 ISTORE_TOKEN
         id: token
