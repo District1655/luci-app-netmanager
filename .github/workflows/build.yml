@@ -266,3 +266,11 @@ jobs:
             -f release=1 \
             --repo "${{ github.repository }}"
           echo "已触发 Publish to iStore（version=${{ steps.version.outputs.version }} / release=1）"
+
+      # 版本历史只留最近 10 个：Tag 与 Release 同步清理，避免页面越堆越长
+      - name: Prune old releases & tags (keep latest 10)
+        if: steps.check.outputs.exists == 'false' || inputs.force == true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KEEP: '10'
+        run: bash tools/prune_history.sh

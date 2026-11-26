@@ -1,0 +1,36 @@
+name: Prune old releases & tags
+
+# 只保留最近 N 个版本的 Release 与 tag，更早的删掉，避免仓库历史无限膨胀。
+# 发版后由 build.yml 自动调用（保留 10 个）；这里保留手动入口，可改数量或先预演。
+
+on:
+  workflow_dispatch:
+    inputs:
+      keep:
+        description: '保留最近多少个版本'
+        required: false
+        default: '10'
+      dry_run:
+        description: '只预演，不真删'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 需要完整 tag 列表
+      - name: Prune releases & tags
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KEEP: ${{ inputs.keep }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
+        run: |
+          chmod +x tools/prune_history.sh
+          bash tools/prune_history.sh

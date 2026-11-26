@@ -91,13 +91,15 @@ luci-app-netmanager/
 ├── tools/
 │   ├── build_ipk.py                          # 打 ipk（opkg 系统，tar.gz 外壳，CI/本地通用）
 │   ├── build_apk.sh                          # 打 apk（iStoreOS 25.12+，用 openwrt-sdk-mini 的 apk mkpkg）
-│   └── publish_istore.sh                     # 向 istoreos/istore-repo、istoreos/openwrt-app-meta 提 PR
+│   ├── publish_istore.sh                     # 向 istoreos/istore-repo、istoreos/openwrt-app-meta 提 PR
+│   └── prune_history.sh                      # 只保留最近 10 个版本的 Tag/Release（KEEP/sort -V 可调）
 ├── istore/app-meta/
 │   ├── Makefile                              # 软件中心卡片元数据模板（PKG_VERSION/PKG_RELEASE 由脚本注入）
 │   └── logo.png                              # 软件中心图标（256×256，<50KB）
 ├── .github/workflows/
 │   ├── build.yml                             # 打 tag + 发 Release（tar.gz + changelog 提取）
 │   ├── publish-istore.yml                    # Release 后自动构建 ipk/apk + 提 PR 到 iStore 官方仓库
+│   ├── prune-history.yml                     # 手动清理历史版本（可改保留数量 / 预演）
 │   └── extract_changelog.awk                 # Release body 提取脚本
 ├── docs/
 │   ├── CHANGELOG.md                          # 全部历史版本记录（Release body 的来源）
@@ -178,6 +180,20 @@ VERSION=1.8.14 RELEASE=1 FILES=files OUT=dist bash tools/build_apk.sh
 4. `build.yml`：校验两处版本一致 → `sh -n` / `luac -p` 门禁 → 打 `tar.gz` → 打 tag → 发 Release（tag 已存在则整条跳过，可手动 `workflow_dispatch` 勾 `force`）
 5. `publish-istore.yml`（Release published 事件触发）：构建 `ipk` + `apk` → 上传为 Release 资产 → 自动向 `istoreos/istore-repo`（base `pending`）与 `istoreos/openwrt-app-meta`（base `main`）提 PR
 6. 官方合并 `pending` 后，上游 `ci-pending.yml` 会把包 cherry-pick 到 main、删同名旧包、刷新索引，软件中心即更新
+7. 发版末尾自动清理历史：`tools/prune_history.sh` 只保留版本号最高的 10 个 Tag 与 Release，更早的连 Release 带 tag 一起删（按版本号排序，不是按发布时间；`docs/CHANGELOG.md` 里的文字记录不受影响）
+
+### 版本历史保留策略
+
+仓库不无限堆历史版本：`build.yml` 每次发版后调用 `tools/prune_history.sh`，只留最近 10 个。想改数量或先看要删什么：
+
+```bash
+# 预演（不删任何东西）
+gh workflow run prune-history.yml -f keep=10 -f dry_run=true
+# 真删（如改成保留 20 个）
+gh workflow run prune-history.yml -f keep=20
+```
+
+本地同样可跑（需要 `gh` 已登录）：`KEEP=10 DRY_RUN=1 bash tools/prune_history.sh`。
 
 ### 一次性配置（已配好）
 
