@@ -1,12 +1,14 @@
 # luci-app-netmanager 项目全景文档（PROJECT.md）
 
-> **基线**：v1.7.0（新增中国 IPv6 白名单订阅 + IPv4/IPv6 手动黑名单，支持 CIDR 网段）· main 分支 · 更新时间 2026-11-19
+> **基线**：v1.8.14 · main（`ac90559`） · 更新时间 2026-11-26
+>
+> **本次更新**：交付形态从「tar.gz 脚本安装」扩展到 **ipk / apk 双格式 + iStore 软件中心上架**，新增 `tools/`、`istore/`、`docs/istore-publish.md` 与 `.github/workflows/publish-istore.yml`（Release 后自动构建并发 PR 到 iStore 官方仓库）。详见 1.4、2.1、第 6 章 6.3。
 >
 > **用途**：本文件是项目的**单一查阅入口**——文件架构、全部源码、维护历史、开发计划、注意事项集中一处，供后续开发、排错与交接时快速定位。
 >
-> **分工**：README.md 面向用户（安装/使用）；本文档面向维护者（实现/历史/计划）。
+> **分工**：README.md 面向用户（安装/使用/发布）；本文档面向维护者（实现/历史/计划）。
 >
-> **源码收录**：第 5 章嵌入全部受控文件的完整源码（v1.4.5 基线 `90b2bf9` 全文 + v1.4.6 增量以工作区实际文件为准，可用 `docs/gen_source_part.sh` 重新生成）。
+> **源码收录**：第 5 章嵌入全部受控文件（除本文档与 LICENSE）的当前源码，由 `docs/gen_source_part.py` 生成；**源码是唯一事实来源**，前文描述与源码冲突时以源码为准。
 
 ## 目录
 
@@ -33,10 +35,11 @@
 | 项目名 | luci-app-netmanager（网络管理插件） |
 | 仓库 | District1655/luci-app-netmanager（GitHub，SSH 推送） |
 | 形态 | LuCI 插件（Lua 控制器 + CBI 模型 + 自绘视图 + shell 后端） |
-| 目标平台 | iStoreOS / OpenWrt 23.05+（fw4 / nftables） |
-| 安装形态 | tar.gz + install.sh（非 ipk，原因见 8.1） |
-| 当前版本 | v1.7.2（2026-11-19，修复 IPv6 白名单误伤 DHCPv6-PD） |
-| 许可证 | MIT（仓库根目录 LICENSE 文件，v1.4.6 补齐） |
+| 目标平台 | iStoreOS 25.12+（apk-tools）/ iStoreOS 24.10 及 OpenWrt 23.05–24.10（opkg），fw4 / nftables |
+| 交付形态 | **apk（25.12+）/ ipk（opkg 系统）/ tar.gz+install.sh 兜底**，三种等价 |
+| 上架渠道 | iStoreOS 软件中心（`istoreos/istore-repo` + `istoreos/openwrt-app-meta`，PR #852 / #743 待合并） |
+| 当前版本 | v1.8.14（2026-11-24） |
+| 许可证 | MIT（仓库根目录 LICENSE） |
 | 前身 | luci-app-fwmanager v1.3.33 + luci-app-dnssettings v1.2.1，v1.4.0 合并 |
 
 ### 1.2 功能模块速览
@@ -44,16 +47,16 @@
 | # | 模块 | 页面 | 后端 |
 |---|------|------|------|
 | 1 | 系统概览 | overview.htm | overview |
-| 2 | 端口转发（IPv4 DNAT + IPv6 放行） | port_forward.htm | port_* |
-| 3 | 防火墙规则 | firewall_rules.htm | rule_* |
+| 2 | 端口转发（IPv4/IPv6 DNAT + IPv6 直连放行区） | port_forward.htm | port_* / port_track_v6 / port_sync_v6 |
+| 3 | 防火墙规则 | firewall_rules.htm | rule_* / rule_toggle |
 | 4 | SSH 登录日志 | ssh_log.htm | ssh_log |
-| 5 | 端口访问日志 | access_log.htm | access_log |
+| 5 | 端口访问日志 | access_log.htm | access_log / block_detail |
 | 6 | 中国 IPv4 访问限制 | settings.htm 内区块 | china_filter * |
-| 10 | 中国 IPv6 访问限制（v1.7.0） | settings.htm 内区块 | china6_filter * |
-| 11 | 手动黑名单 IPv4/IPv6（v1.7.0） | settings.htm 内区块 | blacklist * |
-| 7 | 设置（备份/更新/日志/卸载） | settings.htm | backup* / update_* / log_* / uninstall |
-| 8 | DNS 设置（CBI 表单） | dns_settings.lua | dnssettings-apply.sh / backup.sh |
-| 9 | 静态 IPv6 分配（CBI 表单） | dns_staticv6.lua | LuCI 内完成 + odhcpd |
+| 7 | 中国 IPv6 访问限制（v1.7.0） | settings.htm 内区块 | china6_filter * |
+| 8 | 手动黑名单 IPv4/IPv6（v1.7.0，支持 CIDR） | settings.htm 内区块 | blacklist * / ban_* |
+| 9 | 设置（备份/更新/日志/卸载） | settings.htm | backup* / update_* / log_* / uninstall |
+| 10 | 上网设置（CBI 表单） | dns_settings.lua | dnssettings-apply.sh / backup.sh |
+| 11 | 静态 IP 分配 IPv4/IPv6（CBI 表单） | dns_staticv6.lua | LuCI 内完成 + static_bind/unbind + odhcpd |
 
 ### 1.3 技术栈
 
@@ -64,55 +67,79 @@
 | 表单 | LuCI CBI | DNS 两页用标准 Map/NamedSection |
 | 自绘页面 | htm 模板 + 原生 JS | fetch 调后端 API，无框架 |
 | 配置 | UCI | /etc/config/netmanager、dnssettings、firewall、dhcp、network |
-| 防火墙 | fw4 / nftables | 独立表 inet netmanager 与 fw4 并存 |
-| 交付 | tar.gz + install.sh | 7 步安装，支持 SKIP_UHTTPD_RESTART |
-| CI | GitHub Actions | tag 触发打包 + Release body 自动提取 |
+| 防火墙 | fw4 / nftables | 独立表 inet netmanager / netmanager6 / netmanager_ban 与 fw4 并存 |
+| 交付 | apk / ipk / tar.gz | 包格式由 `tools/build_apk.sh`、`tools/build_ipk.py` 产出；install.sh 兜底 |
+| CI | GitHub Actions | `build.yml`（tag + Release + tar.gz）、`publish-istore.yml`（ipk/apk + 自动提 PR 到 iStore 官方仓库） |
 
-### 1.4 为什么不用 ipk
+### 1.4 交付格式：为什么同时要 apk 和 ipk
 
-iStoreOS 的 /usr/bin/ 是只读 squashfs 分区，标准 ipk 安装会失败。本插件全部文件复制到可写分区，用 install.sh 完成权限/链接/init/cron，详见第 5 章 install.sh 源码。
+早期文档写过「iStoreOS 的 `/usr/bin/` 是只读 squashfs 分区，标准 ipk 装不了」，实测**不成立**：真因是 **iStoreOS 25.12 起改用 apk-tools，系统里根本没有 opkg**，ipk 自然装不上。
+
+| 系统 | 包管理器 | 该给的包 |
+|------|----------|----------|
+| iStoreOS 25.12+ / OpenWrt 25.x（apk-tools 3.x） | `apk` | `luci-app-netmanager-<ver>-r<rel>.apk` |
+| iStoreOS 24.10 / OpenWrt 23.05–24.10（opkg） | `opkg` | `luci-app-netmanager_<ver>-r<rel>_all.ipk` |
+| 任意架构 / 开发态 | 手动 | `tar.gz` + `install.sh` |
+
+两份包都由 CI 产出并附到同一个 Release；`install.sh` 保留为未适配架构与本地开发时的兜底路径，不再是唯一安装方式。
 
 ---
 
 ## 第 2 章 完整文件架构
 
-### 2.1 目录树（24 个受控文件，基线 90b2bf9）
+### 2.1 目录树（36 个受控文件，基线 v1.8.14 / `ac90559`）
 
 ```
 luci-app-netmanager/
 ├── files/usr/sbin/                              # 后端命令层
-│   ├── netmanager                               # 核心后端，2197 行（全部 CLI 子命令）
-│   ├── dnssettings-apply.sh                     # 191 行（v1.4.5 重写）
-│   └── dnssettings-backup.sh                    # 23 行
+│   ├── netmanager                               # 核心后端，4226 行（全部 CLI 子命令）
+│   ├── dnssettings-apply.sh                     # 540 行（上网设置应用）
+│   └── dnssettings-backup.sh                    # 27 行
 ├── files/usr/lib/lua/luci/
-│   ├── controller/netmanager.lua                # 353 行：路由 + API 分发 + 上传
+│   ├── controller/netmanager.lua                # 537 行：路由 + API 分发 + 上传
 │   ├── model/cbi/netmanager/
-│   │   ├── dns_settings.lua                     # 125 行：DNS 设置表单（v1.4.6 注入 cbi_nav）
-│   │   └── dns_staticv6.lua                     # 489 行：静态 IPv6 分配表单（v1.4.6 修 get_first + 注入 cbi_nav）
+│   │   ├── dns_settings.lua                     # 405 行：上网设置表单
+│   │   └── dns_staticv6.lua                     # 693 行：静态 IP 分配表单
 │   └── view/netmanager/                         # 自绘视图层（9 个 htm）
-│       ├── common_head.htm                      # 148 行：公共 CSS+JS（escapeHtml/apiFetch）
+│       ├── common_head.htm                      # 232 行：公共 CSS+JS（escapeHtml/nmFetch/token）
 │       ├── nav.htm                              # 10 行：页内导航
-│       ├── cbi_nav.htm                          # 28 行：CBI 页面专用导航（v1.4.6 新增）
-│       ├── overview.htm                         # 105 行：系统概览
-│       ├── port_forward.htm                     # 181 行：端口转发
-│       ├── firewall_rules.htm                   # 229 行：防火墙规则
+│       ├── cbi_nav.htm                          # 114 行：CBI 页面专用导航
+│       ├── overview.htm                         # 118 行：系统概览
+│       ├── port_forward.htm                     # 284 行：端口转发（含 IPv6 放行区）
+│       ├── firewall_rules.htm                   # 251 行：防火墙规则
 │       ├── ssh_log.htm                          # 103 行：SSH 日志
-│       ├── access_log.htm                       # 111 行：访问日志
-│       └── settings.htm                         # 620 行：设置（最复杂视图）
+│       ├── access_log.htm                       # 171 行：访问日志
+│       └── settings.htm                         # 1107 行：设置（最复杂视图）
 ├── files/etc/config/
-│   ├── netmanager                               # 12 行：防火墙模块 UCI 配置
-│   └── dnssettings                              # 19 行：DNS 模块 UCI 配置
-├── files/etc/init.d/netmanager-china            # 21 行：开机自启
-├── files/etc/hotplug.d/iface/95-netmanager-china# 19 行：WAN 上线自愈
-├── install.sh                                   # 95 行：7 步安装
+│   ├── netmanager                               # 17 行：防火墙模块 UCI 配置
+│   └── dnssettings                              # 22 行：上网设置模块 UCI 配置
+├── files/etc/init.d/netmanager-china            # 26 行：开机自启（IPv4/IPv6 过滤 + 黑名单）
+├── files/etc/hotplug.d/iface/
+│   ├── 95-netmanager-china                      # 30 行：WAN 上线重应用过滤/黑名单
+│   └── 96-netmanager-v6sync                     # 62 行：WAN 上线同步 IPv6 转发目标
+├── tools/                                       # 打包与发布工具（本地与 CI 共用）
+│   ├── build_ipk.py                             # 152 行：打 ipk（tar.gz 外壳）
+│   ├── build_apk.sh                             # 77 行：打 apk（openwrt-sdk-mini 的 apk mkpkg）
+│   └── publish_istore.sh                        # 160 行：向两个 iStore 官方仓库提 PR
+├── istore/app-meta/
+│   ├── Makefile                                 # 17 行：软件中心卡片元数据模板
+│   └── logo.png                                 # 40,930 字节，256×256
 ├── .github/workflows/
-│   ├── build.yml                                # 138 行：tag 触发打包+Release
+│   ├── build.yml                                # 225 行：tag 触发打包 tar.gz + Release
+│   ├── publish-istore.yml                       # 107 行：Release 后出 ipk/apk + 自动提 PR
 │   └── extract_changelog.awk                    # 17 行：Release body 提取
-├── .gitattributes                               # 13 行：强制 LF
-└── README.md                                    # 165 行：用户文档
+├── docs/
+│   ├── istore-publish.md                        # 51 行：上架/自动发版配置说明
+│   └── gen_source_part.py                       # 271 行：生成本文档第 5 章源码全录 + 第 9 章行号索引
+├── install.sh                                   # 143 行：7 步兜底安装
+├── .gitattributes                               # 15 行：强制 LF
+├── .gitignore                                   # 7 行
+├── LICENSE                                      # 21 行（MIT）
+├── PROJECT.md                                   # 本文档
+└── README.md                                    # 用户文档（安装/CLI/配置/更新日志/发版）
 ```
 
-> 注：行数为 wc -l 实际值；.gitattributes 等小文件行数不含末尾空行。
+> 注：行数为实际值；`logo.png` 二进制按字节计。`PROJECT.md` 与 `LICENSE` 不进入第 5 章源码全录。
 
 ### 2.2 分层架构与调用链
 
@@ -131,6 +158,28 @@ controller/netmanager.lua         ── api_handler（强制 POST，shell_escap
 
 DNS 两页为 CBI 表单，不经 controller API，LuCI 框架直接提交 UCI，按钮 redirect 到 controller 的 dns_apply/dns_backup 路由执行脚本。
 
+**发布链（v1.8.14 起新增，与运行链独立）**
+
+```
+git push main
+  │
+  ▼
+build.yml ── 校验 README/PLUGIN_VERSION 一致 → sh -n / luac -p 门禁
+  │           → tar.gz → 打 tag → Release（body 取自 README 更新日志）
+  ▼
+release[published] 事件
+  │
+  ▼
+publish-istore.yml ── tools/build_ipk.py → tools/build_apk.sh
+  │                  → gh release upload（--clobber）
+  │                  → tools/publish_istore.sh（blob→tree→commit→ref→PR）
+  ▼
+istoreos/istore-repo(base pending)  +  istoreos/openwrt-app-meta(base main)
+  │
+  ▼
+上游 ci-pending.yml：cherry-pick 到 main → 删同名旧包 → ci.yml 刷索引 → 软件中心可见
+```
+
 ### 2.3 文件职责矩阵
 
 | 文件 | 职责 | 上游调用方 | 下游 |
@@ -144,8 +193,14 @@ DNS 两页为 CBI 表单，不经 controller API，LuCI 框架直接提交 UCI�
 | dnssettings-backup.sh | DNS 备份 | controller dns_backup 路由 | tar |
 | netmanager-china (init.d) | 开机加载规则 | procd | netmanager china_load_set |
 | 95-netmanager-china (hotplug) | WAN 上线自愈 | netifd | 同上 |
-| install.sh | 安装 | 用户 / plugin_update | 文件复制、init、cron |
-| build.yml | CI | git tag push | tar.gz 资产、Release |
+| 96-netmanager-v6sync (hotplug) | WAN 上线同步 IPv6 转发目标 | netifd | netmanager port_sync_v6 |
+| install.sh | 兜底安装 | 用户 / plugin_update | 文件复制、init、cron |
+| build_ipk.py | 打 ipk | CI publish-istore / 本地 | files/、control、data.tar.gz |
+| build_apk.sh | 打 apk | CI publish-istore / 本地 | openwrt-sdk-mini、files/ |
+| publish_istore.sh | 提上架 PR | publish-istore.yml | GitHub API（两个 fork + 上游 base） |
+| build.yml | CI：Release | git push main | tar.gz 资产、tag、Release |
+| publish-istore.yml | CI：上架 | release 发布 / workflow_dispatch | ipk+apk 资产、两个官方仓库 PR |
+| istore/app-meta/Makefile | 软件中心卡片元数据 | publish_istore.sh（注入版本） | app-meta-<pkg> 包 |
 
 ### 2.4 数据流：一次端口转发的完整路径
 
@@ -226,39 +281,57 @@ dnssettings-apply.sh 执行流程：
 | /etc/config/dhcp | dns_staticv6.lua（host 节）+ apply 脚本（lan/dnsmasq 节） | dnsmasq/odhcpd |
 | /etc/config/network | apply 脚本（wan/wan6 dns/peerdns） | netifd |
 
+### 3.7 iStore 软件中心上架机制
+
+**上游仓库规则（读源码 `linkease/istore` 与两个官方仓库实测确认）**
+
+- iStore 软件中心**没有开发者自助上传入口**，源地址写死在 `/usr/bin/is-opkg`（`https://istore.istoreos.com/repo`，镜像 `repo.istoreos.com`），只读官方 feed；应用卡片来自 `app-meta-<name>` 包的 `meta/<name>.json` + `app-icons/<name>.png`。
+- 包目录：ipk 进 `bin/packages/<arch>/<feed>/`，apk 进 `bin/apks/<arch>/<feed>/`；纯 `all` 架构 LuCI 插件统一落 `nas_luci` feed。只收 x86_64 与 aarch64（ipk 用 `aarch64_cortex-a53`，apk 用 `aarch64_generic`）。
+- PR 必须打 `pending` 分支；PR 不得改 `repo/` 与 `.github/`（否则 "Don't HACK my workflows"）；CI 用 `tar -xOf <ipk> ./control.tar.gz` 校验，**ipk 必须是 tar.gz 外壳**（内含 `./debian-binary`、`./control.tar.gz`、`./data.tar.gz`），`ar` 格式判 invalid。
+- 元数据仓库 `istoreos/openwrt-app-meta`：`applications/app-meta-<name>/` 放 `Makefile`（META_TITLE/META_DESCRIPTION/META_AUTHOR/META_DEPENDS/META_TAGS/META_LUCI_ENTRY/META_WEBSITE/PKG_VERSION/PKG_RELEASE，末尾 `include ../../meta.mk`）+ `logo.png`（≤256×256，≤50KB）。
+
+**本仓库的落地方式**
+
+| 环节 | 实现 |
+|------|------|
+| 出包 | `tools/build_ipk.py`（固定 mtime、目录 755/文件 644、conffiles/postinst/prerm）、`tools/build_apk.sh`（`apk mkpkg`，depends 含 `luci-base luci-compat nftables-json curl ca-bundle jsonfilter`） |
+| 提 PR | `tools/publish_istore.sh`：blob→tree(base_tree 取上游 pending/main 的 tree)→commit→ref(`auto/<pkg>-<ver>-r<rel>`）→PR；已有同 head 的 open PR 则跳过（幂等）；`DRY_RUN=1` 干跑 |
+| 触发 | `.github/workflows/publish-istore.yml`（`release[published]` + `workflow_dispatch`），凭 `ISTORE_TOKEN`（classic PAT，`repo` scope）写两个 fork |
+| 卡片元数据 | `istore/app-meta/Makefile` + `logo.png`，PKG_VERSION/PKG_RELEASE 由 publish 脚本 sed 注入 |
+
+**实测（真机 iStoreOS 25.12.6 / x86_64 / apk-tools 3.0.5）**：`apk add --allow-untrusted --force-overwrite` 依赖全满足，post-install 清缓存 + 启用 `netmanager-china` + reload uhttpd，三张 nft 表重建；`apk del` 后文件全删、三张表清空、两份 UCI 配置原样保留（无 `.apk-new` 残留）。详见 6.2「v1.8.14 上架验证」。
+
 ---
 
 ## 第 4 章 后端命令参考（CLI）
 
-> 完整参数以第 5 章源码 usage（netmanager L2145-2197）为准。本章为速查。
+> 完整参数以第 5 章源码 usage 与 9.1 命令入口表为准。本章为速查。
 
 ### 4.1 命令总表
 
 | 分类 | 命令 | 说明 |
 |------|------|------|
-| 概览 | overview | 防火墙状态/端口统计/网络信息 |
-| 端口转发 | port_list | 列出全部 DNAT+IPv6 放行 |
+| 概览 | overview / version | 防火墙状态、端口统计、网络信息 |
+| 端口转发 | port_list | 列出全部 DNAT + IPv6 放行 |
 | | port_add <外部端口> <tcp\|udp\|both> <目标IP> <ipv4\|ipv6\|both> [内部端口] | 新增（内部端口可映射不同端号） |
-| | port_del <外部端口> <协议> | 删除 |
-| | port_edit <旧端口> <旧协议> <新端口> <新协议> <目标IP> <类型> [新内部端口] | 编辑（跨 IP 版本切换自动补建） |
-| 规则 | rule_list / rule_add / rule_del / rule_edit | 自定义通信规则增删改查 |
-| 日志 | ssh_log [条数] | SSH 登录记录 |
-| | access_log [端口] [条数] | 活跃连接统计 |
-| | log_set 1\|0 / log_get [行数] / log_clear | 运行日志开关/查看/清空 |
-| 备份 | backup / backup_list / backup_restore <名> / backup_delete <名> | 防火墙配置备份 |
-| 上传/更新 | upload_file <文件名>（stdin） | 页面上传通道 |
-| | plugin_update <文件名> | 从上传包安装（tar 预检） |
-| | plugin_version <文件名> | 查看包版本 |
-| | cleanup_uploads | 清 24h 前临时文件 |
-| | update_check | 检查新版本（API→302 两级容错） |
-| | update_apply | 下载+校验+安装 |
-| | set_update_mirror <url> | 镜像前缀（空=直连） |
-| 中国过滤 | china_filter status/enable/disable/update | 状态/开关/更新 |
-| | china_filter set_url <url> / set_cron "0 4 * * *" | 订阅/计划 |
+| | port_del <外部端口> <协议> [ipv4\|ipv6\|both] | 删除（按族隔离） |
+| | port_edit <旧端口> <旧协议> <新端口> <新协议> <目标IP> <类型> [新内部端口] | 编辑（跨族切换自动补建/清理） |
+| | port_track_v6 <端口> <协议> <锚点\|off> / port_sync_v6 | IPv6 目标跟踪与立即同步（v1.8.0+） |
+| | v6gw [--quiet] | 补 PPPoE 缺失的 IPv6 默认路由 + ra_default=1（v1.8.7+） |
+| 规则 | rule_list / rule_add / rule_edit / rule_del | 自定义通信规则增删改查 |
+| | rule_toggle <索引> <1\|0> | 启用/禁用（含 IPv6 放行区开关，v1.8.13+） |
+| 日志 | ssh_log [条数] / access_log [端口] [条数] / block_detail <端口\|v4\|v6> | 登录/访问/拦截明细 |
+| | log_set 1\|0 / log_get [行数] / log_query [级别] [关键词] [行数] / log_export / log_clear | 运行日志全套 |
+| 备份 | backup / backup_list / backup_restore <名> / backup_delete <名> / backup_import <名> / backup_prune [保留数] | 整插件备份（UCI + 黑白名单列表） |
+| 上传/更新 | upload_file <文件名>（stdin） / plugin_update / plugin_version / cleanup_uploads | 页面通道与离线更新 |
+| | update_check / update_apply / set_update_mirror <url> | 在线更新（Release 资产） |
+| 中国过滤 | china_filter status/enable/disable/update/set_url/set_cron | IPv4 白名单（v1.7.0+ 有对称的 china6_filter） |
+| 黑名单 | blacklist list/add/del/clear/apply | 手动黑名单，支持单 IP 与 CIDR（v1.7.0+） |
+| 静态 IP | static_bind <MAC> [IPv4] [主机名] [DUID] / static_unbind <MAC> | 等价页面一键绑定/解绑 |
 | 设置 | settings / set_default_target <IP> | 查看/默认目标 |
 | 防火墙 | restart / reload | fw4 操作 |
 | DNS | （/usr/sbin/dnssettings-apply.sh / dnssettings-backup.sh） | 应用/备份（非 netmanager 子命令） |
-| 卸载 | uninstall [full\|keep] | keep 保留三配置 |
+| 卸载 | uninstall [full\|keep] | keep 保留两份 UCI 配置 |
 
 ### 4.2 输出约定
 
@@ -278,16 +351,14 @@ dnssettings-apply.sh 执行流程：
 
 ## 第 5 章 源码全录
 
-> 本章由脚本自动嵌入（基线 commit 90b2bf9 / v1.4.5+两bug修复，生成时间 2026-09-04 23:22）。
-> 收录全部 24 个受控文件的完整内容，每个文件附用途与维护要点。
+> 本章由 `docs/gen_source_part.py` 自动生成（v1.8.14 / main），收录除本文档与 LICENSE 外的全部受控文件。
 > **源码是唯一事实来源**：前文描述与源码不一致时，以源码为准。
-
 
 ### 5.1 files/usr/sbin/netmanager
 
-- **用途**：后端核心脚本：netmanager 命令全部子命令实现（概览/端口转发/规则/日志/备份/上传/在线更新/中国IPv4过滤/卸载）
-- **规模**：2197 行
-- **维护要点**：单文件约 2197 行，v1.5+ 模块化拆分对象。PLUGIN_VERSION 位于 L15（版本唯一权威源）；tar_list_check L68-86；proto_match 在头部；update_apply 约 L1495、set_update_mirror 约 L1502-1505（P0 镜像白名单待修）；china_load_set 约 L1736-1761；china_cron_install 约 L1920-1926；set_cron 约 L1973-1986；uninstall 约 L2059-2143（L2141 rm /tmp/luci-sessions 待修）
+- **用途**：后端核心脚本：全部 CLI 子命令（概览/端口转发/规则/日志/备份/上传/在线更新/中国 IPv4·IPv6 过滤/黑名单/卸载）
+- **规模**：4226 行
+- **维护要点**：单文件约 4200 行，v1.5+ 模块化拆分对象。PLUGIN_VERSION 在 L15（唯一权威源）；命令入口行号见 9.1
 
 ```bash
 #!/bin/ash
@@ -304,11 +375,15 @@ LOG_FILE="$LOG_DIR/run.log"
 LOG_ENABLED=0
 
 # 在线更新配置：版本号与 GitHub 仓库（发版时同步修改 PLUGIN_VERSION）
-PLUGIN_VERSION="1.4.5"
+PLUGIN_VERSION="1.8.14"
 REPO_OWNER="District1655"
 REPO_NAME="luci-app-netmanager"
 REPO_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
 REPO_API_URL="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest"
+
+# 【v1.4.6 P0 安全】更新镜像域名白名单：镜像被劫持可注入恶意 install.sh 以 root 执行，
+# 仅允许知名 GitHub 加速代理；新增镜像需维护此列表。拒绝裸 IP。
+MIRROR_HOST_ALLOWLIST="gh-proxy.com ghproxy.net gh-proxy.net mirror.ghproxy.com github.moeyy.xyz"
 
 # 确保日志目录存在（tmp每次重启会清，需要每次重建）
 mkdir -p "$LOG_DIR" 2>/dev/null
@@ -354,24 +429,25 @@ proto_match() {
     return 1
 }
 
-# tar_list_check <tar包> <列表输出文件>：返回0=安全（成员可列出且无路径穿越）
+# tar_list_check <tar包> <列表输出文件>：返回0=安全（成员可列出且无路径穿越/symlink）
 # BusyBox tar 解压时不剥离 ../ 成员，恶意包可借此覆盖系统文件（配合在线更新=远程RCE链）
-# 检查规则：列出失败（坏包）、成员含 ../ 段、或以绝对路径开头 → 全部拒绝
+# 检查规则：列出失败（坏包）、成员含 ../ 段、以绝对路径开头、或成员为 symlink → 全部拒绝
+# 【v1.4.6】新增 symlink 防护：tar 列表首字符 'l' 即符号链接成员，解压后可指向 /etc/shadow 等任意系统文件
 tar_list_check() {
     local pkg="$1" listfile="$2"
-    # 尝试列出成员（gzip 直接列失败时退回 gunzip + tar tf）
-    tar tzf "$pkg" > "$listfile" 2>/dev/null
+    # 尝试列出成员（gzip 直接列失败时退回 gunzip + tar tf；-tv 显示类型，首字符 l=链接）
+    tar tzvf "$pkg" > "$listfile" 2>/dev/null
     if [ $? -ne 0 ] && [ ! -s "$listfile" ]; then
         local ungz="${pkg%.gz}"
         if [ "$ungz" != "$pkg" ]; then
-            gunzip -c "$pkg" > "$ungz" 2>/dev/null && tar tf "$ungz" > "$listfile" 2>/dev/null
+            gunzip -c "$pkg" > "$ungz" 2>/dev/null && tar tvf "$ungz" > "$listfile" 2>/dev/null
             rm -f "$ungz" 2>/dev/null
         fi
     fi
     # 完全列不出来 = 坏包，拒绝
     [ ! -s "$listfile" ] && return 1
-    # 检查非法成员：../ 段 或 绝对路径开头
-    if grep -qE '(^|/)\.\.(/|$)|^/' "$listfile"; then
+    # 检查非法成员：../ 段、绝对路径开头、symlink 成员（-tv 首字符 l）
+    if grep -qE '(^|/)\.\.(/|$)|^/|^l' "$listfile"; then
         return 1
     fi
     return 0
@@ -394,6 +470,15 @@ load_config() {
         uci set netmanager.settings.china_filter_cron='0 3 * * 0'
         uci set netmanager.settings.china_filter_last_update=''
         uci set netmanager.settings.china_filter_count='0'
+        uci commit netmanager 2>/dev/null
+    fi
+    # 补齐中国IPv6过滤相关默认值（仅在选项缺失时写入，不覆盖用户已自定义值）
+    if [ -z "$(uci get netmanager.settings.china6_filter_enable 2>/dev/null)" ]; then
+        uci set netmanager.settings.china6_filter_enable='0'
+        uci set netmanager.settings.china6_filter_url='https://ispip.clang.cn/all_cn_ipv6.txt'
+        uci set netmanager.settings.china6_filter_cron='0 3 * * 0'
+        uci set netmanager.settings.china6_filter_last_update=''
+        uci set netmanager.settings.china6_filter_count='0'
         uci commit netmanager 2>/dev/null
     fi
     # 补齐在线更新镜像前缀默认值（空=直连 GitHub）
@@ -431,7 +516,8 @@ cmd_overview() {
 
     # WAN口IP（通过路由获取，不写死接口名）
     wan_ip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}' | head -1)
-    [ -z "$wan_ip" ] && wan_ip=$(ip -4 addr show 2>/dev/null | grep 'inet ' | grep -v '127.0.0.1' | grep -v '172\.' | grep -v '192.168' | awk '{print $2}' | cut -d/ -f1 | head -1)
+    # 【v1.4.6 P3】私网过滤按 RFC1918 精确网段（旧 grep -v '172\.' 会误伤 172.x 公网 IP 段）
+    [ -z "$wan_ip" ] && wan_ip=$(ip -4 addr show 2>/dev/null | grep 'inet ' | grep -v '127.0.0.1' | grep -vE 'inet (10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)' | awk '{print $2}' | cut -d/ -f1 | head -1)
     [ -z "$wan_ip" ] && wan_ip="N/A"
     echo "WAN_IP=$wan_ip"
 
@@ -442,7 +528,7 @@ cmd_overview() {
     echo "WAN_IPV6=$wan_ipv6"
 
     # LAN口IP
-    lan_ip=$(uci get network.lan.ipaddr 2>/dev/null || echo "192.168.1.1")
+    lan_ip=$(uci get network.lan.ipaddr 2>/dev/null || echo "192.1.8.3.1")
     echo "LAN_IP=$lan_ip"
 
     # 运行时间（从/proc/uptime计算）
@@ -504,6 +590,37 @@ cmd_overview() {
     fi
     [ -z "$conn_count" ] && conn_count=0
     echo "CONN_COUNT=$conn_count"
+
+    # 【v1.8.8】IPv6 状态（出口/PD前缀/LAN分发/默认路由）
+    local pd_prefix lan_v6 v6gw ipv6_status
+    pd_prefix=$(ip -6 route show 2>/dev/null | grep 'dev br-lan' | grep -v default | awk '{print $1}' | head -1)
+    [ -z "$pd_prefix" ] && pd_prefix="N/A"
+    lan_v6=$(ip -6 addr show br-lan 2>/dev/null | grep 'scope global' | grep -v 'fd' | awk '{print $2}' | head -1)
+    [ -z "$lan_v6" ] && lan_v6="N/A"
+    if ip -6 route show default 2>/dev/null | grep -q 'pppoe-wan'; then
+        v6gw="有"; ipv6_status="正常"
+    else
+        v6gw="无"; ipv6_status="无默认路由"
+    fi
+    echo "IPV6_STATUS=$ipv6_status"
+    echo "PD_PREFIX=$pd_prefix"
+    echo "LAN_IPV6=$lan_v6"
+    echo "IPV6_GW=$v6gw"
+
+    # 【v1.8.8】DNS 模式与上游
+    local dns_mode dns_servers dm
+    dm=$(uci -q get netmanager.settings.dns_mode)
+    case "$dm" in
+        custom) dns_mode="自定义" ;;
+        dot)    dns_mode="加密 DoT" ;;
+        doh)    dns_mode="加密 DoH" ;;
+        *)      dns_mode="运营商自动" ;;
+    esac
+    dns_servers=$(grep -h '^nameserver' /tmp/resolv.conf.d/resolv.conf.auto 2>/dev/null | awk '{print $2}' | tr '\n' ' ')
+    [ -z "$dns_servers" ] && dns_servers=$(uci -q get netmanager.settings.dns_server1)
+    [ -z "$dns_servers" ] && dns_servers="N/A"
+    echo "DNS_MODE=$dns_mode"
+    echo "DNS_SERVERS=$dns_servers"
 
     echo "===END==="
 }
@@ -574,6 +691,7 @@ cmd_port_list() {
             gsub(/"$/, "", val)
         }
         if (key == "name") names[idx] = val
+        else if (key == "family") fams[idx] = val
         else if (key == "proto") protos[idx] = val
         else if (key == "src_dport") sps[idx] = val
         else if (key == "dest_ip") dips[idx] = val
@@ -583,7 +701,10 @@ cmd_port_list() {
     }
     END {
         for (i = 0; i <= max_idx; i++) {
-            if (names[i] != "") {
+            # v1.8.3：family=ipv6 的映射不属于 IPv4 表。
+            # 混进来会让「目标地址」显示成 IPv6，且与同端口的 IPv4 条目
+            # 共用 编辑/删除（按 端口+协议 匹配）时误伤对方。
+            if (names[i] != "" && fams[i] != "ipv6") {
                 proto = (protos[i] != "") ? protos[i] : "tcp"
                 sp = (sps[i] != "") ? sps[i] : ""
                 dip = (dips[i] != "") ? dips[i] : ""
@@ -627,28 +748,168 @@ cmd_port_list() {
         else if (key == "family") fams[idx] = val
         else if (key == "proto") protos[idx] = val
         else if (key == "dest_port") dps[idx] = val
+        else if (key == "dest_ip") dips[idx] = val
+        else if (key == "dest") dests[idx] = val
         else if (key == "enabled") enableds[idx] = val
         if (idx > max_idx) max_idx = idx
     }
     END {
         for (i = 0; i <= max_idx; i++) {
-            if (names[i] != "" && fams[i] == "ipv6" && dps[i] != "") {
+            # v1.8.3：只列出转发到 lan 的 IPv6 放行规则。
+            # 系统自带规则（Allow-DHCPv6 / Allow-MLD / Allow-ICMPv6-Input
+            # 无 dest，Allow-ICMPv6-Forward 的 dest 为 *）不属于端口转发，
+            # 混进来会被误标「未限定目标」，且提供删除按钮易误删导致 IPv6 异常。
+            if (names[i] != "" && fams[i] == "ipv6" && dps[i] != "" && dests[i] == "lan") {
                 proto = (protos[i] != "") ? protos[i] : "tcp"
                 en = (enableds[i] != "") ? enableds[i] : "1"
-                printf "%d|%s|%s|%s|%s\n", i, names[i], proto, dps[i], en
+                dip = (dips[i] != "") ? dips[i] : ""
+                printf "%d|%s|%s|%s|%s|%s\n", i, names[i], proto, dps[i], en, dip
             }
         }
     }' > /tmp/fwm_pv6.txt
-    
-    while IFS='|' read -r idx name proto dp en; do
+
+    # v1.8.3：读取跟踪锚点，供前端展示「动态跟随」状态
+    track_data=$(uci -q show netmanager 2>/dev/null | grep '@v6track')
+
+    while IFS='|' read -r idx name proto dp en dip; do
         [ -z "$name" ] && continue
         pkts=$(get_port_pkts "$dp")
-        echo "$idx|$name|$proto|$dp|$en|$pkts"
+        anchor=$(echo "$track_data" | awk -v P="$dp" -v R="$proto" '
+            /\.port=/ { v=$0; sub(/.*=/,"",v); gsub(/\047/,"",v); cur_p=v }
+            /\.proto=/ { v=$0; sub(/.*=/,"",v); gsub(/\047/,"",v); cur_r=v }
+            /\.anchor=/ {
+                v=$0; sub(/.*=/,"",v); gsub(/\047/,"",v)
+                if (cur_p==P && cur_r==R) { print v; exit }
+            }')
+        echo "$idx|$name|$proto|$dp|$en|$pkts|$dip|$anchor"
     done < /tmp/fwm_pv6.txt
     rm -f /tmp/fwm_pv6.txt
-    
+
+    # v1.8.3：IPv6 端口映射（family=ipv6 的 DNAT redirect）单独成表。
+    # 这类条目此前混在 IPv4 表里，目标显示为 IPv6，且与同端口 IPv4 条目
+    # 共用按「端口+协议」匹配的编辑/删除，存在误删风险。
+    echo "---IPV6DNAT---"
+    echo "$uci_data" | awk '
+    /^firewall\.@redirect\[/ {
+        idx = $0
+        sub(/^firewall\.@redirect\[/, "", idx)
+        sub(/\].*/, "", idx)
+        idx = idx + 0
+        attr = $0
+        sub(/^firewall\.@redirect\[[0-9]+\]\./, "", attr)
+        eq_pos = index(attr, "=")
+        if (eq_pos > 0) {
+            key = substr(attr, 1, eq_pos - 1)
+            val = substr(attr, eq_pos + 1)
+            gsub(/^\047/, "", val)
+            gsub(/\047$/, "", val)
+            gsub(/^"/, "", val)
+            gsub(/"$/, "", val)
+        }
+        if (key == "name") names[idx] = val
+        else if (key == "family") fams[idx] = val
+        else if (key == "proto") protos[idx] = val
+        else if (key == "src_dport") sps[idx] = val
+        else if (key == "dest_ip") dips[idx] = val
+        else if (key == "dest_port") dps[idx] = val
+        else if (key == "enabled") enableds[idx] = val
+        if (idx > max_idx) max_idx = idx
+    }
+    END {
+        for (i = 0; i <= max_idx; i++) {
+            if (names[i] != "" && fams[i] == "ipv6") {
+                proto = (protos[i] != "") ? protos[i] : "tcp"
+                sp = (sps[i] != "") ? sps[i] : ""
+                dip = (dips[i] != "") ? dips[i] : ""
+                dp = (dps[i] != "") ? dps[i] : sp
+                en = (enableds[i] != "") ? enableds[i] : "1"
+                printf "%d|%s|%s|%s|%s|%s|%s\n", i, names[i], proto, sp, dip, dp, en
+            }
+        }
+    }' > /tmp/fwm_pv6d.txt
+
+    while IFS='|' read -r idx name proto sp dip dp en; do
+        [ -z "$name" ] && continue
+        pkts=$(get_port_pkts "$sp")
+        anchor=$(echo "$track_data" | awk -v P="$sp" -v R="$proto" '
+            /\.port=/ { v=$0; sub(/.*=/,"",v); gsub(/\047/,"",v); cur_p=v }
+            /\.proto=/ { v=$0; sub(/.*=/,"",v); gsub(/\047/,"",v); cur_r=v }
+            /\.anchor=/ {
+                v=$0; sub(/.*=/,"",v); gsub(/\047/,"",v)
+                if (cur_p==P && cur_r==R) { print v; exit }
+            }')
+        echo "$idx|$name|$proto|$sp|$en|$pkts|$dip|$anchor|$dp"
+    done < /tmp/fwm_pv6d.txt
+    rm -f /tmp/fwm_pv6d.txt
+
     echo "===END==="
     write_log "DEBUG" "port_list: 列表加载完成"
+}
+
+# ========== IPv6 直连放行规则辅助（v1.8.11 新增，v1.8.12 收敛适用范围）==========
+# 机制：fw4 的 dstnat_wan 无目的地址门槛，直连目标 GUA 的入站包同样会被 DNAT。
+# - 有翻译端口（如 853→38853）：DNAT 真实生效打 ct status dnat，fw4 内建
+#   "ct status dnat accept" 已放行（含直连目标 GUA:外部端口被翻译的路径），
+#   绝不能再建 dest_port=内部端口 的 ACCEPT 规则——那会把内部端口直接暴露
+#   公网直连（直连目标 GUA:38853 也被放行，绕过端口翻译）。v1.8.12 起对
+#   翻译端口映射不生成配套规则，并清理历史残留。
+# - 无翻译端口（如 51116→51116）：DNAT 为空操作不打标记，直连路径必须靠
+#   本规则放行，dest_ip 限定目标 GUA。
+# 规则名按「外部端口」命名（Allow-IPv6-<外部端口>-<协议>）便于增删改生命周期匹配，
+# 并随 v6track 锚点跟随前缀变化（port_sync_v6 按名称匹配改写 dest_ip）。
+# $1=外部端口(命名用) $2=协议 $3=目标GUA $4=内部端口(dest_port，留空同外部)
+v6_ensure_allow_rule() {
+    _ap="$1"; _apr="$2"; _agua="$3"; _adp="$4"
+    { [ -z "$_ap" ] || [ -z "$_agua" ]; } && return 0
+    [ -z "$_adp" ] && _adp="$_ap"
+    # v1.8.12：翻译端口映射不需要也不允许配套放行规则（见上方注释），
+    # 存在历史残留（v1.8.11 生成）则删除。
+    if [ "$_adp" != "$_ap" ]; then
+        v6_remove_allow_rule "$_ap" "$_apr"
+        return 0
+    fi
+    _aname="Allow-IPv6-${_ap}-${_apr}"
+    _ai=0; _asec=""
+    while uci -q get "firewall.@rule[$_ai]" >/dev/null 2>&1; do
+        if [ "$(uci -q get firewall.@rule[$_ai].name)" = "$_aname" ]; then
+            _asec="@rule[$_ai]"; break
+        fi
+        _ai=$((_ai+1))
+    done
+    if [ -z "$_asec" ]; then
+        uci add firewall rule >/dev/null
+        _asec="@rule[-1]"
+        uci set "firewall.$_asec.name=$_aname"
+        uci set "firewall.$_asec.src=wan"
+        uci set "firewall.$_asec.dest=lan"
+        uci set "firewall.$_asec.target=ACCEPT"
+        uci set "firewall.$_asec.family=ipv6"
+    fi
+    uci set "firewall.$_asec.proto=$_apr"
+    uci set "firewall.$_asec.dest_port=$_adp"
+    uci set "firewall.$_asec.dest_ip=$_agua"
+}
+# 删除指定端口的配套直连放行规则；$2 为协议列表（空=该端口全部协议）
+v6_remove_allow_rule() {
+    _rp="$1"; _rprs="$2"
+    [ -z "$_rp" ] && return 0
+    _ri=0
+    while uci -q get "firewall.@rule[$_ri]" >/dev/null 2>&1; do
+        _rn=$(uci -q get "firewall.@rule[$_ri].name")
+        _rpr=$(uci -q get "firewall.@rule[$_ri].proto")
+        _hit=0
+        case "$_rn" in Allow-IPv6-${_rp}-*) _hit=1 ;; esac
+        if [ "$_hit" = "1" ] && [ -n "$_rprs" ]; then
+            _hit=0
+            for _m in $_rprs; do proto_match "$_rpr" "$_m" && _hit=1; done
+        fi
+        if [ "$_hit" = "1" ]; then
+            uci delete "firewall.@rule[$_ri]"
+            info "删除IPv6直连放行: $_rn"
+        else
+            _ri=$((_ri+1))
+        fi
+    done
 }
 
 # ========== 3. 添加端口转发 ==========
@@ -717,26 +978,66 @@ cmd_port_add() {
         for p in $(echo "$proto" | sed 's/both/tcp udp/'); do
             exists=0; idx=0
             while true; do
-                uci -q get "firewall.@rule[$idx]" >/dev/null 2>&1 || break
-                fam=$(uci get firewall.@rule[$idx].family 2>/dev/null)
-                dp=$(uci get firewall.@rule[$idx].dest_port 2>/dev/null)
-                pr=$(uci get firewall.@rule[$idx].proto 2>/dev/null)
-                if [ "$fam" = "ipv6" ] && [ "$dp" = "$port" ] && proto_match "$pr" "$p"; then exists=1; fi
+                uci -q get "firewall.@redirect[$idx]" >/dev/null 2>&1 || break
+                fam=$(uci get firewall.@redirect[$idx].family 2>/dev/null)
+                sp=$(uci get firewall.@redirect[$idx].src_dport 2>/dev/null)
+                pr=$(uci get firewall.@redirect[$idx].proto 2>/dev/null)
+                if [ "$fam" = "ipv6" ] && [ "$sp" = "$port" ] && proto_match "$pr" "$p"; then exists=1; fi
                 idx=$((idx+1))
             done
             if [ $exists -eq 0 ]; then
-                uci add firewall rule > /dev/null
-                uci set firewall.@rule[-1].name="Allow-IPv6-${port}-${p}"
-                uci set firewall.@rule[-1].src="wan"
-                uci set firewall.@rule[-1].proto="$p"
-                uci set firewall.@rule[-1].dest="lan"
-                uci set firewall.@rule[-1].dest_ip="$target"
-                uci set firewall.@rule[-1].dest_port="$port"
-                uci set firewall.@rule[-1].family="ipv6"
-                uci set firewall.@rule[-1].target="ACCEPT"
-                info "IPv6放行: $port/$p -> 仅放行到 $target"
+                # v1.8.10：IPv6 与 IPv4 对称，创建 DNAT 端口映射（redirect family=ipv6）。
+                # v1.8.12：仅无翻译端口（外部=内部）配套创建 Allow-IPv6 直连放行规则
+                # （见 v6_ensure_allow_rule）；翻译端口由 DNAT + ct status dnat accept
+                # 放行，不再生成（避免内部端口暴露公网直连）。
+                # dest_ip 必须是 IPv6 地址：传入 IPv6 直用；传入 IPv4/留空默认目标时
+                # 按该主机解析当前公网 IPv6（SLAAC 优先），并登记跟踪锚点跟随前缀变化。
+                v6_target=""
+                case "$target" in
+                    *:*) v6_target="$target" ;;
+                    *)
+                        v6_target=$(v6_resolve_target "$target")
+                        if [ -n "$v6_target" ]; then
+                            info "目标 $target 解析为 IPv6: $v6_target"
+                            # 登记跟踪锚点（前缀变更时 port_sync_v6 自动改写 dest_ip）
+                            _ti=0; _tfound=0
+                            while uci -q get "netmanager.@v6track[$_ti]" >/dev/null 2>&1; do
+                                if [ "$(uci -q get netmanager.@v6track[$_ti].port)" = "$port" ] && \
+                                   [ "$(uci -q get netmanager.@v6track[$_ti].proto)" = "$p" ]; then
+                                    _tfound=1; break
+                                fi
+                                _ti=$((_ti+1))
+                            done
+                            if [ $_tfound -eq 0 ]; then
+                                uci add netmanager v6track >/dev/null
+                                uci set netmanager.@v6track[-1].port="$port"
+                                uci set netmanager.@v6track[-1].proto="$p"
+                                uci set netmanager.@v6track[-1].anchor="$target"
+                                uci set netmanager.@v6track[-1].enabled='1'
+                                uci commit netmanager
+                            fi
+                        fi
+                        ;;
+                esac
+                if [ -z "$v6_target" ]; then
+                    error "IPv6映射创建失败: 无法解析 $target 的公网 IPv6（DNAT 必须有目标地址，请确认主机在线且已获取 IPv6，或直接填写 IPv6 地址）"
+                    continue
+                fi
+                uci add firewall redirect > /dev/null
+                uci set firewall.@redirect[-1].name="Forward-v6-${port}-${p}"
+                uci set firewall.@redirect[-1].src="wan"
+                uci set firewall.@redirect[-1].proto="$p"
+                uci set firewall.@redirect[-1].src_dport="$port"
+                uci set firewall.@redirect[-1].dest="lan"
+                uci set firewall.@redirect[-1].dest_ip="$v6_target"
+                uci set firewall.@redirect[-1].dest_port="$dport"
+                uci set firewall.@redirect[-1].family="ipv6"
+                uci set firewall.@redirect[-1].target="DNAT"
+                info "IPv6 DNAT: $port/$p -> [$v6_target]:$dport"
+                # v1.8.12：仅无翻译端口生成配套直连放行规则；翻译端口清理历史残留
+                v6_ensure_allow_rule "$port" "$p" "$v6_target" "$dport"
             else
-                warn "IPv6已存在: $port/$p"
+                warn "IPv6映射已存在: $port/$p"
             fi
         done
     fi
@@ -751,8 +1052,8 @@ cmd_port_add() {
 
 # ========== 4. 编辑端口转发 ==========
 cmd_port_edit() {
-    old_port="$1"; old_proto="$2"; new_port="$3"; new_proto="$4"; new_target="$5"; new_ipver="$6"; new_dport="$7"
-    [ -z "$old_port" ] && { error "用法: netmanager port_edit <旧端口> <旧协议> <新端口> <新协议> <新目标IP> [v4|v6|both] [新内部端口]"; exit 1; }
+    old_port="$1"; old_proto="$2"; new_port="$3"; new_proto="$4"; new_target="$5"; new_ipver="$6"; new_dport="$7"; old_ipver="$8"
+    [ -z "$old_port" ] && { error "用法: netmanager port_edit <旧端口> <旧协议> <新端口> <新协议> <新目标IP> [v4|v6|both] [新内部端口] [旧族v4|v6]"; exit 1; }
     [ -z "$old_proto" ] && old_proto="tcp"
     [ -z "$new_proto" ] && new_proto="tcp"
     # 归一化：both/tcpudp 统一为 fw4 合法值 tcpudp（一条规则同时覆盖tcp+udp）
@@ -762,6 +1063,7 @@ cmd_port_edit() {
     load_config
     [ -z "$new_target" ] && new_target="$DEFAULT_TARGET"
     [ -z "$new_ipver" ] && new_ipver="both"
+    [ -z "$old_ipver" ] && old_ipver="v4"
     # 新内部端口：留空则与新外部端口一致
     [ -z "$new_dport" ] && new_dport="$new_port"
     # 端口格式标准化（冒号转横线，OpenWrt要求 999-1520 而非 999:1520）
@@ -774,100 +1076,99 @@ cmd_port_edit() {
         *-|*-*-*) error "内部端口格式无效: $new_dport (应为 8080 或 1000-2000)"; exit 1 ;;
     esac
 
-    modified=0
     # 生成要匹配的协议列表（处理 both/tcpudp/空值）
     match_old_protos=""
     case "$old_proto" in
-        both|tcpudp)
-            match_old_protos="tcp udp"
-            ;;
-        tcp|udp)
-            match_old_protos="$old_proto"
-            ;;
-        *)
-            match_old_protos="$old_proto"
-            ;;
+        both|tcpudp) match_old_protos="tcp udp" ;;
+        *) match_old_protos="$old_proto" ;;
     esac
 
-    # 修改IPv4 redirect
+    # v1.8.10：按族定位旧条目（v4/v6 各自独立的 redirect，互不误伤）。
+    # 旧版按 端口+协议 全局匹配，同端口的 v4/v6 条目会互相覆盖/误删。
+    old_idx=""
     idx=0
     while uci -q get "firewall.@redirect[$idx]" >/dev/null 2>&1; do
-        sp=$(uci get firewall.@redirect[$idx].src_dport 2>/dev/null)
-        pr=$(uci get firewall.@redirect[$idx].proto 2>/dev/null)
+        fam=$(uci -q get "firewall.@redirect[$idx].family")
+        sp=$(uci -q get "firewall.@redirect[$idx].src_dport")
+        pr=$(uci -q get "firewall.@redirect[$idx].proto")
         if [ "$sp" = "$old_port" ]; then
-            for mp in $match_old_protos; do
-                if proto_match "$pr" "$mp"; then
-                    if [ "$new_ipver" = "v6" ]; then
-                        # 新规则只要IPv6：删除IPv4并补建IPv6放行（否则新旧规则全部消失）
-                        uci delete firewall.@redirect[$idx]
-                        info "删除IPv4转发: $old_port/$pr"
-                        uci add firewall rule > /dev/null
-                        uci set firewall.@rule[-1].name="Allow-IPv6-${new_port}-${new_proto}"
-                        uci set firewall.@rule[-1].src="wan"
-                        uci set firewall.@rule[-1].proto="$new_proto"
-                        uci set firewall.@rule[-1].dest="lan"
-                        uci set firewall.@rule[-1].dest_ip="$new_target"
-                        uci set firewall.@rule[-1].dest_port="$new_port"
-                        uci set firewall.@rule[-1].family="ipv6"
-                        uci set firewall.@rule[-1].target="ACCEPT"
-                        info "补建IPv6放行: $new_port/$new_proto -> $new_target"
-                    else
-                        uci set firewall.@redirect[$idx].src_dport="$new_port"
-                        uci set firewall.@redirect[$idx].dest_port="$new_dport"
-                        uci set firewall.@redirect[$idx].proto="$new_proto"
-                        uci set firewall.@redirect[$idx].dest_ip="$new_target"
-                        uci set firewall.@redirect[$idx].name="Forward-${new_port}"
-                        info "更新IPv4转发: $old_port/$pr -> 外部$new_port/内部$new_dport -> $new_target"
-                    fi
-                    modified=1
-                    break 2
-                fi
-            done
+            if { [ "$old_ipver" = "v6" ] && [ "$fam" = "ipv6" ]; } || \
+               { [ "$old_ipver" != "v6" ] && [ "$fam" != "ipv6" ]; }; then
+                for mp in $match_old_protos; do
+                    if proto_match "$pr" "$mp"; then old_idx="$idx"; break; fi
+                done
+            fi
         fi
+        [ -n "$old_idx" ] && break
         idx=$((idx+1))
     done
+    [ -z "$old_idx" ] && { error "未找到旧转发条目: $old_port/$old_proto ($old_ipver)"; exit 1; }
 
-    # 修改IPv6 rule（放宽条件，支持系统自带规则）
-    idx=0
-    while uci -q get "firewall.@rule[$idx]" >/dev/null 2>&1; do
-        fam=$(uci get firewall.@rule[$idx].family 2>/dev/null)
-        dp=$(uci get firewall.@rule[$idx].dest_port 2>/dev/null)
-        pr=$(uci get firewall.@rule[$idx].proto 2>/dev/null)
-        if [ "$fam" = "ipv6" ] && [ "$dp" = "$old_port" ]; then
-            for mp in $match_old_protos; do
-                if proto_match "$pr" "$mp"; then
-                    if [ "$new_ipver" = "v4" ]; then
-                        # 新规则只要IPv4：删除IPv6并补建IPv4 DNAT（否则新旧规则全部消失）
-                        uci delete firewall.@rule[$idx]
-                        info "删除IPv6放行: $old_port/$pr"
-                        uci add firewall redirect > /dev/null
-                        uci set firewall.@redirect[-1].name="Forward-${new_port}"
-                        uci set firewall.@redirect[-1].src="wan"
-                        uci set firewall.@redirect[-1].proto="$new_proto"
-                        uci set firewall.@redirect[-1].src_dport="$new_port"
-                        uci set firewall.@redirect[-1].dest="lan"
-                        uci set firewall.@redirect[-1].dest_ip="$new_target"
-                        uci set firewall.@redirect[-1].dest_port="$new_dport"
-                        uci set firewall.@redirect[-1].target="DNAT"
-                        info "补建IPv4转发: 外部$new_port/内部$new_dport -> $new_target"
-                    else
-                        uci set firewall.@rule[$idx].dest_port="$new_port"
-                        uci set firewall.@rule[$idx].proto="$new_proto"
-                        uci set firewall.@rule[$idx].name="Allow-IPv6-${new_port}-${new_proto}"
-                        info "更新IPv6放行: $old_port/$pr -> $new_port/$new_proto"
-                    fi
-                    modified=1
-                    break 2
-                fi
-            done
-        fi
-        idx=$((idx+1))
-    done
-
-    if [ "$modified" -eq 0 ]; then
-        error "未找到旧规则: $old_port/$old_proto"
-        exit 1
+    # v1.8.11：旧条目为 IPv6 时先清掉其配套直连放行规则（端口/协议可能变化），
+    # 若新族仍为 v6 会在下方按新参数重建。
+    if [ "$old_ipver" = "v6" ]; then
+        v6_remove_allow_rule "$old_port" ""
     fi
+
+    # 目标族解析：both=保留原族；v4/v6=切换到指定族
+    want_v6=0
+    case "$new_ipver" in
+        v6) want_v6=1 ;;
+        v4) want_v6=0 ;;
+        *) [ "$old_ipver" = "v6" ] && want_v6=1 ;;
+    esac
+
+    # v6 目标地址解析（IPv6 直用；IPv4/锚点解析当前公网 IPv6）
+    v6_target=""
+    if [ "$want_v6" = "1" ]; then
+        case "$new_target" in
+            *:*) v6_target="$new_target" ;;
+            *)
+                v6_target=$(v6_resolve_target "$new_target")
+                [ -z "$v6_target" ] && { error "无法解析 $new_target 的公网 IPv6，IPv6 映射必须有目标地址（主机需在线且已获取 IPv6，或直接填写 IPv6 地址）"; exit 1; }
+                info "目标 $new_target 解析为 IPv6: $v6_target"
+                ;;
+        esac
+    fi
+
+    if [ "$want_v6" = "1" ]; then
+        uci set firewall.@redirect[$old_idx].name="Forward-v6-${new_port}-${new_proto}"
+        uci set firewall.@redirect[$old_idx].family="ipv6"
+        uci set firewall.@redirect[$old_idx].dest_ip="$v6_target"
+        # 登记/更新跟踪锚点（目标为 IPv4 锚点时）
+        case "$new_target" in
+            *:*) ;;
+            *)
+                _ti=0; _tsec=""
+                while uci -q get "netmanager.@v6track[$_ti]" >/dev/null 2>&1; do
+                    if [ "$(uci -q get netmanager.@v6track[$_ti].port)" = "$new_port" ] && \
+                       [ "$(uci -q get netmanager.@v6track[$_ti].proto)" = "$new_proto" ]; then
+                        _tsec="@v6track[$_ti]"; break
+                    fi
+                    _ti=$((_ti+1))
+                done
+                [ -z "$_tsec" ] && { uci add netmanager v6track >/dev/null; _tsec="@v6track[-1]"; }
+                uci set "netmanager.$_tsec.port=$new_port"
+                uci set "netmanager.$_tsec.proto=$new_proto"
+                uci set "netmanager.$_tsec.anchor=$new_target"
+                uci set "netmanager.$_tsec.enabled=1"
+                uci commit netmanager
+                ;;
+        esac
+        # v1.8.11：按新参数重建配套直连放行规则（dest_port 用新内部端口）
+        v6_ensure_allow_rule "$new_port" "$new_proto" "$v6_target" "$new_dport"
+    else
+        uci set firewall.@redirect[$old_idx].name="Forward-${new_port}"
+        uci delete firewall.@redirect[$old_idx].family 2>/dev/null
+        uci set firewall.@redirect[$old_idx].dest_ip="$new_target"
+    fi
+    uci set firewall.@redirect[$old_idx].src="wan"
+    uci set firewall.@redirect[$old_idx].dest="lan"
+    uci set firewall.@redirect[$old_idx].proto="$new_proto"
+    uci set firewall.@redirect[$old_idx].src_dport="$new_port"
+    uci set firewall.@redirect[$old_idx].dest_port="$new_dport"
+    uci set firewall.@redirect[$old_idx].target="DNAT"
+    info "更新转发($([ "$want_v6" = "1" ] && echo IPv6 || echo IPv4)): 外部$new_port/内部$new_dport -> $([ "$want_v6" = "1" ] && echo "$v6_target" || echo "$new_target")"
 
     uci commit firewall
     rm -f /tmp/.uci/firewall 2>/dev/null
@@ -879,10 +1180,10 @@ cmd_port_edit() {
 
 # ========== 5. 删除端口转发 ==========
 cmd_port_del() {
-    port="$1"; proto="${2:-tcp}"
-    [ -z "$port" ] && { error "用法: netmanager port_del <端口> [tcp|udp|both]"; exit 1; }
+    port="$1"; proto="${2:-tcp}"; ipver="${3:-both}"
+    [ -z "$port" ] && { error "用法: netmanager port_del <端口> [tcp|udp|both] [v4|v6|both]"; exit 1; }
     load_config
-    write_log "INFO" "port_del: 请求删除 端口=$port 协议=$proto"
+    write_log "INFO" "port_del: 请求删除 端口=$port 协议=$proto 族=$ipver"
 
     # 端口格式标准化：冒号转横线
     port=$(echo "$port" | sed 's/:/-/g')
@@ -903,20 +1204,27 @@ cmd_port_del() {
     esac
 
     # 收集所有需要删除的 redirect 索引（从后往前，避免索引移位）
+    # v1.8.10：按族过滤——v4 只删非 ipv6 条目，v6 只删 ipv6 条目，both 全删。
+    # 旧版不分族，删 IPv4 条目会连带误删同端口的 IPv6 映射。
     del_indices=""
     idx=0
     while true; do
         name=$(uci get firewall.@redirect[$idx].name 2>/dev/null)
         uci -q get "firewall.@redirect[$idx]" >/dev/null 2>&1 || break
+        fam=$(uci -q get firewall.@redirect[$idx].family 2>/dev/null)
         sp=$(uci get firewall.@redirect[$idx].src_dport 2>/dev/null)
         pr=$(uci get firewall.@redirect[$idx].proto 2>/dev/null)
         if [ "$sp" = "$port" ]; then
-            for mp in $match_protos; do
-                if proto_match "$pr" "$mp"; then
-                    del_indices="$idx $del_indices"
-                    break
-                fi
-            done
+            if { [ "$ipver" = "v6" ] && [ "$fam" = "ipv6" ]; } || \
+               { [ "$ipver" = "v4" ] && [ "$fam" != "ipv6" ]; } || \
+               [ "$ipver" = "both" ]; then
+                for mp in $match_protos; do
+                    if proto_match "$pr" "$mp"; then
+                        del_indices="$idx $del_indices"
+                        break
+                    fi
+                done
+            fi
         fi
         idx=$((idx+1))
     done
@@ -925,35 +1233,35 @@ cmd_port_del() {
     for didx in $del_indices; do
         name=$(uci get firewall.@redirect[$didx].name 2>/dev/null)
         uci delete firewall.@redirect[$didx]
-        info "删除IPv4: $name"
+        info "删除转发: $name"
     done
 
-    # 收集所有需要删除的 rule 索引（从后往前，避免索引移位）
-    del_rule_indices=""
-    idx=0
-    while true; do
-        name=$(uci get firewall.@rule[$idx].name 2>/dev/null)
-        uci -q get "firewall.@rule[$idx]" >/dev/null 2>&1 || break
-        fam=$(uci get firewall.@rule[$idx].family 2>/dev/null)
-        dp=$(uci get firewall.@rule[$idx].dest_port 2>/dev/null)
-        pr=$(uci get firewall.@rule[$idx].proto 2>/dev/null)
-        if [ "$fam" = "ipv6" ] && [ "$dp" = "$port" ]; then
-            for mp in $match_protos; do
-                if proto_match "$pr" "$mp"; then
-                    del_rule_indices="$idx $del_rule_indices"
-                    break
-                fi
-            done
-        fi
-        idx=$((idx+1))
-    done
+    # v1.8.11：删除 v6/both 映射时同步清理配套的 Allow-IPv6 直连放行规则
+    # （由 port_add 随映射创建，按名称前缀精确匹配，不误伤用户自定义规则）。
+    if [ "$ipver" != "v4" ]; then
+        v6_remove_allow_rule "$port" "$match_protos"
+    fi
 
-    # 删除收集到的 rule 规则
-    for didx in $del_rule_indices; do
-        name=$(uci get firewall.@rule[$didx].name 2>/dev/null)
-        uci delete firewall.@rule[$didx]
-        info "删除IPv6: $name"
-    done
+    # v1.8.10：删除 v6/both 映射时同步清理跟踪锚点，避免遗留无效 v6track
+    if [ "$ipver" != "v4" ]; then
+        _ti=0
+        while uci -q get "netmanager.@v6track[$_ti]" >/dev/null 2>&1; do
+            _tp=$(uci -q get "netmanager.@v6track[$_ti].port")
+            _tr=$(uci -q get "netmanager.@v6track[$_ti].proto")
+            _hit=0
+            if [ "$_tp" = "$port" ]; then
+                for mp in $match_protos; do
+                    proto_match "$_tr" "$mp" && _hit=1
+                done
+            fi
+            if [ "$_hit" = "1" ]; then
+                uci delete "netmanager.@v6track[$_ti]"
+            else
+                _ti=$((_ti+1))
+            fi
+        done
+        uci commit netmanager 2>/dev/null
+    fi
 
     uci commit firewall
     rm -f /tmp/.uci/firewall 2>/dev/null
@@ -961,6 +1269,441 @@ cmd_port_del() {
     # 清除 nft 命中数缓存，确保下次 port_list 拿到最新数据
     rm -f /tmp/.netmanager_nft_dstnat /tmp/.netmanager_nft_dstnat.ts 2>/dev/null
     info "完成！"
+}
+
+# ========== 4.5 IPv6 转发目标动态跟踪（v1.8.3 新增）==========
+# 背景：运营商 PD 前缀会变化（实测一天内变更多次）。IPv6 放行规则若把
+#       目标地址写死，前缀一变规则即失效；而目标主机的接口后缀通常稳定
+#       （DHCPv6 静态分配如 ::3，或 SLAAC 的固定 IID）。
+# 方案：为规则登记一个「锚点」（IPv4 地址 / MAC / 主机名），
+#       由 v6_resolve_target 实时解析该主机当前的公网 IPv6，
+#       前缀变更时由 hotplug / 定时任务自动改写 dest_ip。
+
+# 取 br-lan 当前公网 IPv6 前缀（/64，形如 2408:xxxx:xxxx:xxxx:）
+v6_current_prefix() {
+    local p
+    p=$(ip -6 addr show dev br-lan scope global 2>/dev/null \
+        | awk '/inet6/{print $2}' | cut -d/ -f1 \
+        | grep -viE '^fd|^fc' | head -1)
+    [ -z "$p" ] && return 1
+    # 取前 4 段作为 /64 前缀
+    echo "$p" | awk -F: '{printf "%s:%s:%s:%s:\n", $1,$2,$3,$4}'
+}
+
+# 按锚点解析目标主机当前公网 IPv6
+# 锚点支持：IPv4 地址 / MAC 地址 / 主机名
+# 解析优先级（v1.8.3）：邻居表 SLAAC 地址（对齐目标机
+#   `ip -6 addr show scope global | grep -v deprecated` 选出的 /64 地址）
+#   → DHCP 静态 hostid（兜底）→ DHCPv6 租约 → 邻居表任意全局地址
+v6_resolve_target() {
+    local anchor="$1" prefix mac hostid duid addr hostname i h_ip h_mac h_hostid h_name
+    local hostid_addr="" m_duid="" hex
+    [ -z "$anchor" ] && return 1
+    prefix=$(v6_current_prefix) || return 1
+
+    # 归一化 MAC 为小写
+    case "$anchor" in
+        *:*:*:*:*:*) mac=$(echo "$anchor" | tr 'A-Z' 'a-z') ;;
+        *) mac="" ;;
+    esac
+
+    # 1) 由锚点在 dhcp host 静态绑定中找 hostid / duid / mac（只收集，不抢先返回）
+    i=0
+    while uci -q get "dhcp.@host[$i]" >/dev/null 2>&1; do
+        h_ip=$(uci -q get "dhcp.@host[$i].ip")
+        h_mac=$(uci -q get "dhcp.@host[$i].mac" | tr 'A-Z' 'a-z')
+        h_hostid=$(uci -q get "dhcp.@host[$i].hostid")
+        h_name=$(uci -q get "dhcp.@host[$i].name")
+        duid=$(uci -q get "dhcp.@host[$i].duid")
+        if [ "$anchor" = "$h_ip" ] || [ "$mac" = "$h_mac" ] || [ "$anchor" = "$h_name" ]; then
+            # 1a) hostid 拼出静态地址，留作兜底
+            if [ -n "$h_hostid" ]; then
+                case "$h_hostid" in
+                    *:*) hostid_addr="${prefix}${h_hostid#:}" ;;
+                    *)
+                        # 十进制 hostid 转十六进制
+                        hex=$(printf '%x' "$h_hostid" 2>/dev/null)
+                        [ -n "$hex" ] && hostid_addr="${prefix}:${hex}"
+                        ;;
+                esac
+            fi
+            # 1b) DUID 留作次级兜底
+            m_duid="$duid"
+            # 1c) 落到 MAC 解析
+            [ -z "$mac" ] && mac="$h_mac"
+            break
+        fi
+        i=$((i+1))
+    done
+
+    # 2) 锚点是 IPv4：先从 DHCP 租约换算 MAC
+    if [ -z "$mac" ]; then
+        case "$anchor" in
+            *.*.*.*)
+                mac=$(awk -v ip="$anchor" '$3==ip{print tolower($2)}' /tmp/dhcp.leases 2>/dev/null | head -1)
+                ;;
+        esac
+    fi
+
+    # 3) 锚点是主机名：从 DHCP 租约取 MAC
+    if [ -z "$mac" ]; then
+        mac=$(awk -v h="$anchor" '$4==h{print tolower($2)}' /tmp/dhcp.leases 2>/dev/null | head -1)
+    fi
+
+    # 4) 首选：邻居表中该 MAC 在当前前缀下的 SLAAC 地址。
+    #    目标机对外通信用的是 SLAAC /64 地址（如 Debian 的 mngtmpaddr），
+    #    hostid 静态地址（::3 等）只是锚点，不应作为转发目标。
+    #    排除 FAILED/INCOMPLETE 死条目；REACHABLE（近期有流量）优先，
+    #    近似目标机侧 "grep -v deprecated" 的效果。
+    if [ -n "$mac" ]; then
+        addr=$(ip -6 neigh show dev br-lan 2>/dev/null \
+            | awk -v m="$mac" -v p="$prefix" -v x="$hostid_addr" '
+                tolower($0) ~ m && index($1, p) == 1 && $1 != x &&
+                $0 !~ /FAILED|INCOMPLETE/ {
+                    print ($0 ~ /REACHABLE/ ? "0 " : "1 ") $1
+                }' | sort | head -1 | cut -d' ' -f2)
+        [ -n "$addr" ] && { echo "$addr"; return 0; }
+    fi
+
+    # 5) 兜底：hostid 静态地址（主机离线/邻居表空时仍可跟住前缀）
+    [ -n "$hostid_addr" ] && { echo "$hostid_addr"; return 0; }
+
+    # 6) 兜底：DUID 查 DHCPv6 租约
+    if [ -n "$m_duid" ]; then
+        addr=$(v6_lease_by_duid "$m_duid")
+        [ -n "$addr" ] && { echo "$addr"; return 0; }
+    fi
+
+    # 7) 最后兜底：邻居表按 MAC 找任意公网 IPv6（排除 ULA / 链路本地）
+    if [ -n "$mac" ]; then
+        addr=$(ip -6 neigh show dev br-lan 2>/dev/null \
+            | awk -v m="$mac" 'tolower($0) ~ m {print $1}' \
+            | grep -viE '^fe80|^fd|^fc' | head -1)
+        [ -n "$addr" ] && { echo "$addr"; return 0; }
+    fi
+
+    return 1
+}
+
+# 从 odhcpd 租约中按 DUID 取公网 IPv6
+v6_lease_by_duid() {
+    local want="$1"
+    command -v ubus >/dev/null 2>&1 || return 1
+    ubus call dhcp ipv6leases 2>/dev/null | awk -v d="$want" '
+        /"duid"/ { cur=$0; gsub(/.*"duid": *"|",?$/,"",cur); hit=(cur==d) }
+        /"address"/ && hit {
+            a=$0; gsub(/.*"address": *"|",?$/,"",a)
+            if (a !~ /^fd/ && a !~ /^fc/ && a !~ /^fe80/) { print a; exit }
+        }
+    '
+}
+
+# 登记/取消某条 IPv6 放行规则的目标跟踪
+# 用法: netmanager port_track_v6 <端口> <tcp|udp> <锚点|off>
+cmd_port_track_v6() {
+    local port="$1" proto="$2" anchor="$3" i found=0 sec
+    [ -z "$port" ] && { error "用法: netmanager port_track_v6 <端口> <tcp|udp> <锚点IPv4/MAC/主机名|off>"; exit 1; }
+    port=$(echo "$port" | sed 's/:/-/g')
+    [ -z "$proto" ] && proto="tcp"
+
+    # 找到已存在的跟踪节
+    i=0
+    while uci -q get "netmanager.@v6track[$i]" >/dev/null 2>&1; do
+        if [ "$(uci -q get netmanager.@v6track[$i].port)" = "$port" ] && \
+           [ "$(uci -q get netmanager.@v6track[$i].proto)" = "$proto" ]; then
+            sec="@v6track[$i]"; found=1; break
+        fi
+        i=$((i+1))
+    done
+
+    if [ "$anchor" = "off" ] || [ -z "$anchor" ]; then
+        if [ $found -eq 1 ]; then
+            uci delete "netmanager.$sec"
+            uci commit netmanager
+            info "已取消 $port/$proto 的 IPv6 目标跟踪"
+        else
+            info "$port/$proto 未启用跟踪"
+        fi
+        return 0
+    fi
+
+    # 先验证锚点当前能否解析，避免登记一个无效锚点
+    local resolved
+    resolved=$(v6_resolve_target "$anchor")
+    if [ -z "$resolved" ]; then
+        warn "锚点 $anchor 当前无法解析出公网 IPv6（主机可能离线），仍登记跟踪，待其上线后自动生效"
+    else
+        info "锚点 $anchor 当前解析为 $resolved"
+    fi
+
+    if [ $found -eq 0 ]; then
+        uci add netmanager v6track >/dev/null
+        sec="@v6track[-1]"
+    fi
+    uci set "netmanager.$sec.port=$port"
+    uci set "netmanager.$sec.proto=$proto"
+    uci set "netmanager.$sec.anchor=$anchor"
+    uci set "netmanager.$sec.enabled=1"
+    uci commit netmanager
+    info "已登记 $port/$proto 跟踪锚点 $anchor"
+    # 立即同步一次
+    cmd_port_sync_v6
+}
+
+# 同步所有已跟踪的 IPv6 放行规则目标地址
+# 用法: netmanager port_sync_v6 [--quiet]
+cmd_port_sync_v6() {
+    local quiet=0
+    [ "$1" = "--quiet" ] && quiet=1
+    local i port proto anchor enabled resolved idx fam dp pr changed=0 checked=0
+    local sp _cprs _ri _rn _rpr _hit _m
+    local prefix
+    prefix=$(v6_current_prefix)
+    if [ -z "$prefix" ]; then
+        [ $quiet -eq 0 ] && warn "当前无公网 IPv6 前缀，跳过同步"
+        return 0
+    fi
+    [ $quiet -eq 0 ] && info "当前 LAN 前缀: ${prefix}:/64"
+
+    i=0
+    while uci -q get "netmanager.@v6track[$i]" >/dev/null 2>&1; do
+        enabled=$(uci -q get "netmanager.@v6track[$i].enabled")
+        port=$(uci -q get "netmanager.@v6track[$i].port")
+        proto=$(uci -q get "netmanager.@v6track[$i].proto")
+        anchor=$(uci -q get "netmanager.@v6track[$i].anchor")
+        i=$((i+1))
+        [ "$enabled" = "0" ] && continue
+        [ -z "$port" ] || [ -z "$anchor" ] && continue
+        checked=$((checked+1))
+
+        resolved=$(v6_resolve_target "$anchor")
+        if [ -z "$resolved" ]; then
+            [ $quiet -eq 0 ] && warn "$port/$proto 锚点 $anchor 暂时解析不到，保留原目标"
+            continue
+        fi
+
+        # 定位对应的 IPv6 放行规则并改写 dest_ip。
+        # v1.8.11：配套规则按名称 Allow-IPv6-<外部端口>-* 匹配（其 dest_port 为内部端口，
+        # 翻译端口下不等于外部端口，故不能按 dest_port 匹配）；兼容旧版按 dest_port 匹配。
+        idx=0
+        while uci -q get "firewall.@rule[$idx]" >/dev/null 2>&1; do
+            fam=$(uci -q get "firewall.@rule[$idx].family")
+            dp=$(uci -q get "firewall.@rule[$idx].dest_port")
+            pr=$(uci -q get "firewall.@rule[$idx].proto")
+            rn=$(uci -q get "firewall.@rule[$idx].name")
+            _namehit=0
+            case "$rn" in Allow-IPv6-${port}-*) _namehit=1 ;; esac
+            if [ "$fam" = "ipv6" ] && proto_match "$pr" "$proto" && \
+               { [ "$_namehit" = "1" ] || [ "$dp" = "$port" ]; }; then
+                local old
+                old=$(uci -q get "firewall.@rule[$idx].dest_ip")
+                if [ "$old" != "$resolved" ]; then
+                    uci set "firewall.@rule[$idx].dest_ip=$resolved"
+                    changed=$((changed+1))
+                    [ $quiet -eq 0 ] && info "$port/$proto 目标 ${old:-未设置} -> $resolved"
+                fi
+            fi
+            idx=$((idx+1))
+        done
+
+        # v1.8.3：family=ipv6 的端口映射(DNAT)同样需要跟随前缀。
+        # 这类条目匹配的是外部端口 src_dport，内部端口 dest_port 保持不变。
+        idx=0
+        while uci -q get "firewall.@redirect[$idx]" >/dev/null 2>&1; do
+            fam=$(uci -q get "firewall.@redirect[$idx].family")
+            dp=$(uci -q get "firewall.@redirect[$idx].src_dport")
+            pr=$(uci -q get "firewall.@redirect[$idx].proto")
+            if [ "$fam" = "ipv6" ] && [ "$dp" = "$port" ] && proto_match "$pr" "$proto"; then
+                local oldr
+                oldr=$(uci -q get "firewall.@redirect[$idx].dest_ip")
+                if [ "$oldr" != "$resolved" ]; then
+                    uci set "firewall.@redirect[$idx].dest_ip=$resolved"
+                    changed=$((changed+1))
+                    [ $quiet -eq 0 ] && info "映射 $port/$proto 目标 ${oldr:-未设置} -> $resolved"
+                fi
+            fi
+            idx=$((idx+1))
+        done
+    done
+
+    # v1.8.12：清理翻译端口映射历史残留的配套放行规则（v1.8.11 曾为所有
+    # IPv6 映射生成 Allow-IPv6 规则）。翻译端口由 DNAT + ct status dnat accept
+    # 放行，dest_port=内部端口 的 ACCEPT 规则会把内部端口暴露公网直连
+    # （如 853→38853 时直连 38853 也通）。扫描全部 IPv6 映射（不限于跟踪
+    # 锚点），存量安装升级后随 cron / hotplug 同步自愈。
+    idx=0
+    while uci -q get "firewall.@redirect[$idx]" >/dev/null 2>&1; do
+        fam=$(uci -q get "firewall.@redirect[$idx].family")
+        sp=$(uci -q get "firewall.@redirect[$idx].src_dport")
+        dp=$(uci -q get "firewall.@redirect[$idx].dest_port")
+        pr=$(uci -q get "firewall.@redirect[$idx].proto")
+        if [ "$fam" = "ipv6" ] && [ -n "$sp" ] && [ -n "$dp" ] && [ "$dp" != "$sp" ]; then
+            case "$pr" in both|tcpudp) _cprs="tcp udp" ;; *) _cprs="$pr" ;; esac
+            _ri=0
+            while uci -q get "firewall.@rule[$_ri]" >/dev/null 2>&1; do
+                _rn=$(uci -q get "firewall.@rule[$_ri].name")
+                _rpr=$(uci -q get "firewall.@rule[$_ri].proto")
+                _hit=0
+                case "$_rn" in Allow-IPv6-${sp}-*) _hit=1 ;; esac
+                if [ "$_hit" = "1" ]; then
+                    _hit=0
+                    for _m in $_cprs; do proto_match "$_rpr" "$_m" && _hit=1; done
+                fi
+                if [ "$_hit" = "1" ]; then
+                    v6_remove_allow_rule "$sp" "$_cprs"
+                    changed=$((changed+1))
+                    [ $quiet -eq 0 ] && info "清理翻译端口映射 $sp->$dp 的多余直连放行规则（内部端口不再暴露直连）"
+                    break
+                fi
+                _ri=$((_ri+1))
+            done
+        fi
+        idx=$((idx+1))
+    done
+
+    if [ $changed -gt 0 ]; then
+        uci commit firewall
+        rm -f /tmp/.uci/firewall 2>/dev/null
+        /etc/init.d/firewall reload >/dev/null 2>&1
+        rm -f /tmp/.netmanager_nft_dstnat /tmp/.netmanager_nft_dstnat.ts 2>/dev/null
+        write_log "INFO" "port_sync_v6: 前缀 ${prefix}:/64，更新 $changed 条 IPv6 转发目标"
+        [ $quiet -eq 0 ] && info "已更新 $changed 条规则并重载防火墙"
+    else
+        [ $quiet -eq 0 ] && info "检查 $checked 项，目标地址均为最新，无需改动"
+    fi
+
+    # 顺带清理旧前缀遗留的源路由（前缀变更后 netifd 可能留下不可达条目）
+    v6_cleanup_stale_routes "$prefix" "$quiet"
+    # v1.8.3：同步清理 piofolder 前缀记忆，止住 RA 对失效前缀的持续广播
+    v6_cleanup_piofolder "$prefix" "$quiet"
+    # v1.8.7：顺带做 IPv6 默认网关自愈（复用本命令的 cron / hotplug 触发）
+    cmd_v6gw --quiet
+}
+
+# v1.8.7：IPv6 默认网关自愈
+# 背景：pppoe 场景为抑制 netifd 自动 wan_6 与手动 wan6 双接口冲突而关闭
+#   network.wan.ipv6 后，pppoe 自带的 IPv6 默认路由也随之消失；手动 wan6
+#   只做 PD 委派、不装默认路由。odhcpd 默认 ra_default=0 仅在路由器有默认
+#   路由时才宣告网关 —— 于是 LAN 客户端拿到 SLAAC 地址却没有默认网关、上不了网。
+# 本命令做两件事：
+#   ① pppoe 且默认路由缺失/指向失效设备时，补 default dev <wan-l3> metric 512；
+#   ② LAN ra=server 时强制 ra_default=1，确保始终宣告网关。
+# 用法: netmanager v6gw [--quiet]
+cmd_v6gw() {
+    local quiet=0
+    [ "$1" = "--quiet" ] && quiet=1
+    local proto wandev cur changed=0
+    proto=$(uci -q get network.wan.proto)
+    wandev=$(ubus call network.interface.wan status 2>/dev/null | jsonfilter -e '@.l3_device' 2>/dev/null)
+    [ -z "$wandev" ] && [ "$proto" = "pppoe" ] && wandev="pppoe-wan"
+
+    # ① 补默认路由（仅 pppoe 点对点；缺失或指向其它设备时纠正）
+    if [ "$proto" = "pppoe" ] && [ -n "$wandev" ] && [ -d "/sys/class/net/$wandev" ]; then
+        cur=$(ip -6 route show default 2>/dev/null | head -1)
+        case "$cur" in
+            *"dev $wandev"*) : ;;   # 已正确，无需改动
+            *)
+                if ip -6 route replace default dev "$wandev" metric 512 2>/dev/null; then
+                    changed=1
+                    [ $quiet -eq 0 ] && info "已补 IPv6 默认路由: default dev $wandev metric 512"
+                    write_log "INFO" "v6gw: 补 IPv6 默认路由 dev $wandev（原: ${cur:-无}）"
+                fi
+                ;;
+        esac
+    fi
+
+    # ② 强制宣告网关（LAN 为 RA 服务器模式时）
+    if [ "$(uci -q get dhcp.lan.ra)" = "server" ]; then
+        if [ "$(uci -q get dhcp.lan.ra_default)" != "1" ]; then
+            uci set dhcp.lan.ra_default='1'
+            uci commit dhcp
+            /etc/init.d/odhcpd reload >/dev/null 2>&1
+            changed=1
+            [ $quiet -eq 0 ] && info "已设 ra_default=1（强制宣告 IPv6 网关）"
+            write_log "INFO" "v6gw: 设 dhcp.lan.ra_default=1"
+        fi
+    fi
+
+    [ $quiet -eq 0 ] && [ $changed -eq 0 ] && info "IPv6 网关状态正常，无需改动"
+    return 0
+}
+
+# 清理不属于当前前缀的 IPv6 默认源路由与 unreachable 条目
+v6_cleanup_stale_routes() {
+    local prefix="$1" quiet="$2" p removed=0
+    [ -z "$prefix" ] && return 0
+    # 形如: default from 2408:xxxx:xxxx:xxxx::/64 via fe80::... dev pppoe-wan
+    ip -6 route show 2>/dev/null | grep '^default from' | while read -r line; do
+        p=$(echo "$line" | awk '{print $3}')
+        case "$p" in
+            ${prefix}*) ;;                       # 当前前缀，保留
+            fd*|fc*) ;;                          # ULA，保留
+            *)
+                ip -6 route del $line 2>/dev/null && removed=$((removed+1))
+                ;;
+        esac
+    done
+    # unreachable 兜底路由同样按前缀清理
+    ip -6 route show 2>/dev/null | grep '^unreachable' | while read -r line; do
+        p=$(echo "$line" | awk '{print $2}')
+        case "$p" in
+            ${prefix}*) ;;
+            fd*|fc*) ;;
+            *) ip -6 route del $line 2>/dev/null ;;
+        esac
+    done
+    [ "$quiet" = "0" ] && [ $removed -gt 0 ] && info "清理旧前缀残留路由 $removed 条"
+    return 0
+}
+
+# v1.8.3：清理 odhcpd 的 RFC9096 前缀记忆(piofolder)中的失效前缀。
+# odhcpd 把历史前缀记在 piofolder，并在每次 RA 里以 lifetime=0 持续广播
+# （实测旧前缀失效两小时后仍在播）。客户端按 RFC4862 会保留这些 deprecated
+# 地址直到记忆过期 —— 这是客户端"堆一堆旧 IP"的路由端根因。
+# 只剔除既非当前前缀、也非 ULA 的 slaac 条目；重写后重启 odhcpd 生效，
+# RA 随即只含当前前缀 + ULA。
+v6_cleanup_piofolder() {
+    local prefix="$1" quiet="$2" folder pf new changed=0
+    [ -z "$prefix" ] && return 0
+    folder=$(uci -q get dhcp.odhcpd.piofolder)
+    [ -z "$folder" ] && folder="/tmp/odhcpd-piofolder"
+    [ -d "$folder" ] || return 0
+    for pf in "$folder"/*; do
+        [ -f "$pf" ] || continue
+        new=$(awk -v P="$prefix" '
+            {
+                line=$0; out=""
+                n=split(line, parts, "},")
+                for (i=1; i<=n; i++) {
+                    seg=parts[i]
+                    if (seg ~ /"prefix"/) {
+                        p=seg
+                        sub(/.*"prefix"[ ]*:[ ]*"/, "", p)
+                        sub(/".*/, "", p)
+                        keep=0
+                        if (index(p, P)==1) keep=1
+                        if (p ~ /^fd/ || p ~ /^fc/) keep=1
+                        if (!keep) continue
+                    }
+                    out = out seg (i<n ? "}," : "")
+                }
+                print out
+            }' "$pf" 2>/dev/null)
+        if [ -n "$new" ] && [ "$new" != "$(cat "$pf" 2>/dev/null)" ]; then
+            printf '%s' "$new" > "$pf"
+            changed=1
+        fi
+    done
+    if [ $changed -eq 1 ]; then
+        /etc/init.d/odhcpd stop >/dev/null 2>&1
+        sleep 1
+        killall odhcpd 2>/dev/null
+        sleep 1
+        /etc/init.d/odhcpd start >/dev/null 2>&1
+        [ "$quiet" = "0" ] && info "已清理 piofolder 失效前缀记忆并重启 odhcpd"
+        write_log "INFO" "v6_cleanup_piofolder: 剔除失效前缀记忆，前缀=${prefix}"
+    fi
+    return 0
 }
 
 # ========== 5. 防火墙规则列表 ==========
@@ -977,18 +1720,34 @@ cmd_rule_list() {
         target=$(uci get firewall.@rule[$idx].target 2>/dev/null)
         fam=$(uci get firewall.@rule[$idx].family 2>/dev/null)
         enabled=$(uci get firewall.@rule[$idx].enabled 2>/dev/null)
+        sip=$(uci get firewall.@rule[$idx].src_ip 2>/dev/null)
+        dip=$(uci get firewall.@rule[$idx].dest_ip 2>/dev/null)
         [ -z "$enabled" ] && enabled="1"
         [ -z "$fam" ] && fam="any"
-        echo "$idx|$name|$src|$dst|$proto|$dp|$target|$fam|$enabled"
+        # 【v1.4.6 P1】输出侧兜底：UCI 直接编辑塞入管道符的历史数据替换为全角，防列表错位
+        name=$(echo "$name" | tr '|' '｜')
+        # v1.8.13：末尾追加 src_ip/dest_ip（旧版前端按前 9 字段解析，向后兼容）
+        echo "$idx|$name|$src|$dst|$proto|$dp|$target|$fam|$enabled|$sip|$dip"
         idx=$((idx+1))
     done
     echo "===END==="
 }
 
 # ========== 6. 添加防火墙规则 ==========
+# 【v1.4.6 P1】name 管道符过滤：列表输出以 | 分隔，name 含 | 会错位导致前端解析混乱
+rule_name_check() {
+    case "$1" in
+        *\|*|*'('*')'*)
+            error "规则名称不允许包含 | ( ) 字符（与列表输出格式冲突）"; return 1 ;;
+    esac
+    return 0
+}
+
 cmd_rule_add() {
     name="$1"; src="$2"; dst="$3"; proto="$4"; port="$5"; target="$6"; fam="${7:-any}"
+    write_log "INFO" "rule_add: 请求添加 名称=$name 源=$src 目标=$dst 协议=$proto 端口=$port 动作=$target IP版本=$fam"
     [ -z "$name" ] && { error "用法: netmanager rule_add <名称> <源zone> <目标zone> <协议> <端口> <ACCEPT|DROP|REJECT> [ipv4|ipv6|any]"; exit 1; }
+    rule_name_check "$name" || exit 1
     # 健壮性：检测参数错位。如果 $6 不是合法动作而是 any/ipv4/ipv6，说明 dst 为空被吞了
     case "$target" in
         any|ipv4|ipv6)
@@ -1024,9 +1783,12 @@ cmd_rule_add() {
 # ========== 7. 编辑防火墙规则 ==========
 cmd_rule_edit() {
     idx="$1"; name="$2"; src="$3"; dst="$4"; proto="$5"; port="$6"; target="$7"; fam="${8:-any}"
+    write_log "INFO" "rule_edit: 请求编辑 索引=$idx 名称=$name 源=$src 目标=$dst 协议=$proto 端口=$port 动作=$target IP版本=$fam"
     [ -z "$idx" ] && { error "用法: netmanager rule_edit <索引> <名称> <源> <目标> <协议> <端口> <动作> [IP版本]"; exit 1; }
     old_name=$(uci get firewall.@rule[$idx].name 2>/dev/null)
     [ -z "$old_name" ] && { error "规则索引 $idx 不存在"; exit 1; }
+    # 【v1.4.6 P1】name 管道符校验（同 rule_add）
+    [ -n "$name" ] && { rule_name_check "$name" || exit 1; }
     # 端口格式标准化
     port=$(echo "$port" | sed 's/:/-/g')
     # 修改字段（空值保留原值）
@@ -1047,9 +1809,29 @@ cmd_rule_edit() {
     info "规则已更新: ${name:-$old_name} ($target)"
 }
 
+# ========== 7.5 启用/禁用防火墙规则（v1.8.13 新增）==========
+# 供端口转发页「IPv6 端口放行」区的开关使用；enabled=1 以删除选项表示（默认启用）
+cmd_rule_toggle() {
+    idx="$1"; en="$2"
+    [ -z "$idx" ] && { error "用法: netmanager rule_toggle <索引> <1|0>"; exit 1; }
+    case "$en" in 0|1) ;; *) error "启用值必须为 1 或 0"; exit 1 ;; esac
+    name=$(uci get firewall.@rule[$idx].name 2>/dev/null)
+    [ -z "$name" ] && { error "规则索引 $idx 不存在"; exit 1; }
+    if [ "$en" = "1" ]; then
+        uci delete firewall.@rule[$idx].enabled 2>/dev/null
+    else
+        uci set firewall.@rule[$idx].enabled='0'
+    fi
+    uci commit firewall
+    rm -f /tmp/.uci/firewall 2>/dev/null
+    /etc/init.d/firewall reload > /dev/null 2>&1
+    if [ "$en" = "1" ]; then info "规则已启用: $name"; else info "规则已禁用: $name"; fi
+}
+
 # ========== 8. 删除防火墙规则 ==========
 cmd_rule_del() {
     idx="$1"
+    write_log "INFO" "rule_del: 请求删除 索引=$idx"
     [ -z "$idx" ] && { error "用法: netmanager rule_del <规则索引>"; exit 1; }
     name=$(uci get firewall.@rule[$idx].name 2>/dev/null)
     if [ -n "$name" ]; then
@@ -1164,119 +1946,75 @@ cmd_access_log() {
     [ $out_count -lt 0 ] && out_count=0
     echo "OUT_COUNT=$out_count"
 
-    # 防火墙拦截统计
+    # 防火墙拦截统计（v1.8.4 重写）
+    # 旧版用 prev_pkts/prev_dport/prev_proto 跨行借用上下文，会把前面 accept 规则
+    # （如 Allow-DHCP-Renew 的 udp dport 68）的端口/协议/计数错误套到后面无端口的
+    # drop 规则（china/ban IP 段拦截）上，导致「端口68拦截几万」这类明显错误。
+    # 新版逐行独立解析：计数器/端口/协议只取本行，绝不跨行借用；无端口规则按用途标注。
     echo "---BLOCKED---"
     block_total=0
     block_output=""
 
-    # 使用nftables列出所有规则
     nft_output=$(nft list ruleset 2>/dev/null)
-    
+
     if [ -n "$nft_output" ]; then
-        # 更健壮的解析：处理多种counter格式、行内/分离行、tab空格、policy counter等
         block_output=$(echo "$nft_output" | awk '
-        BEGIN { 
-            prev_pkts = 0; prev_dport = ""; prev_proto = "any"; 
-            in_policy = 0; policy_drops = 0;
-            delete port_map; delete port_proto;
-        }
+        function trim(s){ gsub(/^[ \t]+|[ \t]+$/,"",s); return s }
         {
-            line = $0
-            pkts = 0
-            dport = ""
-            proto = "any"
-            
-            # ========== 1. 提取counter packets数值 ==========
-            # 格式A: counter packets 123 bytes 456
+            line=$0
+            # 跳过 chain 定义与 policy 行（fw4 的 policy drop 不挂计数器，非规则）
+            if (line ~ /policy[ \t]+(drop|accept)/) next
+            if (line ~ /^[ \t]*chain[ \t]/) next
+            # 只认本行裁决为 drop/reject 的规则（独立词，排除 drop_from_wan 等链名）
+            is_drop=0
+            if (line ~ /[ \t]drop([ \t;]|$)/) is_drop=1
+            else if (line ~ /[ \t]reject([ \t;]|$)/) is_drop=1
+            if (!is_drop) next
+
+            # 本行内联计数器；没有则计0，不借用上一行
+            pkts=0
             if (match(line, /counter packets [0-9]+/)) {
-                tmp = substr(line, RSTART, RLENGTH)
-                gsub(/[^0-9]/, "", tmp)
-                pkts = tmp + 0
+                t=substr(line,RSTART,RLENGTH); gsub(/[^0-9]/,"",t); pkts=t+0
             }
-            # 格式B: packets 123 bytes 456 (行开头)
-            if (pkts == 0 && match(line, /[[:space:]]packets [0-9]+/)) {
-                tmp = substr(line, RSTART, RLENGTH)
-                gsub(/[^0-9]/, "", tmp)
-                pkts = tmp + 0
+
+            # 本行协议：多协议集合 {tcp,udp} / 单协议 / icmp
+            proto="any"
+            if (line ~ /l4proto[ \t]*\{[^}]*tcp[^}]*udp[^}]*\}/ || line ~ /l4proto[ \t]*\{[^}]*udp[^}]*tcp[^}]*\}/) proto="tcp/udp"
+            else if (line ~ /l4proto[ \t]+tcp/ || line ~ /[ \t]tcp[ \t]+dport/) proto="tcp"
+            else if (line ~ /l4proto[ \t]+udp/ || line ~ /[ \t]udp[ \t]+dport/) proto="udp"
+            else if (line ~ /icmpv6/) proto="icmpv6"
+            else if (line ~ /[ \t]icmp[ \t]/) proto="icmp"
+
+            # 本行端口（单值/范围/集合）；无端口则按用途标注
+            label=""
+            if (match(line, /dport[ \t]+[0-9]+(-[0-9]+)?/)) {
+                t=substr(line,RSTART,RLENGTH); gsub(/dport[ \t]+/,"",t); label=t
+            } else if (match(line, /dport[ \t]*\{[^}]*\}/)) {
+                t=substr(line,RSTART,RLENGTH); gsub(/dport[ \t]*/,"",t); gsub(/[{} \t]/,"",t); label=t
             }
-            # 格式C: chain policy counter: "policy drop; counter packets N bytes M"
-            if (match(line, /policy drop;[[:space:]]*counter packets [0-9]+/)) {
-                tmp = substr(line, RSTART, RLENGTH)
-                gsub(/[^0-9]/, "", tmp)
-                policy_drops += tmp + 0
-                next  # policy行不参与规则匹配
+            if (label=="") {
+                if (line ~ /@china_v4/) label="境外IP拦截(v4)"
+                else if (line ~ /@china_v6/) label="境外IP拦截(v6)"
+                else if (line ~ /@ban_v4/) label="黑名单拦截(v4)"
+                else if (line ~ /@ban_v6/) label="黑名单拦截(v6)"
+                else if (line ~ /iifname.*wan/ || line ~ /oifname.*wan/) label="WAN口丢弃"
+                else if (line ~ /ct state invalid/) label="无效连接丢弃"
+                else if (line ~ /echo-request/) label="Ping丢弃"
+                else if (line ~ /reject/) label="拒绝连接"
+                else label="其他丢弃"
             }
-            if (match(line, /policy drop[[:space:]]*$/)) {
-                # 有些格式counter在下一行，标记一下
-                in_policy = 1
-                next
-            }
-            if (in_policy && pkts > 0) {
-                policy_drops += pkts
-                in_policy = 0
-                next
-            }
-            
-            # ========== 2. 提取dport ==========
-            if (match(line, /dport [\x22\x27]?[0-9]+(-[0-9]+)?[\x22\x27]?/)) {
-                tmp = substr(line, RSTART, RLENGTH)
-                gsub(/dport[[:space:]]+/, "", tmp)
-                gsub(/[\x22\x27]/, "", tmp)
-                dport = tmp
-            }
-            
-            # ========== 3. 提取协议 ==========
-            if (line ~ /meta l4proto tcp/) proto = "tcp"
-            else if (line ~ /meta l4proto udp/) proto = "udp"
-            else if (line ~ /meta l4proto icmp/) proto = "icmp"
-            else if (match(line, /[[:space:]]tcp[[:space:]]/)) proto = "tcp"
-            else if (match(line, /[[:space:]]udp[[:space:]]/)) proto = "udp"
-            else if (match(line, /[[:space:]]icmp[[:space:]]/)) proto = "icmp"
-            
-            # ========== 4. 检查是否为drop/reject动作 ==========
-            is_drop = 0
-            if (match(line, /[[:space:]]drop[[:space:];]/)) is_drop = 1
-            else if (match(line, /[[:space:]]drop$/)) is_drop = 1
-            else if (match(line, /[[:space:]]reject[[:space:];]/)) is_drop = 1
-            else if (match(line, /[[:space:]]reject$/)) is_drop = 1
-            
-            if (is_drop) {
-                use_pkts = (pkts > 0) ? pkts : prev_pkts
-                use_dport = (dport != "") ? dport : prev_dport
-                use_proto = (proto != "any") ? proto : prev_proto
-                
-                if (use_pkts > 0) {
-                    key = use_proto "|" ((use_dport != "") ? use_dport : "默认规则")
-                    port_map[key] += use_pkts
-                    port_proto[key] = use_proto
-                }
-                prev_pkts = 0; prev_dport = ""; prev_proto = "any"
-            } else {
-                # 保存上下文
-                if (pkts > 0) prev_pkts = pkts
-                if (dport != "") prev_dport = dport
-                if (proto != "any") prev_proto = proto
+
+            if (pkts>0) {
+                key=proto "|" label
+                m[key]+=pkts
             }
         }
         END {
-            # 输出聚合结果（按端口聚合，pkts从高到低）
-            for (k in port_map) {
-                pkts = port_map[k] + 0
-                proto = port_proto[k]
-                # k的格式是 "proto|dport"
-                dp = k
-                sub(/^[^|]*\|/, "", dp)  # 去掉proto|前缀
-                printf "%s|%s|%d|拦截\n", proto, dp, pkts
-            }
-            # 输出默认policy drop（如果有）
-            if (policy_drops > 0) {
-                printf "%s|%s|%d|拦截\n", "any", "默认策略DROP", policy_drops
-            }
+            for (k in m) printf "%s|%d|拦截\n", k, m[k]
         }')
-        
+
         # 排序并计算总数
         if [ -n "$block_output" ]; then
-            # 按pkts降序排序（第三列）
             block_output=$(echo "$block_output" | sort -t'|' -k3,3 -rn)
             block_total=$(echo "$block_output" | awk -F'|' '{sum+=$3} END{print sum+0}')
         fi
@@ -1292,86 +2030,470 @@ cmd_access_log() {
     write_log "DEBUG" "access_log: 完成, BLOCK_TOTAL=${block_total:-0}"
 }
 
+# ========== 9.4 拦截明细（v1.8.5） ==========
+# 点击「防火墙拦截统计(按端口)」某行时调用，返回被拦截的源IP明细，便于拉黑。
+# 数据源：china_input/china6_input 的限速日志（NM_DROP4/NM_DROP6 前缀，10/分钟）。
+# 参数 key：纯端口号(按DPT过滤) / 含v4|v6(按族过滤) / 空或all(全部已记录源IP)。
+cmd_block_detail() {
+    local key="$1"
+    load_config
+    echo "===BLOCK_DETAIL==="
+    echo "KEY=${key}"
+    local raw
+    raw=$(logread 2>/dev/null | grep -E 'NM_DROP[46]:' | tail -n 3000)
+    if [ -z "$raw" ]; then
+        echo "NO_LOG=1"
+        echo "===END==="
+        return 0
+    fi
+    echo "$raw" | awk -v key="$key" '
+    {
+        line=$0
+        fam=""
+        if (line ~ /NM_DROP4:/) fam="v4"
+        else if (line ~ /NM_DROP6:/) fam="v6"
+        else next
+        if (key ~ /v4/ && fam!="v4") next
+        if (key ~ /v6/ && fam!="v6") next
+        src=""; dpt=""; proto=""
+        if (match(line, /SRC=[^ ]+/)) src=substr(line,RSTART+4,RLENGTH-4)
+        if (match(line, /DPT=[0-9]+/)) dpt=substr(line,RSTART+4,RLENGTH-4)
+        if (match(line, /PROTO=[A-Za-z0-9]+/)) proto=substr(line,RSTART+6,RLENGTH-6)
+        if (src=="") next
+        if (key ~ /^[0-9]+(-[0-9]+)?$/ && dpt!=key) next
+        cnt[src]++
+        if (dpt!="" && index(","ports[src]",", ","dpt",")==0)
+            ports[src]=ports[src] (ports[src]==""?"":",") dpt
+        if (proto!="") pr[src]=proto
+        ts=line; sub(/kernel:.*/,"",ts); gsub(/^[ \t]+|[ \t]+$/,"",ts)
+        last[src]=ts
+    }
+    END {
+        n=0
+        for (s in cnt) { printf "%s|%s|%s|%d|%s\n", s, pr[s], ports[s], cnt[s], last[s]; n++ }
+        if (n==0) print "NO_MATCH=1"
+    }' | sort -t'|' -k4,4 -rn | head -100
+    echo "===END==="
+}
+
+# ========== 9.5 静态IP一键绑定（v1.8.4） ==========
+# 从在线客户端速览直接绑定：创建 dhcp host（MAC + 当前IPv4 + 主机名 + DUID）。
+# 与「静态IP分配」页设备列表共用同一套 dhcp.host 配置，绑定后页面可见可编辑。
+nm_valid_mac() {
+    case "$1" in
+        [0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+cmd_static_bind() {
+    local mac="$1" ip="$2" name="$3" duid="$4"
+    load_config
+    # MAC 必填且格式合法
+    if [ -z "$mac" ] || ! nm_valid_mac "$mac"; then
+        error "MAC 地址格式无效（应为 AA:BB:CC:DD:EE:FF）"
+        return 1
+    fi
+    mac=$(echo "$mac" | tr 'a-f' 'A-F')
+    # 去重：同 MAC 已绑定则拒绝
+    local exist
+    exist=$(uci show dhcp 2>/dev/null | grep "=host" | cut -d. -f2 | cut -d= -f1 | while read -r s; do
+        [ "$(uci -q get dhcp.$s.mac | tr 'a-f' 'A-F')" = "$mac" ] && echo "$s"
+    done | head -n1)
+    if [ -n "$exist" ]; then
+        error "该 MAC 已绑定（条目 $exist），请在设备列表中编辑"
+        return 1
+    fi
+    # IPv4 校验（可选）：格式 + 不等于路由器LAN IP + 落在LAN网段
+    if [ -n "$ip" ] && [ "$ip" != "*" ]; then
+        if ! echo "$ip" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; then
+            error "IPv4 地址格式无效：$ip"
+            return 1
+        fi
+        local lanip lanprefix ipprefix
+        lanip=$(uci -q get network.lan.ipaddr)
+        if [ -n "$lanip" ]; then
+            [ "$ip" = "$lanip" ] && { error "该 IPv4 是路由器自身地址，不可绑定"; return 1; }
+            lanprefix=$(echo "$lanip" | cut -d. -f1-3)
+            ipprefix=$(echo "$ip" | cut -d. -f1-3)
+            if [ "$lanprefix" != "$ipprefix" ]; then
+                error "IPv4 $ip 不在 LAN 网段 ${lanprefix}.0/24 内"
+                return 1
+            fi
+        fi
+    else
+        ip=""
+    fi
+    # 主机名清洗（仅允许字母数字下划线连字符）
+    if [ -n "$name" ] && [ "$name" != "*" ]; then
+        name=$(echo "$name" | tr -cd 'A-Za-z0-9_-' | cut -c1-32)
+    else
+        name=""
+    fi
+    # DUID 去冒号
+    if [ -n "$duid" ]; then
+        duid=$(echo "$duid" | tr -d ':' | tr 'A-F' 'a-f')
+        echo "$duid" | grep -Eq '^[0-9a-f]+$' || duid=""
+    fi
+    local sec
+    sec=$(uci add dhcp host)
+    uci set dhcp.$sec.mac="$mac"
+    [ -n "$ip" ] && uci set dhcp.$sec.ip="$ip"
+    [ -n "$name" ] && uci set dhcp.$sec.name="$name"
+    [ -n "$duid" ] && uci set dhcp.$sec.duid="$duid"
+    uci set dhcp.$sec.enabled='1'
+    uci commit dhcp
+    /etc/init.d/dnsmasq reload >/dev/null 2>&1
+    info "已绑定 $mac ${ip:+→ $ip }${name:+($name)}，条目 $sec"
+    write_log "INFO" "static_bind: mac=$mac ip=$ip name=$name sec=$sec"
+    return 0
+}
+
+# ========== 9.6 静态IP解绑（v1.8.5） ==========
+# 按 MAC 删除 dhcp host 静态绑定（在线客户端速览「解绑」按钮调用）。
+# 同 MAC 可能有多条（历史重复），全部删除；按下标降序删避免移位误删。
+cmd_static_unbind() {
+    local mac="$1"
+    load_config
+    if [ -z "$mac" ] || ! nm_valid_mac "$mac"; then
+        error "MAC 地址格式无效（应为 AA:BB:CC:DD:EE:FF）"
+        return 1
+    fi
+    mac=$(echo "$mac" | tr 'a-f' 'A-F')
+    local idx=0 hits=""
+    while uci -q get "dhcp.@host[$idx]" >/dev/null 2>&1; do
+        if [ "$(uci -q get dhcp.@host[$idx].mac | tr 'a-f' 'A-F')" = "$mac" ]; then
+            hits="$idx $hits"
+        fi
+        idx=$((idx+1))
+    done
+    if [ -z "$hits" ]; then
+        error "未找到 MAC $mac 的绑定条目"
+        return 1
+    fi
+    local n=0 i
+    for i in $hits; do
+        uci delete "dhcp.@host[$i]"
+        n=$((n+1))
+    done
+    uci commit dhcp
+    /etc/init.d/dnsmasq reload >/dev/null 2>&1
+    info "已解绑 $mac（删除 $n 条绑定），DHCP 已重载"
+    write_log "INFO" "static_unbind: mac=$mac removed=$n"
+    return 0
+}
+
 # ========== 10. 防火墙操作 ==========
 cmd_restart() {
+    write_log "INFO" "firewall_restart: 用户请求重启防火墙"
     /etc/init.d/firewall restart 2>&1
     info "防火墙已重启"
 }
 cmd_reload() {
+    write_log "INFO" "firewall_reload: 用户请求重载防火墙"
     /etc/init.d/firewall reload 2>&1
     info "防火墙已重载"
 }
 cmd_backup() {
-    backup_file="/root/firewall-$(date +%Y%m%d-%H%M%S).bak"
-    cp /etc/config/firewall "$backup_file"
-    info "已备份到 $backup_file"
+    write_log "INFO" "backup: 用户请求创建全配置备份"
+    # v1.5.0 增强：全配置备份（firewall/network/dhcp/dnssettings/netmanager），统一目录 /root/backup
+    local backup_dir="/root/backup"
+    mkdir -p "$backup_dir" 2>/dev/null
+    local ts=$(date +%Y%m%d-%H%M%S)
+    local backup_file="$backup_dir/netmanager-full-${ts}.tar.gz"
+    local work_dir="/tmp/netmanager_backup_$$"
+    mkdir -p "$work_dir" 2>/dev/null
+
+    # 收集存在的配置文件
+    local configs="firewall network dhcp dnssettings netmanager"
+    local copied=0
+    for cfg in $configs; do
+        if [ -f "/etc/config/$cfg" ]; then
+            cp "/etc/config/$cfg" "$work_dir/$cfg" 2>/dev/null && copied=$((copied+1))
+        fi
+    done
+
+    # v1.8.14：整插件备份——/etc/netmanager 状态文件（手动黑名单 + 中国IPv4/IPv6白名单列表）
+    # 随包携带，跨机恢复/离线恢复后白名单与黑名单无需重新下载即可生效
+    # 子目录名用 state：work_dir/netmanager 已被同名 UCI 配置文件占用（文件），不能同名建目录
+    local state_dir="$work_dir/state"
+    local state_copied=0
+    mkdir -p "$state_dir" 2>/dev/null
+    for sf in blacklist_v4.list blacklist_v6.list china_v4.list china_v6.list; do
+        if [ -f "$CHINA_LIST_DIR/$sf" ]; then
+            cp "$CHINA_LIST_DIR/$sf" "$state_dir/$sf" 2>/dev/null && state_copied=$((state_copied+1))
+        fi
+    done
+
+    # 写入元信息
+    cat > "$work_dir/MANIFEST.txt" <<EOF
+BACKUP_TIME=$(date '+%Y-%m-%d %H:%M:%S')
+BACKUP_VERSION=v$PLUGIN_VERSION
+CONFIG_FILES=$(ls "$work_dir" 2>/dev/null | grep -v MANIFEST | grep -v '^state$' | tr '\n' ' ')
+CONFIG_COUNT=$copied
+STATE_FILES=$(ls "$state_dir" 2>/dev/null | tr '\n' ' ')
+STATE_COUNT=$state_copied
+HOSTNAME=$(cat /proc/sys/kernel/hostname 2>/dev/null || echo unknown)
+EOF
+
+    # 打包
+    tar czf "$backup_file" -C "$work_dir" . 2>/dev/null
+    local rc=$?
+    rm -rf "$work_dir" 2>/dev/null
+
+    if [ $rc -ne 0 ] || [ ! -s "$backup_file" ]; then
+        error "备份失败（tar 打包错误）"
+        rm -f "$backup_file" 2>/dev/null
+        return 1
+    fi
+
+    local size=$(wc -c < "$backup_file" 2>/dev/null || echo 0)
+    info "已创建整插件备份: $backup_file (${size}字节, ${copied}个配置文件 + ${state_copied}个列表文件)"
     echo "$backup_file"
+
+    # v1.5.0 自动保留策略：超过 20 个自动清理最旧的
+    local count=$(ls -1 "$backup_dir"/netmanager-full-*.tar.gz 2>/dev/null | wc -l)
+    if [ "${count:-0}" -gt 20 ]; then
+        local to_remove=$((count - 20))
+        ls -1t "$backup_dir"/netmanager-full-*.tar.gz 2>/dev/null | tail -n "$to_remove" | xargs rm -f 2>/dev/null
+        info "自动清理旧备份: 保留最近20个，已删除${to_remove}个"
+    fi
 }
 
 # ========== 备份恢复 ==========
 cmd_backup_list() {
     echo "===BACKUP_LIST==="
     echo "---BACKUPS---"
-    backup_dir="/root"
-    count=0
-    for f in "$backup_dir"/firewall-*.bak; do
+    local backup_dir="/root/backup"
+    local count=0
+
+    # v1.5.0 同时列出新格式（/root/backup/netmanager-full-*.tar.gz）和旧格式（/root/firewall-*.bak）
+    if [ -d "$backup_dir" ]; then
+        for f in "$backup_dir"/netmanager-full-*.tar.gz; do
+            [ -f "$f" ] || continue
+            local fname=$(basename "$f")
+            local size=$(wc -c < "$f" 2>/dev/null || echo 0)
+            local mtime=$(date -r "$f" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo unknown)
+            # 从 MANIFEST 读取配置数量（tar -C . 打包成员带 ./ 前缀，两种名字都试）
+            local mf=$(tar xzf "$f" -O ./MANIFEST.txt 2>/dev/null)
+            [ -z "$mf" ] && mf=$(tar xzf "$f" -O MANIFEST.txt 2>/dev/null)
+            local cfg_count=$(echo "$mf" | grep '^CONFIG_COUNT=' | cut -d= -f2)
+            [ -z "$cfg_count" ] && cfg_count="?"
+            # v1.8.14：列表文件数（旧备份无 STATE_COUNT 记 0）
+            local state_count=$(echo "$mf" | grep '^STATE_COUNT=' | cut -d= -f2)
+            [ -z "$state_count" ] && state_count="0"
+            echo "${fname}|${size}|${mtime}|full|${cfg_count}|${state_count}"
+            count=$((count+1))
+        done
+    fi
+
+    # 兼容旧格式（/root/firewall-*.bak）
+    for f in /root/firewall-*.bak; do
         [ -f "$f" ] || continue
-        fname=$(basename "$f")
-        size=$(wc -c < "$f" 2>/dev/null)
-        echo "${fname}|${size}"
+        local fname=$(basename "$f")
+        local size=$(wc -c < "$f" 2>/dev/null || echo 0)
+        local mtime=$(date -r "$f" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo unknown)
+        echo "${fname}|${size}|${mtime}|legacy|1"
         count=$((count+1))
     done
+
     echo "BACKUP_COUNT=$count"
+    echo "BACKUP_DIR=$backup_dir"
     echo "===END==="
 }
 
 cmd_backup_restore() {
     backup_name="$1"
+    write_log "INFO" "backup_restore: 用户请求恢复备份 $backup_name"
     [ -z "$backup_name" ] && { error "用法: netmanager backup_restore <备份文件名>"; exit 1; }
-    
-    backup_file="/root/$backup_name"
-    [ ! -f "$backup_file" ] && { error "备份文件不存在: $backup_file"; exit 1; }
-    
-    # 安全检查：确保文件在 /root/ 目录下
-    case "$backup_file" in
-        /root/firewall-*.bak) ;;
+
+    # v1.5.0 支持两种格式：新格式 tar.gz（/root/backup/）和旧格式 .bak（/root/）
+    local backup_file=""
+    local backup_type=""
+
+    if [ -f "/root/backup/$backup_name" ]; then
+        backup_file="/root/backup/$backup_name"
+        backup_type="full"
+    elif [ -f "/root/$backup_name" ]; then
+        backup_file="/root/$backup_name"
+        backup_type="legacy"
+    else
+        error "备份文件不存在: $backup_name"
+        exit 1
+    fi
+
+    # 安全检查：文件名白名单
+    case "$backup_name" in
+        netmanager-full-*.tar.gz|firewall-*.bak) ;;
         *) error "非法的备份文件名"; exit 1 ;;
     esac
-    
-    # 先备份当前配置
-    pre_backup="/root/firewall-pre-restore-$(date +%Y%m%d-%H%M%S).bak"
-    cp /etc/config/firewall "$pre_backup"
-    
-    # 恢复备份
-    cp "$backup_file" /etc/config/firewall
-    uci commit firewall
-    rm -f /tmp/.uci/firewall 2>/dev/null
-    
-    # 重载防火墙
-    /etc/init.d/firewall reload > /dev/null 2>&1
-    
-    info "已从 $backup_name 恢复配置"
+
+    # 恢复前自动备份当前配置（全配置）
+    local pre_backup
+    pre_backup=$(cmd_backup 2>/dev/null | tail -1)
+    info "恢复前已自动备份当前配置: $pre_backup"
+
+    if [ "$backup_type" = "full" ]; then
+        # v1.5.0 全配置恢复：解压 tar.gz，逐个恢复配置文件
+        local work_dir="/tmp/netmanager_restore_$$"
+        mkdir -p "$work_dir" 2>/dev/null
+        # v1.8.14 安全加固：解压前成员路径预检，拒绝 ../ 与绝对路径成员（防写穿工作目录）
+        if tar tzf "$backup_file" 2>/dev/null | grep -Eq '(^|/)\.\./|^/'; then
+            error "备份包含非法路径成员（../ 或绝对路径），已拒绝恢复"
+            rm -rf "$work_dir" 2>/dev/null
+            exit 1
+        fi
+        tar xzf "$backup_file" -C "$work_dir" 2>/dev/null
+        if [ $? -ne 0 ]; then
+            error "备份文件解压失败（可能已损坏）"
+            rm -rf "$work_dir" 2>/dev/null
+            exit 1
+        fi
+
+        local restored=0
+        for cfg in firewall network dhcp dnssettings netmanager; do
+            if [ -f "$work_dir/$cfg" ]; then
+                cp "$work_dir/$cfg" "/etc/config/$cfg" 2>/dev/null && restored=$((restored+1))
+            fi
+        done
+        # v1.8.14：恢复 /etc/netmanager 状态文件（黑名单/白名单列表）；旧备份无此目录则保留现状
+        local state_restored=0
+        if [ -d "$work_dir/state" ]; then
+            mkdir -p "$CHINA_LIST_DIR" 2>/dev/null
+            for sf in blacklist_v4.list blacklist_v6.list china_v4.list china_v6.list; do
+                if [ -f "$work_dir/state/$sf" ]; then
+                    cp "$work_dir/state/$sf" "$CHINA_LIST_DIR/$sf" 2>/dev/null && state_restored=$((state_restored+1))
+                fi
+            done
+        fi
+        rm -rf "$work_dir" 2>/dev/null
+
+        # 提交所有配置
+        uci commit firewall 2>/dev/null
+        uci commit network 2>/dev/null
+        uci commit dhcp 2>/dev/null
+        uci commit dnssettings 2>/dev/null
+        uci commit netmanager 2>/dev/null
+        rm -f /tmp/.uci/firewall /tmp/.uci/network /tmp/.uci/dhcp /tmp/.uci/dnssettings /tmp/.uci/netmanager 2>/dev/null
+
+        # 重载相关服务
+        /etc/init.d/firewall reload > /dev/null 2>&1
+        /etc/init.d/dnsmasq reload > /dev/null 2>&1
+        /etc/init.d/odhcpd restart > /dev/null 2>&1
+
+        # v1.8.14：按恢复后的配置重应用黑名单/白名单规则并重建 cron（跨机恢复后无需手动再保存）
+        if [ -s "$BAN_V4_FILE" ] || [ -s "$BAN_V6_FILE" ]; then
+            ban_apply_all > /dev/null 2>&1
+        fi
+        if [ "$(china_get_enable)" = "1" ] && [ -f "$CHINA_LIST_FILE" ]; then
+            china_apply_rules > /dev/null 2>&1
+            china_cron_install > /dev/null 2>&1
+        fi
+        if [ "$(china6_get_enable)" = "1" ] && [ -f "$CHINA6_LIST_FILE" ]; then
+            china6_apply_rules > /dev/null 2>&1
+            china6_cron_install > /dev/null 2>&1
+        fi
+        v6sync_cron_ensure
+
+        info "已从整插件备份 $backup_name 恢复 ${restored} 个配置文件 + ${state_restored} 个列表文件"
+    else
+        # 旧格式：仅 firewall 配置
+        cp "$backup_file" /etc/config/firewall
+        uci commit firewall
+        rm -f /tmp/.uci/firewall 2>/dev/null
+        /etc/init.d/firewall reload > /dev/null 2>&1
+        info "已从 $backup_name 恢复 firewall 配置（旧格式）"
+    fi
+
     info "恢复前的配置已备份到: $pre_backup"
 }
 
 cmd_backup_delete() {
     backup_name="$1"
+    write_log "INFO" "backup_delete: 用户请求删除备份 $backup_name"
     [ -z "$backup_name" ] && { error "用法: netmanager backup_delete <备份文件名>"; exit 1; }
-    
-    backup_file="/root/$backup_name"
-    [ ! -f "$backup_file" ] && { error "备份文件不存在: $backup_file"; exit 1; }
-    
+
+    # v1.5.0 支持两种位置
+    local backup_file=""
+    if [ -f "/root/backup/$backup_name" ]; then
+        backup_file="/root/backup/$backup_name"
+    elif [ -f "/root/$backup_name" ]; then
+        backup_file="/root/$backup_name"
+    else
+        error "备份文件不存在: $backup_name"
+        exit 1
+    fi
+
     # 安全检查
-    case "$backup_file" in
-        /root/firewall-*.bak) ;;
+    case "$backup_name" in
+        netmanager-full-*.tar.gz|firewall-*.bak) ;;
         *) error "非法的备份文件名"; exit 1 ;;
     esac
-    
+
     rm -f "$backup_file"
     info "已删除备份: $backup_name"
 }
 
+# ========== v1.5.0 新增：备份导入（从上传的 tar.gz 导入到备份目录） ==========
+cmd_backup_import() {
+    local filename="$1"
+    [ -z "$filename" ] && { error "用法: netmanager backup_import <上传的tar.gz文件名>"; exit 1; }
+
+    local upload_dir="/tmp/netmanager_upload"
+    local src_file="$upload_dir/$filename"
+    [ ! -f "$src_file" ] && { error "上传的备份文件不存在: $src_file"; exit 1; }
+
+    # 校验是有效的 tar.gz 且包含 MANIFEST.txt 或 firewall 配置
+    if ! tar tzf "$src_file" >/dev/null 2>&1; then
+        error "文件不是有效的 tar.gz 备份包"
+        exit 1
+    fi
+    local has_manifest=$(tar tzf "$src_file" 2>/dev/null | grep -c 'MANIFEST.txt')
+    local has_firewall=$(tar tzf "$src_file" 2>/dev/null | grep -c 'firewall')
+    if [ "$has_manifest" -eq 0 ] && [ "$has_firewall" -eq 0 ]; then
+        error "备份包中未找到有效配置文件（需要 MANIFEST.txt 或 firewall 配置）"
+        exit 1
+    fi
+
+    local backup_dir="/root/backup"
+    mkdir -p "$backup_dir" 2>/dev/null
+    local ts=$(date +%Y%m%d-%H%M%S)
+    local dest_file="$backup_dir/netmanager-imported-${ts}.tar.gz"
+    cp "$src_file" "$dest_file" 2>/dev/null
+
+    if [ ! -s "$dest_file" ]; then
+        error "备份导入失败"
+        exit 1
+    fi
+
+    local size=$(wc -c < "$dest_file" 2>/dev/null || echo 0)
+    info "备份已导入: $dest_file (${size}字节)"
+    echo "$dest_file"
+}
+
+# ========== v1.5.0 新增：备份清理（按保留数量） ==========
+cmd_backup_prune() {
+    local keep="${1:-20}"
+    local backup_dir="/root/backup"
+    [ ! -d "$backup_dir" ] && { info "备份目录不存在，无需清理"; return 0; }
+
+    local count=$(ls -1 "$backup_dir"/netmanager-*.tar.gz 2>/dev/null | wc -l)
+    if [ "${count:-0}" -le "$keep" ]; then
+        info "当前备份数量 ${count}，未超过保留上限 ${keep}，无需清理"
+        return 0
+    fi
+
+    local to_remove=$((count - keep))
+    local removed=0
+    ls -1t "$backup_dir"/netmanager-*.tar.gz 2>/dev/null | tail -n "$to_remove" | while read f; do
+        rm -f "$f" 2>/dev/null && removed=$((removed+1))
+    done
+    info "已清理 ${to_remove} 个旧备份（保留最近 ${keep} 个）"
+}
+
 # ========== 文件上传与插件更新 ==========
+# 【v1.4.6】上传大小上限（50MB）：/tmp 是 tmpfs，无上限会耗尽内存导致 OOM
+MAX_UPLOAD_SIZE=$((50 * 1024 * 1024))
+
 cmd_upload_file() {
     local filename="$1"
     local b64file="$2"
@@ -1389,6 +2511,16 @@ cmd_upload_file() {
     
     local upload_dir="/tmp/netmanager_upload"
     mkdir -p "$upload_dir"
+    
+    # 【v1.4.6】大小上限校验（解码前查源文件，base64 膨胀按 2 倍估算）
+    if [ -n "$b64file" ] && [ -f "$b64file" ]; then
+        local src_size=$(wc -c < "$b64file" 2>/dev/null | tr -d ' ')
+        if [ "${src_size:-0}" -gt $((MAX_UPLOAD_SIZE * 2)) ]; then
+            rm -f "$b64file" 2>/dev/null
+            error "上传内容超过大小上限（${MAX_UPLOAD_SIZE} 字节），已拒绝（防 tmpfs OOM）"
+            exit 1
+        fi
+    fi
     
     local outfile="$upload_dir/$filename"
     
@@ -1413,8 +2545,16 @@ cmd_upload_file() {
     fi
     
     rm -f "$b64file" 2>/dev/null
-    [ -f "$outfile" ] && info "文件已保存: $outfile ($(wc -c < "$outfile" 2>/dev/null)字节)"
-    [ ! -f "$outfile" ] && { error "文件保存失败（未收到有效数据）"; exit 1; }
+    [ -f "$outfile" ] || { error "文件保存失败（未收到有效数据）"; exit 1; }
+    # 【v1.4.6】解码产物二次校验 + 权限收紧（600）
+    local out_size=$(wc -c < "$outfile" 2>/dev/null | tr -d ' ')
+    if [ "${out_size:-0}" -gt "$MAX_UPLOAD_SIZE" ]; then
+        rm -f "$outfile" 2>/dev/null
+        error "解码后文件超过大小上限（${MAX_UPLOAD_SIZE} 字节），已拒绝（防 tmpfs OOM）"
+        exit 1
+    fi
+    chmod 600 "$outfile" 2>/dev/null
+    info "文件已保存: $outfile (${out_size}字节)"
 }
 
 cmd_plugin_update() {
@@ -1659,6 +2799,14 @@ update_http_get() {
 cmd_update_check() {
     load_config
     local mirror=$(uci get netmanager.settings.update_mirror 2>/dev/null | tr -d ' ')
+    # 【v1.4.6 P0】UCI 里的镜像也过白名单（防绕过 set 命令直接 uci set 注入恶意镜像）
+    if ! mirror_check "$mirror"; then
+        echo "===UPDATE_CHECK==="
+        echo "UPDATE_AVAILABLE=unknown"
+        echo "ERROR=已配置的镜像不安全，已拒绝使用（详见上方错误）；请重新设置合法镜像或清空直连"
+        echo "===END==="
+        return 1
+    fi
     local api_url="$REPO_API_URL"
     [ -n "$mirror" ] && api_url="${mirror%/}/$REPO_API_URL"
 
@@ -1711,6 +2859,8 @@ cmd_update_check() {
     echo "LATEST_VERSION=$latest_tag"
     echo "ASSET_URL=$asset_url"
     echo "ASSET_SIZE=$asset_size"
+    # 【v1.4.6 S2】同 tag 的 sha256 校验文件 URL（CI 生成 .tar.gz.sha256 资产；旧版本无此资产时 update_apply 跳过校验）
+    echo "SHA256_URL=${asset_url}.sha256"
     echo "UPDATE_AVAILABLE=$update_available"
     if [ "$update_available" = "1" ]; then
         echo "MESSAGE=发现新版本 $latest_tag（当前 v$PLUGIN_VERSION）"
@@ -1783,8 +2933,54 @@ cmd_update_apply() {
     info "下载完成: $pkg_size 字节，完整性校验通过"
     write_log "INFO" "update_apply: 下载校验通过 size=$pkg_size"
 
+    # 【v1.4.6 S2】sha256 签名校验：供应链防护（GitHub 账号被入侵/镜像劫持时拦截恶意包）
+    # 校验文件来自同 Release 的 .sha256 资产；旧版本 Release 无此资产时 warn 跳过（向后兼容）
+    local sha_url=$(echo "$check_out" | sed -n 's/^SHA256_URL=//p')
+    if [ -n "$sha_url" ]; then
+        local sha_file="$download_dir/${dest_name}.sha256"
+        update_http_get "$sha_url" > "$sha_file" 2>/dev/null
+        if [ -s "$sha_file" ] && cat "$sha_file" | grep -qE '^[0-9a-f]{64}'; then
+            local expected=$(awk '{print $1}' "$sha_file")
+            local actual=$(sha256sum "$dest_file" 2>/dev/null | awk '{print $1}')
+            if [ -n "$expected" ] && [ -n "$actual" ] && [ "$expected" != "$actual" ]; then
+                rm -f "$dest_file" "$sha_file" 2>/dev/null
+                error "下载文件 sha256 校验失败（预期=$expected 实际=$actual），已放弃更新（可能被篡改，建议直连 GitHub 重试）"
+                write_log "ERROR" "update_apply: sha256 mismatch expected=$expected actual=$actual"
+                exit 1
+            fi
+            info "sha256 校验通过: $actual"
+            write_log "INFO" "update_apply: sha256 ok=$actual"
+        else
+            warn "未获取到有效 sha256 校验文件（旧版本 Release 或网络受限），跳过校验"
+            write_log "WARN" "update_apply: sha256 文件缺失，跳过校验 sha_url=$sha_url"
+        fi
+        rm -f "$sha_file" 2>/dev/null
+    else
+        warn "本次更新源未提供 sha256 校验（旧版本），跳过校验"
+    fi
+
     # 4. 复用 plugin_update 安装流程（解压 + install.sh + 延迟重启 uhttpd）
     cmd_plugin_update "$dest_name"
+}
+
+# 【v1.4.6 P0】镜像安全校验：非空时必须在域名白名单内（防镜像劫持注入恶意安装包）
+# 返回 0=安全/空镜像；1=不安全（已输出错误）
+mirror_check() {
+    local m="$1"
+    [ -z "$m" ] && return 0
+    local host=$(echo "$m" | sed -n 's|^https\?://\([^/:]*\).*|\1|p')
+    [ -z "$host" ] && { error "镜像 URL 格式无效（应为 http(s)://域名/...）"; return 1; }
+    # 拒绝裸 IP（含 IPv6 简写），白名单只认域名
+    case "$host" in
+        *[0-9].[0-9]*|*[0-9]:*[0-9]*|localhost)
+            error "禁止使用 IP 直连镜像: $host"; return 1 ;;
+    esac
+    local ok=0 h
+    for h in $MIRROR_HOST_ALLOWLIST; do
+        [ "$host" = "$h" ] && ok=1
+    done
+    [ "$ok" = "1" ] || { error "镜像域名 '$host' 不在允许列表（允许: $(echo $MIRROR_HOST_ALLOWLIST | tr ' ' ', ')）；如需新增请编辑 /usr/sbin/netmanager 的 MIRROR_HOST_ALLOWLIST"; return 1; }
+    return 0
 }
 
 cmd_set_update_mirror() {
@@ -1796,6 +2992,8 @@ cmd_set_update_mirror() {
             *) error "镜像前缀必须以 http:// 或 https:// 开头（留空表示直连 GitHub）"; exit 1 ;;
         esac
         m="${m%/}"
+        # 【v1.4.6 P0】域名白名单校验
+        mirror_check "$m" || exit 1
     fi
     uci set netmanager.settings.update_mirror="$m"
     uci commit netmanager
@@ -1809,6 +3007,7 @@ cmd_set_update_mirror() {
 # ========== 11. 设置管理 ==========
 cmd_set_default_target() {
     ip="$1"
+    write_log "INFO" "set_default_target: 用户设置默认目标IP=$ip"
     [ -z "$ip" ] && { error "用法: netmanager set_default_target <IP>"; exit 1; }
     load_config
     uci set netmanager.settings.default_target="$ip"
@@ -1856,12 +3055,105 @@ cmd_log_get() {
 }
 
 cmd_log_clear() {
+    write_log "INFO" "log_clear: 用户请求清空运行日志"
     if [ -f "$LOG_FILE" ]; then
         rm -f "$LOG_FILE" 2>/dev/null
         info "运行日志已清空"
     else
         info "日志文件不存在，无需清理"
     fi
+}
+
+# ========== v1.5.0 增强：日志查询（级别过滤 + 关键词搜索 + 统计） ==========
+# 用法: netmanager log_query [级别] [关键词] [行数]
+#   级别: ALL|INFO|WARN|ERROR|DEBUG（默认 ALL）
+#   关键词: 任意字符串（grep 模糊匹配，空=不过滤）
+#   行数: 返回最后 N 行（默认 200）
+cmd_log_query() {
+    local level="${1:-ALL}"
+    local keyword="${2:-}"
+    local lines="${3:-200}"
+    mkdir -p "$LOG_DIR" 2>/dev/null
+
+    echo "===LOG_QUERY==="
+    echo "LOG_ENABLED=$LOG_ENABLED"
+    echo "LOG_FILE=$LOG_FILE"
+    echo "FILTER_LEVEL=$level"
+    echo "FILTER_KEYWORD=$keyword"
+
+    if [ ! -f "$LOG_FILE" ]; then
+        echo "TOTAL_LINES=0"
+        echo "COUNT_INFO=0"
+        echo "COUNT_WARN=0"
+        echo "COUNT_ERROR=0"
+        echo "COUNT_DEBUG=0"
+        echo "---CONTENT---"
+        echo "===END==="
+        return 0
+    fi
+
+    # 全量统计（不受过滤影响）
+    local total=$(wc -l < "$LOG_FILE" 2>/dev/null || echo 0)
+    local cnt_info=$(grep -c '\[INFO\]' "$LOG_FILE" 2>/dev/null || echo 0)
+    local cnt_warn=$(grep -c '\[WARN\]' "$LOG_FILE" 2>/dev/null || echo 0)
+    local cnt_error=$(grep -c '\[ERROR\]' "$LOG_FILE" 2>/dev/null || echo 0)
+    local cnt_debug=$(grep -c '\[DEBUG\]' "$LOG_FILE" 2>/dev/null || echo 0)
+    echo "TOTAL_LINES=$total"
+    echo "COUNT_INFO=$cnt_info"
+    echo "COUNT_WARN=$cnt_warn"
+    echo "COUNT_ERROR=$cnt_error"
+    echo "COUNT_DEBUG=$cnt_debug"
+
+    # 构建过滤管道
+    local filtered="$LOG_FILE"
+    local tmp_filter="/tmp/netmanager_log_filter_$$"
+    local need_tmp=0
+
+    if [ "$level" != "ALL" ]; then
+        grep "\[${level}\]" "$LOG_FILE" > "$tmp_filter" 2>/dev/null
+        filtered="$tmp_filter"
+        need_tmp=1
+    fi
+
+    if [ -n "$keyword" ]; then
+        if [ $need_tmp -eq 1 ]; then
+            grep -i -- "$keyword" "$filtered" > "${tmp_filter}_2" 2>/dev/null
+            mv "${tmp_filter}_2" "$filtered" 2>/dev/null
+        else
+            grep -i -- "$keyword" "$LOG_FILE" > "$tmp_filter" 2>/dev/null
+            filtered="$tmp_filter"
+            need_tmp=1
+        fi
+    fi
+
+    echo "MATCHED_LINES=$(wc -l < "$filtered" 2>/dev/null || echo 0)"
+    echo "---CONTENT---"
+    tail -n "$lines" "$filtered" 2>/dev/null
+    echo "===END==="
+
+    [ -f "$tmp_filter" ] && rm -f "$tmp_filter" 2>/dev/null
+    return 0
+}
+
+# ========== v1.5.0 增强：日志导出（下载完整日志文件） ==========
+# 用法: netmanager log_export
+# 输出: 日志文件路径 + base64 内容（前端解码下载）
+cmd_log_export() {
+    mkdir -p "$LOG_DIR" 2>/dev/null
+    echo "===LOG_EXPORT==="
+    if [ -f "$LOG_FILE" ]; then
+        echo "LOG_FILE=$LOG_FILE"
+        echo "LOG_SIZE=$(wc -c < "$LOG_FILE" 2>/dev/null || echo 0)"
+        echo "LOG_LINES=$(wc -l < "$LOG_FILE" 2>/dev/null || echo 0)"
+        echo "---BASE64---"
+        base64 "$LOG_FILE" 2>/dev/null
+    else
+        echo "LOG_FILE=$LOG_FILE"
+        echo "LOG_SIZE=0"
+        echo "LOG_LINES=0"
+        echo "---BASE64---"
+    fi
+    echo "===END==="
 }
 
 cmd_settings() {
@@ -1876,6 +3168,11 @@ cmd_settings() {
     echo "CHINA_FILTER_CRON=$(uci get netmanager.settings.china_filter_cron 2>/dev/null || echo '0 3 * * 0')"
     echo "CHINA_FILTER_LAST_UPDATE=$(uci get netmanager.settings.china_filter_last_update 2>/dev/null)"
     echo "CHINA_FILTER_COUNT=$(uci get netmanager.settings.china_filter_count 2>/dev/null || echo 0)"
+    echo "CHINA6_FILTER_ENABLED=$(uci get netmanager.settings.china6_filter_enable 2>/dev/null || echo 0)"
+    echo "CHINA6_FILTER_URL=$(uci get netmanager.settings.china6_filter_url 2>/dev/null || echo 'https://ispip.clang.cn/all_cn_ipv6.txt')"
+    echo "CHINA6_FILTER_CRON=$(uci get netmanager.settings.china6_filter_cron 2>/dev/null || echo '0 3 * * 0')"
+    echo "CHINA6_FILTER_LAST_UPDATE=$(uci get netmanager.settings.china6_filter_last_update 2>/dev/null)"
+    echo "CHINA6_FILTER_COUNT=$(uci get netmanager.settings.china6_filter_count 2>/dev/null || echo 0)"
     echo "UPDATE_MIRROR=$(uci get netmanager.settings.update_mirror 2>/dev/null)"
     echo "===END==="
 }
@@ -1884,7 +3181,7 @@ cmd_settings() {
 cmd_version() {
     echo "网络管理插件 v$PLUGIN_VERSION"
     echo ""
-    echo "功能: 系统概览 / 端口转发 / 规则管理 / SSH日志 / 访问日志 / 备份恢复 / 在线更新 / 插件更新 / 运行日志 / 中国IPv4访问限制"
+    echo "功能: 系统概览 / 端口转发 / 规则管理 / SSH日志 / 访问日志 / 备份恢复 / 在线更新 / 插件更新 / 运行日志 / 中国IPv4+IPv6访问限制 / 手动黑名单"
     echo "适配: iStoreOS / OpenWrt (fw4/nftables)"
 }
 
@@ -1917,9 +3214,11 @@ china_get_enable() {
 # 探测 WAN 设备名（去重、空格分隔），用于 iifname 匹配
 get_wan_devs() {
     local devs="" d nd val zn net
-    # 1) 默认路由设备
+    # 1) 默认路由设备（IPv4/IPv6 双栈都纳入，避免仅 v6 有默认路由时探测失败）
     d=$(ip -4 route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
     [ -n "$d" ] && devs="$d"
+    d=$(ip -6 route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+    [ -n "$d" ] && devs="$devs $d"
     # 2) network.wan / wan6 的 device / ifname
     for n in wan wan6; do
         nd=$(uci get network.$n.device 2>/dev/null)
@@ -2018,7 +3317,11 @@ china_load_set() {
 
     if [ "$CHINA_SET_FLAGS" = "modern" ]; then
         # ========= 分片加载（auto-merge 允许重叠逐批加） =========
-        local batch=500 buf="" buf_n=0 line
+        # 【v1.4.6 P1】分片失败不再静默继续：部分加载的 CIDR 集合会误杀国内流量
+        # （规则语义是"不在集合内即 drop"，缺一大段 = 国内 IP 被当境外丢弃）
+        # 任何一批失败 → 记 failed_batches，循环结束后 loaded 按 0 返回，上层
+        # china_apply_rules 因 count<50 中止应用并删除表（fail-closed，安全方向）
+        local batch=500 buf="" buf_n=0 line failed_batches=0
         while IFS= read -r line; do
             [ -z "$line" ] && continue
             if [ "$buf_n" -ge "$batch" ]; then
@@ -2029,6 +3332,7 @@ china_load_set() {
                     loaded=$((loaded + buf_n))
                 else
                     nft_err=$(cat /tmp/netmanager_china_nft.err 2>/dev/null | tr '\n' ' ')
+                    failed_batches=$((failed_batches + 1))
                     write_log "WARN" "china_filter: (modern) nft batch add element failed (size=$buf_n, head=$(echo "$buf" | cut -c1-80)): $nft_err"
                 fi
                 buf="" buf_n=0
@@ -2049,8 +3353,17 @@ china_load_set() {
                 loaded=$((loaded + buf_n))
             else
                 nft_err=$(cat /tmp/netmanager_china_nft.err 2>/dev/null | tr '\n' ' ')
+                failed_batches=$((failed_batches + 1))
                 write_log "WARN" "china_filter: (modern) nft tail batch add element failed (size=$buf_n, head=$(echo "$buf" | cut -c1-80)): $nft_err"
             fi
+        fi
+        if [ "$failed_batches" -gt 0 ]; then
+            # 有失败批次 → 集合不完整，按整体失败处理（上层 count<50 会中止并删表，不会带病生效）
+            write_log "ERROR" "china_filter: (modern) $failed_batches 批分片加载失败，集合不完整，按整体失败处理（防止残缺集合误杀国内流量）"
+            error "中国IP列表分片加载有 $failed_batches 批失败，已中止应用（防止不完整集合误杀国内流量）"
+            rm -f "$clean" "$ef" /tmp/netmanager_china_nft.err 2>/dev/null
+            echo 0
+            return
         fi
     else
         # ========= 一次性原子加载（compat：无 auto-merge，全部 CIDR 一条 add element 让内核合并重叠区间） =========
@@ -2132,7 +3445,17 @@ china_apply_rules() {
     {
         echo "add chain inet netmanager china_input { type filter hook input priority -50; policy accept; }"
         echo "add chain inet netmanager china_forward { type filter hook forward priority -50; policy accept; }"
+        # v1.7.2 修复：先放行 DHCPv4 服务端应答(67->68)与链路本地网段，
+        # 避免白名单规则误伤 DHCP 续租导致 WAN/LAN 地址丢失
+        printf 'add rule inet netmanager china_input iifname { %s } udp sport 67 udp dport 68 counter accept\n' "$ifname_set"
+        printf 'add rule inet netmanager china_input iifname { %s } ip saddr 169.254.0.0/16 counter accept\n' "$ifname_set"
+        # v1.7.3 修复：forward 链同样需放行 DHCPv4 应答与链路本地地址。
+        # 否则 DHCP relay（LAN 设备经路由器向运营商续租）的应答会被
+        # 「ip saddr != @china_v4 drop」误判为境外 IPv4 直接丢弃，导致租约续不上。
+        printf 'add rule inet netmanager china_forward iifname { %s } udp sport 67 udp dport 68 counter accept\n' "$ifname_set"
+        printf 'add rule inet netmanager china_forward iifname { %s } ip saddr 169.254.0.0/16 counter accept\n' "$ifname_set"
         printf 'add rule inet netmanager china_forward iifname { %s } ct state new meta l4proto { tcp, udp } ip saddr != @china_v4 counter drop\n' "$ifname_set"
+        printf 'add rule inet netmanager china_input iifname { %s } ct state new meta l4proto { tcp, udp } ip saddr != @china_v4 limit rate 10/minute burst 20 packets log prefix "NM_DROP4: " level warn\n' "$ifname_set"
         printf 'add rule inet netmanager china_input iifname { %s } ct state new meta l4proto { tcp, udp } ip saddr != @china_v4 counter drop\n' "$ifname_set"
     } > "$rf"
     if ! nft -f "$rf" 2>/tmp/netmanager_china_rules.err; then
@@ -2215,6 +3538,14 @@ china_cron_install() {
     [ -f "$cr" ] || touch "$cr"
     china_cron_remove
     local expr=$(china_get_cron)
+    # 【v1.4.6 P2】装载前二次校验（UCI 可能被直接编辑，绕过 set_cron 的校验）；
+    # 非法 cron 会导致 cron 服务加载整表失败，影响所有计划任务
+    local fields=$(echo "$expr" | awk '{print NF}')
+    if [ "$fields" != "5" ] || echo "$expr" | tr ' ' '\n' | grep -qE '[^0-9*,/\-]'; then
+        write_log "ERROR" "china_filter: UCI 中的 cron 表达式非法: '$expr'，跳过安装 cron（请用 set_cron 重新设置）"
+        warn "cron 表达式非法（$fields 段/含非法字符），已跳过安装，其余功能不受影响"
+        return 1
+    fi
     echo "$expr /usr/sbin/netmanager china_filter update" >> "$cr"
     /etc/init.d/cron reload 2>/dev/null
     info "已安装 cron 更新计划: $expr"
@@ -2278,6 +3609,7 @@ cmd_china_set_cron() {
 }
 
 cmd_china_enable() {
+    write_log "INFO" "china_enable: 用户请求启用中国IPv4访问限制"
     load_config
     if [ ! -f "$CHINA_LIST_FILE" ]; then
         china_download || { error "启用失败：无法获取中国IP列表"; exit 1; }
@@ -2296,6 +3628,7 @@ cmd_china_enable() {
 }
 
 cmd_china_disable() {
+    write_log "INFO" "china_disable: 用户请求关闭中国IPv4访问限制"
     load_config
     china_clear_kernel
     uci set netmanager.settings.china_filter_enable='0'
@@ -2305,6 +3638,7 @@ cmd_china_disable() {
 }
 
 cmd_china_update() {
+    write_log "INFO" "china_update: 用户请求更新中国IPv4列表"
     load_config
     if ! china_download; then
         error "更新失败：下载未成功，保留旧列表"
@@ -2317,15 +3651,46 @@ cmd_china_update() {
     fi
 }
 
+# v1.8.14：确保 */10 兜底 cron 存在（install.sh 全新安装时会装；
+# 恢复/开机路径补建，避免跨机恢复或卸载重装后兜底缺失）
+v6sync_cron_ensure() {
+    local cr="/etc/crontabs/root"
+    mkdir -p /etc/crontabs 2>/dev/null
+    [ -f "$cr" ] || touch "$cr"
+    grep -qF 'netmanager port_sync_v6' "$cr" 2>/dev/null && return 0
+    echo '*/10 * * * * /usr/sbin/netmanager port_sync_v6 --quiet >/dev/null 2>&1' >> "$cr"
+    /etc/init.d/cron reload 2>/dev/null
+    write_log "INFO" "v6sync: 已补建 */10 兜底 cron"
+}
+
 cmd_china_boot() {
     load_config
-    [ "$(china_get_enable)" = "1" ] || return 0
-    if [ ! -f "$CHINA_LIST_FILE" ]; then
-        write_log "WARN" "china_filter boot: 已启用但本地列表不存在，跳过重应用"
-        return 0
+    # IPv4 白名单
+    if [ "$(china_get_enable)" = "1" ]; then
+        if [ -f "$CHINA_LIST_FILE" ]; then
+            china_apply_rules >/dev/null 2>&1
+            write_log "INFO" "china_filter boot: 已重新应用IPv4规则"
+        else
+            write_log "WARN" "china_filter boot: 已启用但本地列表不存在，跳过重应用"
+        fi
     fi
-    china_apply_rules >/dev/null 2>&1
-    write_log "INFO" "china_filter boot: 已重新应用规则"
+    # IPv6 白名单
+    if [ "$(china6_get_enable)" = "1" ]; then
+        if [ -f "$CHINA6_LIST_FILE" ]; then
+            china6_apply_rules >/dev/null 2>&1
+            write_log "INFO" "china6_filter boot: 已重新应用IPv6规则"
+        else
+            write_log "WARN" "china6_filter boot: 已启用但本地列表不存在，跳过重应用"
+        fi
+    fi
+    # 手动黑名单（nft 表在内存中，重启/防火墙重载后需恢复）
+    if [ -s "$BAN_V4_FILE" ] || [ -s "$BAN_V6_FILE" ]; then
+        ban_apply_all >/dev/null 2>&1
+        write_log "INFO" "blacklist boot: 已重新应用黑名单规则"
+    fi
+    # v1.8.14：开机补建 */10 兜底 cron
+    v6sync_cron_ensure
+    return 0
 }
 
 cmd_china_filter() {
@@ -2343,7 +3708,710 @@ cmd_china_filter() {
     esac
 }
 
-# ========== 14. 卸载插件 ==========
+# ========== 14. 中国IPv6访问限制（v1.7.0 新增） ==========
+# 与 IPv4 版本对称：独立 nft 表 inet netmanager6（与 fw4/IPv4 过滤互不影响），
+#       内含 china_v6 CIDR 集合 + input/forward 两条 base chain(priority -50)，
+#       规则：iifname {wan_devs} ct state new {tcp,udp} 且 ip6 saddr 不在中国集合 -> drop。
+#       默认订阅为国内可直连的 ispip.clang.cn 中国 IPv6 地址段（每行一个 CIDR）。
+CHINA6_LIST_FILE="$CHINA_LIST_DIR/china_v6.list"
+CHINA6_DEFAULT_URL="https://ispip.clang.cn/all_cn_ipv6.txt"
+CHINA6_DEFAULT_CRON="0 3 * * 0"
+CHINA6_MIN_COUNT=20
+
+china6_get_url() {
+    local u=$(uci get netmanager.settings.china6_filter_url 2>/dev/null)
+    echo "${u:-$CHINA6_DEFAULT_URL}"
+}
+
+china6_get_cron() {
+    local c=$(uci get netmanager.settings.china6_filter_cron 2>/dev/null)
+    echo "${c:-$CHINA6_DEFAULT_CRON}"
+}
+
+china6_get_enable() {
+    local e=$(uci get netmanager.settings.china6_filter_enable 2>/dev/null)
+    [ "$e" = "1" ] && echo 1 || echo 0
+}
+
+# 创建 china_v6 集合（兼容旧版 nft：先 interval,auto-merge，失败降级仅 interval）
+china6_create_set() {
+    CHINA6_SET_FLAGS=""
+    nft add table inet netmanager6 2>/dev/null
+    local nft_err
+    nft_err=$( ( nft 'add set inet netmanager6 china_v6 { type ipv6_addr; flags interval, auto-merge; }' ) 2>&1 )
+    if [ -z "$nft_err" ]; then
+        CHINA6_SET_FLAGS="modern"
+        return 0
+    fi
+    case "$nft_err" in
+        *auto-merge*)
+            write_log "INFO" "china6_filter: 旧版 nft 不支持 auto-merge，降级为 flags interval + 一次性原子加载"
+            local nft_err2
+            nft_err2=$( ( nft 'add set inet netmanager6 china_v6 { type ipv6_addr; flags interval; }' ) 2>&1 )
+            if [ -z "$nft_err2" ]; then
+                CHINA6_SET_FLAGS="compat"
+                return 0
+            fi
+            write_log "ERROR" "china6_filter: 降级 add set interval 也失败: $nft_err2"
+            error "nft 创建 china_v6 集合失败（降级后）: $nft_err2"
+            return 1
+            ;;
+        *)
+            write_log "ERROR" "china6_filter: add set china_v6 失败: $nft_err"
+            error "nft 创建 china_v6 集合失败: $nft_err"
+            return 1
+            ;;
+    esac
+}
+
+# 载入 IPv6 CIDR 到 china_v6 集合（逻辑同 IPv4 版本）
+china6_load_set() {
+    [ -f "$CHINA6_LIST_FILE" ] || { echo 0; return; }
+    if [ -z "$CHINA6_SET_FLAGS" ]; then
+        if nft list table inet netmanager6 >/dev/null 2>&1; then
+            :
+        else
+            nft add table inet netmanager6 2>/dev/null
+        fi
+        if nft list set inet netmanager6 china_v6 2>/dev/null | grep -q 'auto-merge'; then
+            CHINA6_SET_FLAGS="modern"
+        elif nft list set inet netmanager6 china_v6 >/dev/null 2>&1; then
+            CHINA6_SET_FLAGS="compat"
+        else
+            china6_create_set || { echo 0; return; }
+        fi
+    fi
+
+    local clean="/tmp/netmanager_china6_clean.list"
+    local ef="/tmp/netmanager_china6_elem.nft"
+    local total=0 loaded=0
+    local nft_err=""
+    rm -f "$clean" "$ef" /tmp/netmanager_china6_nft.err 2>/dev/null
+
+    # 仅保留合法 IPv6 CIDR 行
+    grep -E '^[0-9a-fA-F:]+/[0-9]{1,3}$' "$CHINA6_LIST_FILE" > "$clean" 2>/dev/null
+    total=$(wc -l < "$clean" 2>/dev/null | tr -d ' ')
+    [ "${total:-0}" -lt "$CHINA6_MIN_COUNT" ] && { rm -f "$clean"; echo 0; return; }
+
+    if [ "$CHINA6_SET_FLAGS" = "modern" ]; then
+        local batch=500 buf="" buf_n=0 line failed_batches=0
+        while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            if [ "$buf_n" -ge "$batch" ]; then
+                {
+                    printf 'add element inet netmanager6 china_v6 { %s }\n' "$buf"
+                } > "$ef"
+                if nft -f "$ef" 2>/tmp/netmanager_china6_nft.err; then
+                    loaded=$((loaded + buf_n))
+                else
+                    nft_err=$(cat /tmp/netmanager_china6_nft.err 2>/dev/null | tr '\n' ' ')
+                    failed_batches=$((failed_batches + 1))
+                    write_log "WARN" "china6_filter: (modern) nft batch add element failed (size=$buf_n): $nft_err"
+                fi
+                buf="" buf_n=0
+            fi
+            if [ "$buf_n" -eq 0 ]; then
+                buf="$line"
+            else
+                buf="$buf, $line"
+            fi
+            buf_n=$((buf_n + 1))
+        done < "$clean"
+        if [ "$buf_n" -gt 0 ]; then
+            {
+                printf 'add element inet netmanager6 china_v6 { %s }\n' "$buf"
+            } > "$ef"
+            if nft -f "$ef" 2>/tmp/netmanager_china6_nft.err; then
+                loaded=$((loaded + buf_n))
+            else
+                nft_err=$(cat /tmp/netmanager_china6_nft.err 2>/dev/null | tr '\n' ' ')
+                failed_batches=$((failed_batches + 1))
+                write_log "WARN" "china6_filter: (modern) nft tail batch add element failed (size=$buf_n): $nft_err"
+            fi
+        fi
+        if [ "$failed_batches" -gt 0 ]; then
+            write_log "ERROR" "china6_filter: (modern) $failed_batches 批分片加载失败，集合不完整，按整体失败处理（防止残缺集合误杀国内IPv6流量）"
+            error "中国IPv6列表分片加载有 $failed_batches 批失败，已中止应用（防止不完整集合误杀国内IPv6流量）"
+            rm -f "$clean" "$ef" /tmp/netmanager_china6_nft.err 2>/dev/null
+            echo 0
+            return
+        fi
+    else
+        {
+            printf 'add element inet netmanager6 china_v6 { '
+            awk 'BEGIN{ORS=""}{if(NR>1)printf ", ";printf "%s",$0}' "$clean"
+            printf ' }\n'
+        } > "$ef"
+        if nft -f "$ef" 2>/tmp/netmanager_china6_nft.err; then
+            loaded="$total"
+        else
+            nft_err=$(cat /tmp/netmanager_china6_nft.err 2>/dev/null | tr '\n' ' ')
+            local ok_rows=0 bad_rows=0 l
+            write_log "WARN" "china6_filter: (compat) atomic add element 失败，回退逐行加载: $nft_err"
+            while IFS= read -r l; do
+                [ -z "$l" ] && continue
+                if nft "add element inet netmanager6 china_v6 { $l }" 2>/dev/null; then
+                    ok_rows=$((ok_rows + 1))
+                else
+                    bad_rows=$((bad_rows + 1))
+                fi
+            done < "$clean"
+            loaded="$ok_rows"
+            write_log "INFO" "china6_filter: (compat) 逐行回退完成: 成功=$ok_rows 失败=$bad_rows"
+        fi
+    fi
+
+    rm -f "$clean" "$ef" /tmp/netmanager_china6_nft.err 2>/dev/null
+    echo "${loaded:-0}"
+}
+
+# 创建表/集合、载入 IPv6 CIDR、安装 input+forward 两条 drop 规则
+china6_apply_rules() {
+    [ -f "$CHINA6_LIST_FILE" ] || { error "中国IPv6列表文件不存在: $CHINA6_LIST_FILE"; return 1; }
+    nft delete table inet netmanager6 2>/dev/null
+    local nft_err
+    if ! nft add table inet netmanager6 2>/tmp/netmanager_china6_rules.err; then
+        nft_err=$(cat /tmp/netmanager_china6_rules.err 2>/dev/null | tr '\n' ' ')
+        write_log "ERROR" "china6_filter: add table inet netmanager6 失败: $nft_err"
+        rm -f /tmp/netmanager_china6_rules.err 2>/dev/null
+        error "nft 创建 inet netmanager6 表失败: $nft_err"
+        return 1
+    fi
+    rm -f /tmp/netmanager_china6_rules.err 2>/dev/null
+
+    CHINA6_SET_FLAGS=""
+    if ! china6_create_set; then
+        return 1
+    fi
+    write_log "INFO" "china6_filter: 使用 nft china_v6 集合模式: $CHINA6_SET_FLAGS"
+
+    local count
+    count=$(china6_load_set)
+    if [ "${count:-0}" -lt "$CHINA6_MIN_COUNT" ]; then
+        error "中国IPv6列表载入失败或条数过少($count)，已中止应用规则"
+        return 1
+    fi
+
+    local devs
+    devs=$(get_wan_devs)
+    if [ -z "$devs" ]; then
+        error "未探测到WAN设备，无法安装IPv6过滤规则（请检查 wan 接口/默认路由）"
+        return 1
+    fi
+    local ifname_set
+    ifname_set=$(echo "$devs" | awk '{for(i=1;i<=NF;i++){if(i>1)printf ", ";printf "\"%s\"",$i}}')
+
+    nft delete chain inet netmanager6 china6_input 2>/dev/null
+    nft delete chain inet netmanager6 china6_forward 2>/dev/null
+
+    local rf="/tmp/netmanager_china6_rules.nft"
+    {
+        echo "add chain inet netmanager6 china6_input { type filter hook input priority -50; policy accept; }"
+        echo "add chain inet netmanager6 china6_forward { type filter hook forward priority -50; policy accept; }"
+        # v1.7.2 修复：必须在 drop 之前放行 IPv6 控制面流量，
+        # 否则 DHCPv6-PD 应答（源为 fe80:: 链路本地）被当作“境外地址”丢弃，
+        # 导致前缀续租失败、LAN 设备拿不到/续不上公网 IPv6
+        printf 'add rule inet netmanager6 china6_input iifname { %s } ip6 saddr fe80::/10 counter accept\n' "$ifname_set"
+        printf 'add rule inet netmanager6 china6_input iifname { %s } ip6 saddr ff00::/8 counter accept\n' "$ifname_set"
+        printf 'add rule inet netmanager6 china6_input iifname { %s } udp sport 547 udp dport 546 counter accept\n' "$ifname_set"
+        # v1.7.3 修复：forward 链此前完全没有放行规则（v1.7.2 只补了 input 链），
+        # 而 NDP relay / DHCPv6 relay 场景下邻居发现与中继应答的源地址同样是
+        # 链路本地 fe80::（或组播 ff00::/8），会被「ip6 saddr != @china_v6 drop」
+        # 判成境外地址丢弃，导致 LAN 设备地址解析失败、DHCPv6 中继拿不到地址。
+        printf 'add rule inet netmanager6 china6_forward iifname { %s } ip6 saddr fe80::/10 counter accept\n' "$ifname_set"
+        printf 'add rule inet netmanager6 china6_forward iifname { %s } ip6 saddr ff00::/8 counter accept\n' "$ifname_set"
+        printf 'add rule inet netmanager6 china6_forward iifname { %s } udp sport 547 udp dport 546 counter accept\n' "$ifname_set"
+        printf 'add rule inet netmanager6 china6_forward iifname { %s } ct state new meta l4proto { tcp, udp } ip6 saddr != @china_v6 counter drop\n' "$ifname_set"
+        printf 'add rule inet netmanager6 china6_input iifname { %s } ct state new meta l4proto { tcp, udp } ip6 saddr != @china_v6 limit rate 10/minute burst 20 packets log prefix "NM_DROP6: " level warn\n' "$ifname_set"
+        printf 'add rule inet netmanager6 china6_input iifname { %s } ct state new meta l4proto { tcp, udp } ip6 saddr != @china_v6 counter drop\n' "$ifname_set"
+    } > "$rf"
+    if ! nft -f "$rf" 2>/tmp/netmanager_china6_rules.err; then
+        write_log "ERROR" "china6_filter: 规则链安装失败: $(cat /tmp/netmanager_china6_rules.err 2>/dev/null | tr '\n' ' ')"
+        rm -f "$rf" /tmp/netmanager_china6_rules.err 2>/dev/null
+        error "nft IPv6 规则安装失败（nft -f 返回错误）"
+        return 1
+    fi
+    rm -f "$rf" /tmp/netmanager_china6_rules.err 2>/dev/null
+
+    uci set netmanager.settings.china6_filter_count="$count"
+    uci commit netmanager 2>/dev/null
+    info "中国IPv6过滤规则已应用: 条数=$count WAN设备=[$(echo $devs)]"
+    write_log "INFO" "china6_filter apply: count=$count devs=$devs"
+    return 0
+}
+
+# 下载中国 IPv6 列表（URL 取自配置），校验后存到持久化路径
+china6_download() {
+    local url=$(china6_get_url)
+    local tmp="/tmp/netmanager_china6.tmp"
+    info "下载中国IPv6列表: $url"
+    write_log "INFO" "china6_filter: 下载 $url"
+    mkdir -p "$CHINA_LIST_DIR" 2>/dev/null
+    if command -v wget >/dev/null 2>&1; then
+        wget -q -T 30 -O "$tmp" "$url" 2>/dev/null
+    elif command -v uclient-fetch >/dev/null 2>&1; then
+        uclient-fetch -q -T 30 -O "$tmp" "$url" 2>/dev/null
+    elif command -v curl >/dev/null 2>&1; then
+        curl -sS --max-time 30 -o "$tmp" "$url" 2>/dev/null
+    else
+        error "未找到 wget/uclient-fetch/curl，无法下载"
+        return 1
+    fi
+    if [ ! -s "$tmp" ]; then
+        error "下载失败：文件为空或不存在（请检查订阅链接与网络）"
+        rm -f "$tmp" 2>/dev/null
+        return 1
+    fi
+    # 纯化：去 BOM、去 CR、仅保留合法 IPv6 CIDR
+    local clean="/tmp/netmanager_china6_clean.tmp"
+    rm -f "$clean" 2>/dev/null
+    if command -v sed >/dev/null 2>&1; then
+        sed '1s/^\xef\xbb\xbf//' "$tmp" 2>/dev/null | tr -d '\r' | grep -E '^[0-9a-fA-F:]+/[0-9]{1,3}$' > "$clean" 2>/dev/null
+    else
+        tr -d '\r' < "$tmp" | grep -E '^[0-9a-fA-F:]+/[0-9]{1,3}$' > "$clean" 2>/dev/null
+    fi
+    local n
+    n=$(wc -l < "$clean" 2>/dev/null | tr -d ' ')
+    if [ "${n:-0}" -lt "$CHINA6_MIN_COUNT" ]; then
+        error "下载内容不像 IPv6 CIDR 列表（有效行数=$n），已拒绝保存"
+        rm -f "$tmp" "$clean" 2>/dev/null
+        return 1
+    fi
+    mv -f "$clean" "$CHINA6_LIST_FILE"
+    rm -f "$tmp" 2>/dev/null
+    uci set netmanager.settings.china6_filter_count="$n"
+    uci set netmanager.settings.china6_filter_last_update="$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)"
+    uci commit netmanager 2>/dev/null
+    info "下载完成：$n 条IPv6 CIDR"
+    return 0
+}
+
+china6_cron_remove() {
+    local cr="/etc/crontabs/root"
+    [ -f "$cr" ] || return 0
+    grep -v 'netmanager china6_filter update' "$cr" > "$cr.tmp" 2>/dev/null
+    mv -f "$cr.tmp" "$cr" 2>/dev/null
+    /etc/init.d/cron reload 2>/dev/null
+    return 0
+}
+
+china6_cron_install() {
+    local cr="/etc/crontabs/root"
+    mkdir -p /etc/crontabs 2>/dev/null
+    [ -f "$cr" ] || touch "$cr"
+    china6_cron_remove
+    local expr=$(china6_get_cron)
+    local fields=$(echo "$expr" | awk '{print NF}')
+    if [ "$fields" != "5" ] || echo "$expr" | tr ' ' '\n' | grep -qE '[^0-9*,/\-]'; then
+        write_log "ERROR" "china6_filter: UCI 中的 cron 表达式非法: '$expr'，跳过安装 cron"
+        warn "cron 表达式非法（$fields 段/含非法字符），已跳过安装，其余功能不受影响"
+        return 1
+    fi
+    echo "$expr /usr/sbin/netmanager china6_filter update" >> "$cr"
+    /etc/init.d/cron reload 2>/dev/null
+    info "已安装IPv6更新 cron 计划: $expr"
+}
+
+cmd_china6_status() {
+    load_config
+    local en=$(china6_get_enable)
+    local url=$(china6_get_url)
+    local cron=$(china6_get_cron)
+    local lu=$(uci get netmanager.settings.china6_filter_last_update 2>/dev/null)
+    local cnt=$(uci get netmanager.settings.china6_filter_count 2>/dev/null)
+    [ -z "$cnt" ] && cnt=0
+    local devs=$(get_wan_devs)
+    [ -z "$devs" ] && devs="(未探测到)"
+    local active=0
+    if nft list table inet netmanager6 >/dev/null 2>&1; then
+        if nft list chain inet netmanager6 china6_forward 2>/dev/null | grep -q 'china_v6'; then
+            active=1
+        fi
+    fi
+    echo "===CHINA6_FILTER==="
+    echo "CHINA6_FILTER_ENABLED=$en"
+    echo "URL=$url"
+    echo "CRON=$cron"
+    echo "LAST_UPDATE=${lu:-未更新}"
+    echo "COUNT=$cnt"
+    echo "WAN_DEVS=$devs"
+    echo "RULE_ACTIVE=$active"
+    echo "LIST_FILE=$CHINA6_LIST_FILE"
+    echo "===END==="
+}
+
+cmd_china6_set_url() {
+    local url="$1"
+    [ -z "$url" ] && { error "用法: netmanager china6_filter set_url <url>"; exit 1; }
+    case "$url" in
+        http://*|https://*) ;;
+        *) error "URL 必须以 http:// 或 https:// 开头"; exit 1 ;;
+    esac
+    load_config
+    uci set netmanager.settings.china6_filter_url="$url"
+    uci commit netmanager
+    info "IPv6订阅链接已保存: $url"
+    info "点击「更新IP库」或重新启用以生效"
+}
+
+cmd_china6_set_cron() {
+    local expr="$1"
+    [ -z "$expr" ] && { error "用法: netmanager china6_filter set_cron \"<5段cron表达式>\""; exit 1; }
+    local fields=$(echo "$expr" | awk '{print NF}')
+    [ "$fields" != "5" ] && { error "cron表达式必须为5段（分 时 日 月 周），当前 $fields 段"; exit 1; }
+    if echo "$expr" | tr ' ' '\n' | grep -qE '[^0-9*,/\-]'; then
+        error "cron表达式含非法字符（仅允许 0-9 * / , -）"; exit 1
+    fi
+    load_config
+    uci set netmanager.settings.china6_filter_cron="$expr"
+    uci commit netmanager
+    info "IPv6更新计划已保存: $expr"
+    [ "$(china6_get_enable)" = "1" ] && china6_cron_install
+}
+
+cmd_china6_enable() {
+    write_log "INFO" "china6_enable: 用户请求启用中国IPv6访问限制"
+    load_config
+    if [ ! -f "$CHINA6_LIST_FILE" ]; then
+        china6_download || { error "启用失败：无法获取中国IPv6列表"; exit 1; }
+    fi
+    uci set netmanager.settings.china6_filter_enable='1'
+    uci commit netmanager
+    if ! china6_apply_rules; then
+        uci set netmanager.settings.china6_filter_enable='0'
+        uci commit netmanager
+        error "启用失败：规则应用失败，已回滚为关闭状态"
+        exit 1
+    fi
+    china6_cron_install
+    /etc/init.d/netmanager-china enable 2>/dev/null
+    info "中国IPv6访问限制已开启（仅中国大陆IPv6可访问已开放端口）"
+}
+
+cmd_china6_disable() {
+    write_log "INFO" "china6_disable: 用户请求关闭中国IPv6访问限制"
+    load_config
+    nft delete table inet netmanager6 2>/dev/null
+    uci set netmanager.settings.china6_filter_enable='0'
+    uci commit netmanager
+    china6_cron_remove
+    info "中国IPv6访问限制已关闭（境外IPv6可恢复访问）"
+}
+
+cmd_china6_update() {
+    write_log "INFO" "china6_update: 用户请求更新中国IPv6列表"
+    load_config
+    if ! china6_download; then
+        error "更新失败：下载未成功，保留旧列表"
+        exit 1
+    fi
+    if [ "$(china6_get_enable)" = "1" ]; then
+        china6_apply_rules
+    else
+        info "功能未启用，仅更新了本地列表，未应用规则"
+    fi
+}
+
+cmd_china6_boot() {
+    load_config
+    [ "$(china6_get_enable)" = "1" ] || return 0
+    [ -f "$CHINA6_LIST_FILE" ] || return 0
+    china6_apply_rules >/dev/null 2>&1
+    write_log "INFO" "china6_filter boot: 已重新应用规则"
+}
+
+cmd_china6_filter() {
+    local sub="${1:-status}"
+    shift 2>/dev/null
+    case "$sub" in
+        status)   cmd_china6_status ;;
+        enable)   cmd_china6_enable ;;
+        disable)  cmd_china6_disable ;;
+        update)   cmd_china6_update ;;
+        set_url)  cmd_china6_set_url "$@" ;;
+        set_cron) cmd_china6_set_cron "$@" ;;
+        boot)     cmd_china6_boot ;;
+        *) echo "用法: netmanager china6_filter status|enable|disable|update|set_url <url>|set_cron <expr>"; exit 1 ;;
+    esac
+}
+
+# ========== 15. 手动黑名单（IPv4/IPv6，支持单IP与CIDR网段） ==========
+# 独立 nft 表 inet netmanager_ban，input/forward 两条 base chain，
+# 规则：ip saddr @ban_v4 drop / ip6 saddr @ban_v6 drop（对全部入站与转发流量生效）。
+# 条目持久化：/etc/netmanager/blacklist_v4.list、blacklist_v6.list（每行一个 IP 或 CIDR）。
+BAN_V4_FILE="$CHINA_LIST_DIR/blacklist_v4.list"
+BAN_V6_FILE="$CHINA_LIST_DIR/blacklist_v6.list"
+
+ban_count_file() {
+    [ -f "$1" ] || { echo 0; return; }
+    grep -c -vE '^[[:space:]]*(#|$)' "$1" 2>/dev/null | tr -d ' '
+}
+
+ban_valid_v4() {
+    local e="$1" addr="" pfx=""
+    case "$e" in
+        */*)
+            addr="${e%%/*}"; pfx="${e##*/}"
+            [ -z "$pfx" ] && return 1
+            ;;
+        *) addr="$e" ;;
+    esac
+    echo "$addr" | grep -qE '^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$' || return 1
+    echo "$addr" | awk -F. '{for(i=1;i<=4;i++){if($i+0>255 || $i ~ /^0[0-9]/) exit 1}}' || return 1
+    if [ -n "$pfx" ]; then
+        echo "$pfx" | grep -qE '^[0-9]{1,2}$' || return 1
+        [ "$pfx" -le 32 ] 2>/dev/null || return 1
+    fi
+    return 0
+}
+
+ban_valid_v6() {
+    local e="$1" addr="" pfx=""
+    case "$e" in
+        */*)
+            addr="${e%%/*}"; pfx="${e##*/}"
+            [ -z "$pfx" ] && return 1
+            ;;
+        *) addr="$e" ;;
+    esac
+    echo "$addr" | grep -qE '^[0-9a-fA-F:]+$' || return 1
+    echo "$addr" | grep -q ':' || return 1
+    local dc
+    dc=$(echo "$addr" | awk '{print gsub(/::/,"::")}')
+    [ "${dc:-0}" -le 1 ] || return 1
+    echo "$addr" | awk -F: '{for(i=1;i<=NF;i++){g=$i; if(g!="" && (g !~ /^[0-9a-fA-F]+$/ || length(g)>4)) exit 1}}' || return 1
+    local groups
+    groups=$(echo "$addr" | awk -F: '{c=0; for(i=1;i<=NF;i++) if($i!="") c++; print c}')
+    case "$addr" in
+        *::*) [ "${groups:-0}" -le 7 ] || return 1 ;;
+        *)    [ "${groups:-0}" -eq 8 ] || return 1 ;;
+    esac
+    if [ -n "$pfx" ]; then
+        echo "$pfx" | grep -qE '^[0-9]{1,3}$' || return 1
+        [ "$pfx" -le 128 ] 2>/dev/null || return 1
+    fi
+    return 0
+}
+
+# 从文件加载条目到指定集合；返回 0=成功
+ban_load_family() {
+    local fam="$1" file="$2" mode="$3" set="ban_v4"
+    [ "$fam" = "v6" ] && set="ban_v6"
+    [ -s "$file" ] || return 0
+    local ef="/tmp/netmanager_ban_${fam}_elem.nft"
+    local ok=1
+    rm -f "$ef" 2>/dev/null
+
+    if [ "$mode" = "modern" ]; then
+        # 分片批量添加（auto-merge 容忍重叠网段）
+        local batch=500 buf="" buf_n=0 line
+        while IFS= read -r line; do
+            line=$(echo "$line" | tr -d '\r ')
+            case "$line" in ""|"#"*) continue ;; esac
+            if [ "$buf_n" -ge "$batch" ]; then
+                printf 'add element inet netmanager_ban %s { %s }\n' "$set" "$buf" > "$ef"
+                nft -f "$ef" 2>/dev/null || ok=0
+                buf="" buf_n=0
+            fi
+            if [ "$buf_n" -eq 0 ]; then buf="$line"; else buf="$buf, $line"; fi
+            buf_n=$((buf_n + 1))
+        done < "$file"
+        if [ "$buf_n" -gt 0 ]; then
+            printf 'add element inet netmanager_ban %s { %s }\n' "$set" "$buf" > "$ef"
+            nft -f "$ef" 2>/dev/null || ok=0
+        fi
+    else
+        # 无 auto-merge：整段一次性原子添加，让内核合并可能重叠的网段
+        {
+            printf 'add element inet netmanager_ban %s { ' "$set"
+            awk 'NF && $1 !~ /^#/ {printf "%s%s", (c++ ? ", " : ""), $1}' "$file"
+            printf ' }\n'
+        } > "$ef"
+        if ! nft -f "$ef" 2>/dev/null; then
+            # 回退逐条添加（重叠网段可能失败，但至少加载可用的部分）
+            local okr=0 l
+            while IFS= read -r l; do
+                l=$(echo "$l" | tr -d '\r ')
+                case "$l" in ""|"#"*) continue ;; esac
+                nft "add element inet netmanager_ban $set { $l }" 2>/dev/null && okr=$((okr + 1))
+            done < "$file"
+            [ "$okr" -gt 0 ] || ok=0
+        fi
+    fi
+    rm -f "$ef" 2>/dev/null
+    [ "$ok" = "1" ]
+}
+
+# 重建黑名单表与规则
+ban_apply_all() {
+    mkdir -p "$CHINA_LIST_DIR" 2>/dev/null
+    local v4n v6n
+    v4n=$(ban_count_file "$BAN_V4_FILE")
+    v6n=$(ban_count_file "$BAN_V6_FILE")
+    [ -z "$v4n" ] && v4n=0
+    [ -z "$v6n" ] && v6n=0
+
+    # 无条目：删除黑名单表即可（幂等）
+    if [ "$v4n" -eq 0 ] && [ "$v6n" -eq 0 ]; then
+        nft delete table inet netmanager_ban 2>/dev/null
+        write_log "INFO" "blacklist apply: 无条目，已清空表"
+        return 0
+    fi
+
+    nft delete table inet netmanager_ban 2>/dev/null
+    if ! nft add table inet netmanager_ban 2>/dev/null; then
+        error "创建黑名单 nft 表失败（nft 不可用？）"
+        return 1
+    fi
+
+    local m4="compat" m6="compat"
+    if nft 'add set inet netmanager_ban ban_v4 { type ipv4_addr; flags interval, auto-merge; }' 2>/dev/null; then
+        m4="modern"
+    elif ! nft 'add set inet netmanager_ban ban_v4 { type ipv4_addr; flags interval; }' 2>/dev/null; then
+        error "创建 IPv4 黑名单集合失败"
+        return 1
+    fi
+    if nft 'add set inet netmanager_ban ban_v6 { type ipv6_addr; flags interval, auto-merge; }' 2>/dev/null; then
+        m6="modern"
+    elif ! nft 'add set inet netmanager_ban ban_v6 { type ipv6_addr; flags interval; }' 2>/dev/null; then
+        error "创建 IPv6 黑名单集合失败"
+        return 1
+    fi
+
+    if ! nft 'add chain inet netmanager_ban ban_input { type filter hook input priority -50; policy accept; }' 2>/dev/null || \
+       ! nft 'add chain inet netmanager_ban ban_forward { type filter hook forward priority -50; policy accept; }' 2>/dev/null; then
+        error "创建黑名单过滤链失败"
+        return 1
+    fi
+
+    if ! ban_load_family v4 "$BAN_V4_FILE" "$m4"; then
+        error "IPv4 黑名单条目加载失败（可能存在非法或重叠网段）"
+        return 1
+    fi
+    if ! ban_load_family v6 "$BAN_V6_FILE" "$m6"; then
+        error "IPv6 黑名单条目加载失败（可能存在非法或重叠网段）"
+        return 1
+    fi
+
+    if ! nft add rule inet netmanager_ban ban_input ip saddr @ban_v4 counter drop 2>/dev/null || \
+       ! nft add rule inet netmanager_ban ban_input ip6 saddr @ban_v6 counter drop 2>/dev/null || \
+       ! nft add rule inet netmanager_ban ban_forward ip saddr @ban_v4 counter drop 2>/dev/null || \
+       ! nft add rule inet netmanager_ban ban_forward ip6 saddr @ban_v6 counter drop 2>/dev/null; then
+        error "安装黑名单 drop 规则失败"
+        return 1
+    fi
+
+    info "黑名单规则已应用: IPv4=$v4n 条 IPv6=$v6n 条"
+    write_log "INFO" "blacklist apply: v4=$v4n v6=$v6n"
+    return 0
+}
+
+cmd_ban_list() {
+    local v4="" v6="" v4n=0 v6n=0 active=0
+    v4n=$(ban_count_file "$BAN_V4_FILE")
+    v6n=$(ban_count_file "$BAN_V6_FILE")
+    [ -z "$v4n" ] && v4n=0
+    [ -z "$v6n" ] && v6n=0
+    if [ -f "$BAN_V4_FILE" ]; then
+        v4=$(grep -vE '^[[:space:]]*(#|$)' "$BAN_V4_FILE" 2>/dev/null | tr '\n' ',')
+        v4=${v4%,}
+    fi
+    if [ -f "$BAN_V6_FILE" ]; then
+        v6=$(grep -vE '^[[:space:]]*(#|$)' "$BAN_V6_FILE" 2>/dev/null | tr '\n' ',')
+        v6=${v6%,}
+    fi
+    nft list table inet netmanager_ban >/dev/null 2>&1 && active=1
+    echo "===BLACKLIST==="
+    echo "V4_COUNT=$v4n"
+    echo "V6_COUNT=$v6n"
+    echo "V4=$v4"
+    echo "V6=$v6"
+    echo "ACTIVE=$active"
+    echo "===END==="
+}
+
+cmd_ban_add() {
+    # 【v1.7.1 修复】不能使用 tr -d '[:space:]'：部分 BusyBox tr 会把该集合按字面字符
+    # 解析（连 ': s p a c e [ ]' 一起删除），导致 IPv6 地址被吞掉冒号后误判为 IPv4
+    local entry=$(printf '%s' "$1" | tr -d ' \t\r\n')
+    [ -z "$entry" ] && { error "用法: netmanager blacklist add <IPv4/IPv6 地址或CIDR>"; exit 1; }
+    local fam file
+    case "$entry" in
+        *:*)
+            fam="v6"; file="$BAN_V6_FILE"
+            ban_valid_v6 "$entry" || { error "非法 IPv6 地址/网段: $entry"; exit 1; }
+            ;;
+        *)
+            fam="v4"; file="$BAN_V4_FILE"
+            ban_valid_v4 "$entry" || { error "非法 IPv4 地址/网段: $entry"; exit 1; }
+            ;;
+    esac
+    mkdir -p "$CHINA_LIST_DIR" 2>/dev/null
+    [ -f "$file" ] || touch "$file"
+    if grep -Fxq "$entry" "$file" 2>/dev/null; then
+        info "条目已存在: $entry"
+        return 0
+    fi
+    echo "$entry" >> "$file"
+    if ! ban_apply_all >/dev/null 2>&1; then
+        # 应用失败 → 回滚文件
+        grep -Fxv "$entry" "$file" > "$file.tmp" 2>/dev/null
+        mv -f "$file.tmp" "$file" 2>/dev/null
+        ban_apply_all >/dev/null 2>&1
+        error "添加失败：nft 规则应用失败（请检查地址格式或 nft 版本）"
+        exit 1
+    fi
+    info "已拉黑 $fam 条目: $entry"
+}
+
+cmd_ban_del() {
+    # 【v1.7.1 修复】不能使用 tr -d '[:space:]'：部分 BusyBox tr 会把该集合按字面字符
+    # 解析（连 ': s p a c e [ ]' 一起删除），导致 IPv6 地址被吞掉冒号后误判为 IPv4
+    local entry=$(printf '%s' "$1" | tr -d ' \t\r\n')
+    [ -z "$entry" ] && { error "用法: netmanager blacklist del <IPv4/IPv6 地址或CIDR>"; exit 1; }
+    local file found=0
+    case "$entry" in
+        *:*) file="$BAN_V6_FILE" ;;
+        *)   file="$BAN_V4_FILE" ;;
+    esac
+    if [ -f "$file" ] && grep -Fxq "$entry" "$file" 2>/dev/null; then
+        grep -Fxv "$entry" "$file" > "$file.tmp" 2>/dev/null
+        mv -f "$file.tmp" "$file" 2>/dev/null
+        ban_apply_all >/dev/null 2>&1
+        found=1
+    fi
+    [ "$found" = "1" ] || { error "条目不存在: $entry"; exit 1; }
+    info "已移除黑名单条目: $entry"
+}
+
+cmd_ban_clear() {
+    local target="${1:-all}"
+    mkdir -p "$CHINA_LIST_DIR" 2>/dev/null
+    case "$target" in
+        v4)  : > "$BAN_V4_FILE" ;;
+        v6)  : > "$BAN_V6_FILE" ;;
+        all) : > "$BAN_V4_FILE"; : > "$BAN_V6_FILE" ;;
+        *) error "用法: netmanager blacklist clear [v4|v6|all]"; exit 1 ;;
+    esac
+    ban_apply_all >/dev/null 2>&1
+    info "已清空黑名单: $target"
+}
+
+cmd_blacklist() {
+    local sub="${1:-list}"
+    shift 2>/dev/null
+    case "$sub" in
+        list)            cmd_ban_list ;;
+        add)             cmd_ban_add "$@" ;;
+        del|remove)      cmd_ban_del "$@" ;;
+        clear)           cmd_ban_clear "$@" ;;
+        apply|boot)      ban_apply_all ;;
+        *) echo "用法: netmanager blacklist list|add <ip/cidr>|del <ip/cidr>|clear [v4|v6|all]|apply"; exit 1 ;;
+    esac
+}
+
+
+# ========== 16. 卸载插件 ==========
 # 用法: netmanager uninstall [full|keep]
 #   full = 全删（后端/LuCI/CBI模型/配置/CIDR/DNS配置与脚本/init/hotplug/缓存）
 #   keep = 保留 /etc/config/netmanager、/etc/netmanager/ 与 /etc/config/dnssettings，其余全删
@@ -2356,11 +4424,14 @@ cmd_uninstall() {
     info "开始卸载网络管理插件 (mode=$mode)..."
     write_log "INFO" "uninstall: 开始卸载 (mode=$mode keep_config=$keep_config)"
 
-    # 1. 先关闭中国IPv4过滤：清nft规则 + 移除cron + 删表
-    echo "[1/8] 关闭中国IPv4过滤（清理nft规则、移除cron）..."
+    # 1. 先关闭中国IPv4/IPv6过滤与黑名单：清nft规则 + 移除cron + 删表
+    echo "[1/8] 关闭中国IPv4/IPv6过滤与手动黑名单（清理nft规则、移除cron）..."
     cmd_china_disable >/dev/null 2>&1
+    cmd_china6_disable >/dev/null 2>&1
     nft delete table inet netmanager 2>/dev/null
-    crontab -l 2>/dev/null | grep -v 'netmanager china_filter' | crontab - 2>/dev/null
+    nft delete table inet netmanager6 2>/dev/null
+    nft delete table inet netmanager_ban 2>/dev/null
+    crontab -l 2>/dev/null | grep -v 'netmanager china_filter' | grep -v 'netmanager china6_filter' | crontab - 2>/dev/null
 
     # 2. 停止并禁用开机自启
     echo "[2/8] 停止并禁用 init 服务..."
@@ -2371,6 +4442,14 @@ cmd_uninstall() {
     echo "[3/8] 删除 init/hotplug 脚本与 DNS 管理脚本..."
     rm -f /etc/init.d/netmanager-china
     rm -f /etc/hotplug.d/iface/95-netmanager-china
+    rm -f /etc/hotplug.d/iface/96-netmanager-v6sync
+    # v1.8.3：移除 IPv6 目标同步定时任务
+    if [ -f /etc/crontabs/root ] && grep -qF 'netmanager port_sync_v6' /etc/crontabs/root 2>/dev/null; then
+        grep -vF 'netmanager port_sync_v6' /etc/crontabs/root > /tmp/.nm_cron 2>/dev/null
+        cat /tmp/.nm_cron > /etc/crontabs/root
+        rm -f /tmp/.nm_cron
+        /etc/init.d/cron restart >/dev/null 2>&1
+    fi
     rm -f /usr/sbin/dnssettings-apply.sh
     rm -f /usr/sbin/dnssettings-backup.sh
 
@@ -2392,10 +4471,12 @@ cmd_uninstall() {
 
     # 6. 清理临时文件与缓存
     echo "[6/8] 清理临时文件与缓存..."
+    rm -f /bin/netmanager 2>/dev/null
     rm -f /tmp/.netmanager_nft_dstnat 2>/dev/null
     rm -rf /tmp/netmanager 2>/dev/null
     rm -rf /tmp/netmanager_upload 2>/dev/null
     rm -rf /tmp/luci-indexcache /tmp/luci-modulecache 2>/dev/null
+    # 【v1.4.6】不再删除 /tmp/luci-sessions（会踢掉所有已登录用户，包括正在执行卸载的会话）
 
     # 7. 输出卸载完成摘要
     echo "[7/8] 卸载完成。"
@@ -2417,8 +4498,8 @@ cmd_uninstall() {
         echo "  - /etc/netmanager/"
         echo "  - /etc/config/dnssettings"
     fi
-    echo "  - nft 表 inet netmanager（中国IPv4过滤规则）"
-    echo "  - crontab 中国IPv4过滤计划任务"
+    echo "  - nft 表 inet netmanager / inet netmanager6 / inet netmanager_ban（IPv4/IPv6过滤与黑名单规则）"
+    echo "  - crontab 中国IPv4/IPv6过滤计划任务"
     echo "  - /tmp/netmanager* 临时文件与缓存"
     echo ""
     echo "用户在 /etc/config/firewall 中的端口转发与防火墙规则不受影响，保留不动。"
@@ -2429,8 +4510,10 @@ cmd_uninstall() {
     (
         sleep 2
         rm -f /usr/sbin/netmanager
+        rm -f /bin/netmanager 2>/dev/null
         /etc/init.d/uhttpd restart >/dev/null 2>&1
-        rm -rf /tmp/luci-indexcache /tmp/luci-modulecache /tmp/luci-sessions 2>/dev/null
+        # 【v1.4.6】保留 /tmp/luci-sessions：删掉会踢掉所有已登录用户（含刚执行卸载的会话）
+        rm -rf /tmp/luci-indexcache /tmp/luci-modulecache 2>/dev/null
     ) >/dev/null 2>&1 &
 }
 
@@ -2441,14 +4524,18 @@ usage() {
     echo "用法: netmanager <命令> [参数]"
     echo ""
     echo "系统: overview | version | settings"
-    echo "端口转发: port_list | port_add | port_del | port_edit | set_default_target"
+    echo "端口转发: port_list | port_add <端口> <proto> [目标] [v4|v6|both] [内部端口] | port_del <端口> [proto] [v4|v6|both] | port_edit | set_default_target"
+    echo "IPv6目标跟踪: port_track_v6 <端口> <tcp|udp> <锚点|off> | port_sync_v6 [--quiet]"
+    echo "IPv6网关自愈: v6gw [--quiet]   # 补pppoe默认路由 + 强制ra_default=1"
     echo "防火墙规则: rule_list | rule_add | rule_del | rule_edit"
     echo "日志: ssh_log [行数] | access_log [端口] [行数] | log_set 0/1 | log_get [行数] | log_clear"
     echo "操作: restart | reload"
-    echo "备份: backup | backup_list | backup_restore <文件> | backup_delete <文件>"
+    echo "备份: backup | backup_list | backup_restore <文件> | backup_delete <文件> | backup_import <文件> | backup_prune [保留数]"
     echo "插件: upload_file <文件名> <b64文件> | plugin_update <文件> | plugin_version <文件> | cleanup_uploads"
     echo "在线更新: update_check | update_apply | set_update_mirror <url|''>"
     echo "中国IPv4过滤: china_filter status | enable | disable | update | set_url <url> | set_cron <expr>"
+    echo "中国IPv6过滤: china6_filter status | enable | disable | update | set_url <url> | set_cron <expr>"
+    echo "手动黑名单: blacklist list | add <ip/cidr> | del <ip/cidr> | clear [v4|v6|all] | apply"
     echo "卸载: uninstall [full|keep]   # full=全删(默认) keep=保留配置与备份"
 }
 
@@ -2460,15 +4547,24 @@ case "$1" in
     port_add)           shift; cmd_port_add "$@" ;;
     port_del)           shift; cmd_port_del "$@" ;;
     port_edit)          shift; cmd_port_edit "$@" ;;
+    port_track_v6)      shift; cmd_port_track_v6 "$@" ;;
+    port_sync_v6)       shift; cmd_port_sync_v6 "$@" ;;
+    v6gw)               shift; cmd_v6gw "$@" ;;
     set_default_target) shift; cmd_set_default_target "$@" ;;
     rule_list)          cmd_rule_list ;;
     rule_add)           shift; cmd_rule_add "$@" ;;
     rule_del)           shift; cmd_rule_del "$@" ;;
     rule_edit)          shift; cmd_rule_edit "$@" ;;
+    rule_toggle)        shift; cmd_rule_toggle "$@" ;;
     ssh_log)            shift; cmd_ssh_log "$@" ;;
     access_log)         shift; cmd_access_log "$@" ;;
+    block_detail)       shift; cmd_block_detail "$@" ;;
+    static_bind)        shift; cmd_static_bind "$@" ;;
+    static_unbind)      shift; cmd_static_unbind "$@" ;;
     log_set)            shift; cmd_log_set "$@" ;;
     log_get)            shift; cmd_log_get "$@" ;;
+    log_query)          shift; cmd_log_query "$@" ;;
+    log_export)         cmd_log_export ;;
     log_clear)          cmd_log_clear ;;
     restart)            cmd_restart ;;
     reload)             cmd_reload ;;
@@ -2476,6 +4572,8 @@ case "$1" in
     backup_list)        cmd_backup_list ;;
     backup_restore)     shift; cmd_backup_restore "$@" ;;
     backup_delete)      shift; cmd_backup_delete "$@" ;;
+    backup_import)      shift; cmd_backup_import "$@" ;;
+    backup_prune)       shift; cmd_backup_prune "$@" ;;
     upload_file)        shift; cmd_upload_file "$@" ;;
     plugin_update)      shift; cmd_plugin_update "$@" ;;
     plugin_version)     shift; cmd_plugin_version "$@" ;;
@@ -2484,22 +4582,42 @@ case "$1" in
     update_apply)       cmd_update_apply ;;
     set_update_mirror)  shift; cmd_set_update_mirror "$@" ;;
     china_filter)       shift; cmd_china_filter "$@" ;;
+    china6_filter)      shift; cmd_china6_filter "$@" ;;
+    blacklist)          shift; cmd_blacklist "$@" ;;
     uninstall)          shift; cmd_uninstall "$@" ;;
     *)                  usage ;;
 esac
+
+
 ```
 
 ### 5.2 files/usr/sbin/dnssettings-apply.sh
 
-- **用途**：DNS 应用脚本：把 /etc/config/dnssettings 写入 network/dhcp/dnsmasq 并重载服务（v1.4.5 重写）
-- **规模**：224 行
-- **维护要点**：v1.4.5 重写：空值断网防护 / 应用前自动备份 / list 字段正确写法 / network reload 化。已知待修：L145 dhcp_option 单值写法应 delete+add_list；L68/L97 WAN 接口名硬编码 network.wan/wan6；L120-132 PPPoE 双栈 fallback 未去重即 add_list
+- **用途**：上网设置应用脚本：把 /etc/config/dnssettings 写入 network/dhcp/dnsmasq 并 reload 服务
+- **规模**：540 行
+- **维护要点**：空值断网防护（peerdns=0 且 DNS 全空 → 拒写）是核心红线，勿删；应用前自动备份保留 5 份
 
 ```bash
 #!/bin/sh
 # ============================================================
-# DNS设置插件 - 应用配置脚本 (v1.4.5)
+# DNS设置插件 - 应用配置脚本 (v1.8.6)
 # 读取 /etc/config/dnssettings，写入系统 network/dhcp 配置并重载服务
+#
+# v1.7.3 更新：
+#   1. 【关键】PPPoE 场景下自动修正 network.wan6.device：
+#      wan6 若与 wan 绑在同一物理网口，DHCPv6 客户端发不出 SOLICIT/RS
+#      （syslog: "Failed to send SOLICIT ... (Address not available)"），
+#      PD 前缀续租失败后 LAN 设备会丢失公网 IPv6。
+#      现检测 wan.proto=pppoe 且 wan6.device==wan.device 时改为 @wan，
+#      修正后自动 ifup wan6 重新协商，并在日志中回显 PD 获取结果。
+#
+# v1.4.6 更新：
+#   1. WAN 接口自动探测（用户配置 → 默认路由反查 → 兜底 wan/wan6），
+#      不再硬编码 network.wan / network.wan6
+#   2. dhcp_option 改 delete + add_list 正确写法（list 类型）
+#   3. PPPoE 双栈 fallback 并入 wan.dns 前先 delete 全量重写去重
+#      （修复重复应用时 add_list 逐次累积）
+#   4. logger 输出过滤控制字符（防 syslog 注入转义序列）
 #
 # v1.4.5 防护逻辑（修复空值断网）：
 #   1. peerdns=0 但自定义 DNS 全空 → 拒绝写入该接口（保持现状），
@@ -2507,22 +4625,145 @@ esac
 #   2. list 字段（network.wan.dns 等）改用 delete + add_list 正确写法，
 #      切换配置时先清残留，不再 set 单元素覆盖
 #   3. dnsmasq 转发关闭时清空旧 server 列表，使"关闭"真正生效
-#   4. 应用前自动备份 network/dhcp 到 /root/backup/（保留最近 5 份）
+#   4. 应用前自动备份 network/dhcp 到 /root/backup/（保留最近 3 份）
 # ============================================================
 
 CONFIG_FILE="/etc/config/dnssettings"
 LOG_TAG="dnssettings"
 BACKUP_DIR="/root/backup"
 
+# 【v1.4.6】logger 过滤控制字符：防止配置值中的转义序列污染 syslog/终端
 log() {
-    logger -t "$LOG_TAG" "$1"
-    echo "[$LOG_TAG] $1"
+    local msg
+    msg=$(printf '%s' "$1" | tr -d '\000-\010\013\014\016-\037')
+    logger -t "$LOG_TAG" "$msg"
+    echo "[$LOG_TAG] $msg"
 }
 
 # 检查配置文件是否存在
 if [ ! -f "$CONFIG_FILE" ]; then
     log "ERROR: 配置文件 $CONFIG_FILE 不存在"
     exit 1
+fi
+
+# ============================================================
+# 【v1.4.6】WAN 接口自动探测
+# 优先级：1. dnssettings.wan.wan_iface / wan6_iface 用户显式配置
+#         2. 默认路由所在接口反查 network 节名
+#         3. 兜底 wan / wan6（保持旧版行为）
+# ============================================================
+iface_from_route() {
+    # $1: -4 或 -6；输出默认路由 dev 对应的 network 节名（找不到则空）
+    local rt_dev family
+    family="$1"
+    rt_dev=$(ip "$family" route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+    [ -z "$rt_dev" ] && return
+    # 遍历 network 接口节，匹配 device/ifname/name
+    local idx=0 name dev
+    while uci -q get "network.@interface[$idx]" >/dev/null 2>&1; do
+        name=$(uci -q get "network.@interface[$idx]" 2>/dev/null | awk -F. '{print $2}')
+        dev=$(uci -q get "network.@interface[$idx].device" 2>/dev/null)
+        [ -z "$dev" ] && dev=$(uci -q get "network.@interface[$idx].ifname" 2>/dev/null)
+        # device 可能是 logical 或 physical 名，任一命中即可
+        if [ "$dev" = "$rt_dev" ] || [ "$name" = "$rt_dev" ]; then
+            echo "$name"
+            return
+        fi
+        idx=$((idx+1))
+    done
+
+    # 【v1.8.3 修复】路由设备名不等于 UCI 节名的情况。
+    # PPPoE 下默认路由 dev 是 pppoe-wan，而 UCI 节名是 wan；
+    # 旧版这里直接 echo "$rt_dev"，导致后续 uci get network.pppoe-wan 失败、
+    # WAN DNS 整段被跳过（这是「页面配置与实际 DNS 不一致」的根因）。
+    case "$rt_dev" in
+        pppoe-*)
+            name=${rt_dev#pppoe-}
+            if uci -q get "network.$name" >/dev/null 2>&1; then
+                echo "$name"
+                return
+            fi
+            ;;
+    esac
+
+    # 再用 netifd 运行时信息反查（覆盖 VLAN / 桥接 / 别名等场景）
+    if command -v ubus >/dev/null 2>&1; then
+        name=$(ubus call network.interface dump 2>/dev/null \
+            | awk -v d="$rt_dev" '
+                /"interface"/ { i=$0; gsub(/.*"interface": *"|",?$/,"",i) }
+                /"device"/ { v=$0; gsub(/.*"device": *"|",?$/,"",v); if (v==d) { print i; exit } }
+            ')
+        if [ -n "$name" ] && uci -q get "network.$name" >/dev/null 2>&1; then
+            echo "$name"
+            return
+        fi
+    fi
+
+    # 无法映射到 UCI 节名时返回空，由调用方兜底，绝不返回非法节名
+    return
+}
+
+detect_wan_iface() {
+    # $1: 4 或 6
+    local custom rt fallback
+    if [ "$1" = "4" ]; then
+        fallback="wan"
+        custom=$(uci -q get dnssettings.wan.wan_iface 2>/dev/null)
+        [ -n "$custom" ] && uci -q get "network.$custom" >/dev/null 2>&1 && { echo "$custom"; return; }
+        rt=$(iface_from_route -4)
+        # v1.8.3：必须校验节名真实存在，否则回退，避免写入不存在的接口
+        [ -n "$rt" ] && uci -q get "network.$rt" >/dev/null 2>&1 && { echo "$rt"; return; }
+        echo "$fallback"
+    else
+        fallback="wan6"
+        custom=$(uci -q get dnssettings.wan.wan6_iface 2>/dev/null)
+        [ -n "$custom" ] && uci -q get "network.$custom" >/dev/null 2>&1 && { echo "$custom"; return; }
+        # v1.8.3：IPv6 必须优先落在 wan6 节。
+        # IPv6 默认路由的 dev 同样是 pppoe-wan，按路由反查会得到 wan，
+        # 若据此写入就会用 IPv6 DNS 覆盖掉刚写好的 wan.dns（IPv4 列表丢失）。
+        if uci -q get network.wan6 >/dev/null 2>&1; then
+            echo "wan6"
+            return
+        fi
+        rt=$(iface_from_route -6)
+        if [ -n "$rt" ] && uci -q get "network.$rt" >/dev/null 2>&1; then
+            # 仅当该节确实是 IPv6 协议时才采用
+            case "$(uci -q get network.$rt.proto)" in
+                dhcpv6|6in4|6to4|6rd) echo "$rt"; return ;;
+            esac
+        fi
+        # 无独立 wan6：并入 wan（下游会把 IPv6 DNS 追加而非覆盖）
+        echo "wan"
+    fi
+}
+
+WAN_IFACE=$(detect_wan_iface 4)
+WAN6_IFACE=$(detect_wan_iface 6)
+
+# ---------- v1.8.3：回填 dnssettings 缺失项（必须在读取配置之前）----------
+# 历史版本只建了 wan 节却没写 DNS 值，导致页面显示默认值、
+# 而 network.wan 无 dns 且 peerdns 未设置（实际走运营商 DNS），两者不一致。
+# 缺失时优先取 network 现值回填，保证「页面所见 = 实际生效」。
+if [ "$(uci -q get dnssettings.wan.peerdns)" = "0" ]; then
+    _cur4=$(uci -q get network.wan.dns)
+    _cur6=$(uci -q get network.wan6.dns)
+    if [ -z "$(uci -q get dnssettings.wan.dns1_v4)" ]; then
+        _v=$(echo "$_cur4" | awk '{print $1}')
+        uci set dnssettings.wan.dns1_v4="${_v:-223.5.5.5}"
+    fi
+    if [ -z "$(uci -q get dnssettings.wan.dns2_v4)" ]; then
+        _v=$(echo "$_cur4" | awk '{print $2}')
+        uci set dnssettings.wan.dns2_v4="${_v:-119.29.29.29}"
+    fi
+    if [ -z "$(uci -q get dnssettings.wan.dns1_v6)" ]; then
+        _v=$(echo "$_cur6" | awk '{print $1}')
+        uci set dnssettings.wan.dns1_v6="${_v:-2400:3200::1}"
+    fi
+    if [ -z "$(uci -q get dnssettings.wan.dns2_v6)" ]; then
+        _v=$(echo "$_cur6" | awk '{print $2}')
+        uci set dnssettings.wan.dns2_v6="${_v:-2402:4e00::}"
+    fi
+    uci commit dnssettings 2>/dev/null
 fi
 
 # ---------- 读取 WAN 配置 ----------
@@ -2546,13 +4787,13 @@ log "========== 开始应用 DNS 配置 =========="
 
 # ============================================================
 # 0. 应用前自动备份（network/dhcp/dnssettings 三配置）
-#    保留最近 5 份自动备份，防止堆积占满 /root
+#    保留最近 3 份自动备份，防止堆积占满 /root
 # ============================================================
 AUTO_BAK="$BACKUP_DIR/dnssettings-auto-$(date +%Y%m%d-%H%M%S).tar.gz"
 if mkdir -p "$BACKUP_DIR" && tar -czf "$AUTO_BAK" /etc/config/network /etc/config/dhcp "$CONFIG_FILE" 2>/dev/null; then
     log "已自动备份当前配置: $AUTO_BAK"
-    # 清理旧自动备份（按名字排序，保留最新 5 份）
-    ls -1t "$BACKUP_DIR"/dnssettings-auto-*.tar.gz 2>/dev/null | tail -n +6 | while read -r old; do
+    # 清理旧自动备份（按修改时间排序，保留最新 3 份）
+    ls -1t "$BACKUP_DIR"/dnssettings-auto-*.tar.gz 2>/dev/null | tail -n +4 | while read -r old; do
         rm -f "$old"
         log "清理旧自动备份: $old"
     done
@@ -2561,13 +4802,34 @@ else
 fi
 
 # ============================================================
+# 0.5 【v1.7.3】WAN 一致性校验：PPPoE 场景修正 wan6 绑定
+#     现象：wan6.device 若仍指向物理网口（与 wan.device 相同），
+#     DHCPv6 客户端在物理口上缺乏可用的 IPv6 出口地址，
+#     SOLICIT / RS 发不出去（syslog 报 "Failed to send SOLICIT
+#     message to ff02::1:2 (Address not available)"），
+#     PD 前缀续租失败 → 前缀到期撤销 → LAN 设备丢失公网 IPv6。
+#     修正条件：wan.proto=pppoe 且 wan6.device 与 wan.device 相同。
+# ============================================================
+FIXED_WAN6=0
+if [ "$(uci -q get network.wan.proto)" = "pppoe" ]; then
+    WAN_DEV_RAW=$(uci -q get network.wan.device)
+    WAN6_DEV_RAW=$(uci -q get network.wan6.device)
+    if [ -n "$WAN_DEV_RAW" ] && [ -n "$WAN6_DEV_RAW" ] && [ "$WAN6_DEV_RAW" = "$WAN_DEV_RAW" ]; then
+        uci set network.wan6.device='@wan'
+        uci commit network 2>/dev/null
+        FIXED_WAN6=1
+        log "修正 wan6 绑定: $WAN6_DEV_RAW -> @wan（PPPoE 必须挂在逻辑接口上）"
+    fi
+fi
+
+# ============================================================
 # 1. 配置 WAN 口 IPv4 DNS
 # ============================================================
-if uci get network.wan >/dev/null 2>&1; then
+if uci get "network.$WAN_IFACE" >/dev/null 2>&1; then
     if [ "$WAN_PEERDNS" = "1" ]; then
-        uci set network.wan.peerdns='1'
-        uci delete network.wan.dns 2>/dev/null
-        log "WAN IPv4: 使用运营商下发 DNS"
+        uci set "network.$WAN_IFACE.peerdns=1"
+        uci delete "network.$WAN_IFACE.dns" 2>/dev/null
+        log "WAN IPv4 ($WAN_IFACE): 使用运营商下发 DNS"
     else
         # 【防护】自定义模式必须至少提供一个 DNS，否则保持现状防止断网
         WAN_V4_DNS=""
@@ -2576,27 +4838,27 @@ if uci get network.wan >/dev/null 2>&1; then
         if [ -z "$WAN_V4_DNS" ]; then
             log "WARN: WAN IPv4 自定义 DNS 为空，跳过该接口（保持现状，防止断网）"
         else
-            uci set network.wan.peerdns='0'
+            uci set "network.$WAN_IFACE.peerdns=0"
             # list 字段：先清残留，再逐个 add_list（uci set 单元素是错误写法）
-            uci delete network.wan.dns 2>/dev/null
+            uci delete "network.$WAN_IFACE.dns" 2>/dev/null
             for dns in $WAN_V4_DNS; do
-                uci add_list network.wan.dns="$dns"
+                uci add_list "network.$WAN_IFACE.dns=$dns"
             done
-            log "WAN IPv4: $WAN_V4_DNS"
+            log "WAN IPv4 ($WAN_IFACE): $WAN_V4_DNS"
         fi
     fi
 else
-    log "WARN: 未找到 network.wan 接口，跳过 WAN IPv4 配置"
+    log "WARN: 未找到 network.$WAN_IFACE 接口，跳过 WAN IPv4 配置"
 fi
 
 # ============================================================
 # 2. 配置 WAN6 口 IPv6 DNS
 # ============================================================
-if uci get network.wan6 >/dev/null 2>&1; then
+if uci get "network.$WAN6_IFACE" >/dev/null 2>&1; then
     if [ "$WAN_PEERDNS" = "1" ]; then
-        uci set network.wan6.peerdns='1'
-        uci delete network.wan6.dns 2>/dev/null
-        log "WAN6 IPv6: 使用运营商下发 DNS"
+        uci set "network.$WAN6_IFACE.peerdns=1"
+        uci delete "network.$WAN6_IFACE.dns" 2>/dev/null
+        log "WAN6 IPv6 ($WAN6_IFACE): 使用运营商下发 DNS"
     else
         WAN_V6_DNS=""
         [ -n "$WAN_DNS1_V6" ] && WAN_V6_DNS="$WAN_DNS1_V6"
@@ -2604,43 +4866,74 @@ if uci get network.wan6 >/dev/null 2>&1; then
         if [ -z "$WAN_V6_DNS" ]; then
             log "WARN: WAN6 IPv6 自定义 DNS 为空，跳过该接口（保持现状，防止断网）"
         else
-            uci set network.wan6.peerdns='0'
-            uci delete network.wan6.dns 2>/dev/null
+            uci set "network.$WAN6_IFACE.peerdns=0"
+            # v1.8.3：与 WAN 同节时（无独立 wan6）必须保留已写入的 IPv4 DNS，
+            # 否则这里的 delete 会把上一步的 IPv4 列表清空，只剩 IPv6。
+            if [ "$WAN6_IFACE" != "$WAN_IFACE" ]; then
+                uci delete "network.$WAN6_IFACE.dns" 2>/dev/null
+            fi
             for dns in $WAN_V6_DNS; do
-                uci add_list network.wan6.dns="$dns"
+                uci add_list "network.$WAN6_IFACE.dns=$dns"
             done
-            log "WAN6 IPv6: $WAN_V6_DNS"
+            log "WAN6 IPv6 ($WAN6_IFACE): $WAN_V6_DNS"
         fi
     fi
 else
-    log "WARN: 未找到 network.wan6 接口"
+    log "WARN: 未找到 network.$WAN6_IFACE 接口"
     # PPPoE 双栈：IPv6 DNS 可并入 wan 接口的 dns list（netifd 自动区分协议）
-    if uci get network.wan >/dev/null 2>&1 && [ "$WAN_PEERDNS" != "1" ]; then
+    # 【v1.4.6 去重】并入前先 delete 整个 dns list 再重写（IPv4+IPv6 全量），
+    # 修复重复应用时 add_list 逐次累积导致 dns 列表无限增长的 bug
+    if uci get "network.$WAN_IFACE" >/dev/null 2>&1 && [ "$WAN_PEERDNS" != "1" ]; then
         WAN_V6_DNS=""
         [ -n "$WAN_DNS1_V6" ] && WAN_V6_DNS="$WAN_DNS1_V6"
         [ -n "$WAN_DNS2_V6" ] && WAN_V6_DNS="$WAN_V6_DNS $WAN_DNS2_V6"
         if [ -n "$WAN_V6_DNS" ]; then
-            for dns in $WAN_V6_DNS; do
-                uci add_list network.wan.dns="$dns"
+            # 重写全量 list：IPv4 自定义值 + IPv6 并入值，跳过重复值
+            # WAN_V4_DNS 显式初始化（第 1 节为空跳过时该变量可能未赋值）
+            [ -z "$WAN_V4_DNS" ] && WAN_V4_DNS=""
+            uci delete "network.$WAN_IFACE.dns" 2>/dev/null
+            ADDED_DNS=" "
+            for dns in $WAN_V4_DNS $WAN_V6_DNS; do
+                case "$ADDED_DNS" in
+                    *" $dns "*) ;;  # 已写入，跳过
+                    *) uci add_list "network.$WAN_IFACE.dns=$dns"; ADDED_DNS="$ADDED_DNS$dns " ;;
+                esac
             done
-            log "WAN IPv6(双栈并入 wan.dns): $WAN_V6_DNS"
+            log "WAN IPv6(双栈并入 $WAN_IFACE.dns): $WAN_V6_DNS"
         else
-            log "（IPv6 自定义 DNS 为空，不并入 wan）"
+            log "（IPv6 自定义 DNS 为空，不并入 $WAN_IFACE）"
         fi
     fi
 fi
 
 # ============================================================
+# 2.5 【v1.8.6】清除 wan6 的 dns_search 残留
+#     本平台（iStoreOS 25.12 / netifd dhcpv6）不接受 dns_search 选项，
+#     残留会使 netifd setup 报 "ubus error: Invalid argument" 并无限重试，
+#     PD 续租失败 → LAN 设备丢失公网 IPv6。pppoe 的 wan 接受该选项不受影响。
+#     dns_search 多由运营商 DHCP 下发后残留进 uci，本插件不主动写入，应用时清除。
+# ============================================================
+if [ "$WAN6_IFACE" != "$WAN_IFACE" ] && uci -q get "network.$WAN6_IFACE" >/dev/null 2>&1; then
+    if uci -q delete "network.$WAN6_IFACE.dns_search" 2>/dev/null; then
+        uci commit network 2>/dev/null
+        log "清除 $WAN6_IFACE.dns_search（dhcpv6 不支持，防止 Invalid argument 抖动）"
+    fi
+fi
+
+# ============================================================
 # 3. 配置 LAN 口 IPv4 DHCP 下发 DNS
+#    【v1.4.6】dhcp_option 在 OpenWrt 中是 list 类型（可多实例并存），
+#    uci set 覆盖单值会在残留旧 list 上叠加，改用 delete + add_list 正确写法
 # ============================================================
 if [ "$LAN_FORCE" = "1" ]; then
-    LAN_V4_OPTION="6"
-    [ -n "$LAN_DNS1_V4" ] && LAN_V4_OPTION="$LAN_V4_OPTION,$LAN_DNS1_V4"
-    [ -n "$LAN_DNS2_V4" ] && LAN_V4_OPTION="$LAN_V4_OPTION,$LAN_DNS2_V4"
-    if [ "$LAN_V4_OPTION" = "6" ]; then
+    if [ -z "$LAN_DNS1_V4" ] && [ -z "$LAN_DNS2_V4" ]; then
         log "WARN: 勾选强制下发但 LAN IPv4 DNS 为空，跳过（保持现状，防止设备断解析）"
     else
-        uci set dhcp.lan.dhcp_option="$LAN_V4_OPTION"
+        uci delete dhcp.lan.dhcp_option 2>/dev/null
+        LAN_V4_OPTION="6"
+        [ -n "$LAN_DNS1_V4" ] && LAN_V4_OPTION="$LAN_V4_OPTION,$LAN_DNS1_V4"
+        [ -n "$LAN_DNS2_V4" ] && LAN_V4_OPTION="$LAN_V4_OPTION,$LAN_DNS2_V4"
+        uci add_list dhcp.lan.dhcp_option="$LAN_V4_OPTION"
         log "LAN IPv4 DHCP: $LAN_V4_OPTION"
     fi
 else
@@ -2650,28 +4943,101 @@ else
 fi
 
 # ============================================================
-# 4. 配置 LAN 口 IPv6 RA/DHCPv6 下发 DNS
+# 4. 配置 LAN 口 IPv6（v1.8.4：分发模式 + RDNSS）
+#    与 iStoreOS 原生网络管理共用 dhcp.lan 配置。模式存 dnssettings.ipv6.lan_mode，
+#    旧版在此硬写 ra/dhcpv6=server，会覆盖用户所选模式，现改为按模式写入。
 # ============================================================
-if [ "$LAN_FORCE" = "1" ]; then
-    LAN_V6_DNS=""
-    [ -n "$LAN_DNS1_V6" ] && LAN_V6_DNS="$LAN_DNS1_V6"
-    [ -n "$LAN_DNS2_V6" ] && LAN_V6_DNS="$LAN_V6_DNS $LAN_DNS2_V6"
-    if [ -z "$LAN_V6_DNS" ]; then
-        log "WARN: 勾选强制下发但 LAN IPv6 DNS 为空，跳过（保持现状）"
-    else
-        # list 字段：清残留 + 逐个写入
+V6MODE=$(uci -q get dnssettings.ipv6.lan_mode)
+[ -z "$V6MODE" ] && V6MODE="server"
+case "$V6MODE" in
+    relay)
+        uci set dhcp.lan.ra='relay'
+        uci set dhcp.lan.dhcpv6='relay'
+        uci set dhcp.lan.ndp='relay'
+        uci delete dhcp.lan.ra_flags 2>/dev/null
         uci delete dhcp.lan.dns 2>/dev/null
-        for dns in $LAN_V6_DNS; do
-            uci add_list dhcp.lan.dns="$dns"
-        done
-        # 确保 RA 和 DHCPv6 服务开启
+        # 中继需上游接口作 master（iStoreOS 原生中继同样如此）
+        if uci -q get network.wan6 >/dev/null 2>&1; then
+            uci set dhcp.wan6=dhcp 2>/dev/null
+            uci set dhcp.wan6.interface='wan6'
+            uci set dhcp.wan6.ra='relay'
+            uci set dhcp.wan6.dhcpv6='relay'
+            uci set dhcp.wan6.ndp='relay'
+            uci set dhcp.wan6.master='1'
+        fi
+        log "LAN IPv6: 中继模式（ra/dhcpv6/ndp=relay，wan6=master）"
+        ;;
+    disabled)
+        uci set dhcp.lan.ra='disabled'
+        uci set dhcp.lan.dhcpv6='disabled'
+        uci set dhcp.lan.ndp='disabled'
+        uci delete dhcp.lan.ra_flags 2>/dev/null
+        uci delete dhcp.lan.dns 2>/dev/null
+        uci delete dhcp.wan6 2>/dev/null
+        log "LAN IPv6: 已关闭分发"
+        ;;
+    slaac)
+        uci set dhcp.lan.ra='server'
+        uci set dhcp.lan.dhcpv6='disabled'
+        uci set dhcp.lan.ndp='disabled'
+        uci delete dhcp.lan.ra_flags 2>/dev/null
+        uci add_list dhcp.lan.ra_flags='other-config'
+        uci set dhcp.lan.ra_slaac='1'
+        # v1.8.7：强制宣告默认网关。pppoe 关闭 wan.ipv6 后默认路由可能缺失，
+        # odhcpd 默认 ra_default=0 只在有默认路由时才宣告网关，会导致客户端
+        # 拿到 SLAAC 地址却没有默认网关。设 1 确保始终宣告（路由由 v6gw 守护补）。
+        uci set dhcp.lan.ra_default='1'
+        uci delete dhcp.wan6 2>/dev/null
+        log "LAN IPv6: 服务器模式（SLAAC 无状态）"
+        ;;
+    *)
         uci set dhcp.lan.ra='server'
         uci set dhcp.lan.dhcpv6='server'
-        log "LAN IPv6 RA/DHCPv6: $LAN_V6_DNS"
+        uci set dhcp.lan.ndp='disabled'
+        uci delete dhcp.lan.ra_flags 2>/dev/null
+        uci add_list dhcp.lan.ra_flags='managed-config'
+        uci add_list dhcp.lan.ra_flags='other-config'
+        uci set dhcp.lan.ra_slaac='1'
+        uci set dhcp.lan.ra_default='1'   # v1.8.7：强制宣告默认网关（见 slaac 分支说明）
+        uci delete dhcp.wan6 2>/dev/null
+        log "LAN IPv6: 服务器模式（RA + DHCPv6 状态化）"
+        ;;
+esac
+
+# RDNSS：仅 server/slaac 模式给设备下发 IPv6 DNS
+if [ "$V6MODE" = "server" ] || [ "$V6MODE" = "slaac" ]; then
+    if [ "$LAN_FORCE" = "1" ]; then
+        LAN_V6_DNS=""
+        [ -n "$LAN_DNS1_V6" ] && LAN_V6_DNS="$LAN_DNS1_V6"
+        [ -n "$LAN_DNS2_V6" ] && LAN_V6_DNS="$LAN_V6_DNS $LAN_DNS2_V6"
+        if [ -z "$LAN_V6_DNS" ]; then
+            log "WARN: 勾选强制下发但 LAN IPv6 DNS 为空，跳过 RDNSS（保持现状）"
+        else
+            uci delete dhcp.lan.dns 2>/dev/null
+            for dns in $LAN_V6_DNS; do
+                uci add_list dhcp.lan.dns="$dns"
+            done
+            log "LAN IPv6 RDNSS: $LAN_V6_DNS"
+        fi
+    else
+        uci delete dhcp.lan.dns 2>/dev/null
+        log "LAN IPv6 RDNSS: 不强制下发（设备走路由器缓存）"
     fi
-else
-    uci delete dhcp.lan.dns 2>/dev/null
-    log "LAN IPv6 RA/DHCPv6: 不强制下发（设备走路由器缓存）"
+fi
+
+# ============================================================
+# 4.5 WAN IPv6 前缀请求长度（PD，v1.8.4）
+# ============================================================
+CHANGED_PREFIX=0
+V6PREFIX=$(uci -q get dnssettings.ipv6.wan_prefix)
+if [ -n "$V6PREFIX" ] && uci -q get network.wan6 >/dev/null 2>&1; then
+    CUR_PREFIX=$(uci -q get network.wan6.reqprefix)
+    [ -z "$CUR_PREFIX" ] && CUR_PREFIX="auto"
+    if [ "$V6PREFIX" != "$CUR_PREFIX" ]; then
+        uci set network.wan6.reqprefix="$V6PREFIX"
+        CHANGED_PREFIX=1
+        log "WAN6 前缀请求: $CUR_PREFIX -> $V6PREFIX"
+    fi
 fi
 
 # ============================================================
@@ -2695,6 +5061,19 @@ if [ "$DNSMASQ_ENABLE" = "1" ]; then
 
     # 【防护】启用转发但两个列表全空 → 提示（不清旧值，dnsmasq 仍有默认上游）
     uci -q get dhcp.@dnsmasq[0].server >/dev/null 2>&1 || log "WARN: 启用转发但未配置任何转发 DNS"
+
+    # v1.8.3：noresolv —— 决定是否只用上面的转发列表。
+    # dnsmasq 默认还会读 /tmp/resolv.conf.d/resolv.conf.auto（含运营商下发、
+    # wan_6 自动获取、lan 接口 DNS），导致「全局转发」名不副实、
+    # 页面配置与首页显示的实际 DNS 不一致。开启后严格只用转发列表。
+    NORESOLV=$(uci -q get dnssettings.dnsmasq.noresolv)
+    if [ "$NORESOLV" = "1" ]; then
+        uci set dhcp.@dnsmasq[0].noresolv='1'
+        log "dnsmasq noresolv=1：仅使用上方转发列表，忽略运营商下发 DNS"
+    else
+        uci delete dhcp.@dnsmasq[0].noresolv 2>/dev/null
+        log "dnsmasq noresolv=0：转发列表之外仍会并用系统 resolv 上游"
+    fi
 else
     # 关闭转发时清空 server 列表，使"关闭"真正生效
     uci delete dhcp.@dnsmasq[0].server 2>/dev/null
@@ -2714,19 +5093,60 @@ log "重载网络服务（不重拨）..."
 log "重载 dnsmasq..."
 /etc/init.d/dnsmasq reload
 
-log "重载 odhcpd (IPv6 RA/DHCPv6)..."
-/etc/init.d/odhcpd restart
+log "重启 odhcpd (IPv6 RA/DHCPv6)..."
+# v1.8.3：必须 restart，不能只 start。
+# 实测 odhcpd 已在运行时，procd 的 start 是空操作、不会重读配置，
+# 导致改了 dhcp.lan.dns 后 RA 里播的仍是旧 RDNSS（抓包确认）。
+# 同时收敛重复实例：曾出现 procd 实例与手动实例并存，两者都写 piofile，
+# 造成 RFC9096 前缀记忆互相覆盖、RA 广播不一致。
+ODHCPD_N=$(ps w 2>/dev/null | grep -c '[o]dhcpd')
+[ "$ODHCPD_N" -gt 1 ] && log "检测到 $ODHCPD_N 个 odhcpd 实例，一并收敛"
+/etc/init.d/odhcpd stop 2>/dev/null
+sleep 1
+killall odhcpd 2>/dev/null
+sleep 1
+/etc/init.d/odhcpd start 2>/dev/null
+sleep 2
+ODHCPD_N=$(ps w 2>/dev/null | grep -c '[o]dhcpd')
+log "odhcpd 实例数: $ODHCPD_N"
+[ "$ODHCPD_N" -gt 1 ] && log "WARN: odhcpd 仍有多个实例，请检查是否有额外启动项"
+
+# v1.8.3：前缀可能已变化，同步 IPv6 转发目标并清理旧前缀残留路由
+# v1.8.3：无条件同步 —— 即使没登记跟踪，也要清理 piofolder 失效前缀记忆，
+# 止住 RA 对旧前缀的持续广播（客户端堆旧地址的根因）
+if uci -q get netmanager.@v6track[0] >/dev/null 2>&1; then
+    log "同步 IPv6 端口转发目标..."
+else
+    log "清理 IPv6 前缀残留..."
+fi
+/usr/sbin/netmanager port_sync_v6 2>&1 | while read -r l; do log "  $l"; done
+
+# 【v1.7.3】wan6 绑定被修正后必须重新协商，否则新绑定不生效、PD 仍拿不到
+# 【v1.8.4】前缀请求长度变化同样需要重新协商 wan6
+if [ "$FIXED_WAN6" = "1" ] || [ "$CHANGED_PREFIX" = "1" ]; then
+    log "重启 wan6 接口以应用新绑定/前缀请求并重新获取 PD 前缀..."
+    ifup wan6 2>/dev/null
+    sleep 12
+    PD_INFO=$(ifstatus wan6 2>/dev/null | awk '/"ipv6-prefix"/{f=1} f&&/"mask"/{print; exit}')
+    if [ -n "$PD_INFO" ]; then
+        log "wan6 已重新获取 PD 前缀（$PD_INFO）"
+    else
+        log "WARN: wan6 暂未获取到 PD 前缀，请稍后执行 ifstatus wan6 复核"
+    fi
+fi
 
 log "========== DNS 配置应用完成 =========="
 log "若设备 DNS 未生效，请重连 WiFi/网线清除设备端缓存"
 exit 0
+
+
 ```
 
 ### 5.3 files/usr/sbin/dnssettings-backup.sh
 
-- **用途**：DNS 备份脚本：独立备份 network/dhcp/dnssettings 到 /root/backup/
+- **用途**：上网设置备份脚本：独立备份 network/dhcp/dnssettings 到 /root/backup/
 - **规模**：27 行
-- **维护要点**：逻辑简单，注意保持与 apply 脚本一致的保留 5 份自动备份策略
+- **维护要点**：逻辑简单，注意与 apply 脚本的保留策略一致
 
 ```bash
 #!/bin/sh
@@ -2756,13 +5176,15 @@ else
     logger -t dnssettings "ERROR: 系统配置备份失败"
     exit 1
 fi
+
+
 ```
 
 ### 5.4 files/usr/lib/lua/luci/controller/netmanager.lua
 
 - **用途**：LuCI 控制器：注册全部页面路由 + API 分发（action 到后端命令桥接）+ multipart 上传处理
-- **规模**：365 行
-- **维护要点**：api_handler 强制 POST（约 L115）；shell_escape 约 L56-64（所有拼命令参数必经）；L20-21 dns_apply/dns_backup 仍为 GET 路由（v1.4.6 待修 POST 化）；L85/L294 上传临时文件 .b64_<秒级时间戳> 同秒冲突待修；arg() 在 4 处重复定义待提取
+- **规模**：537 行
+- **维护要点**：api_handler 强制 POST；所有拼命令参数必经 shell_escape；csrf_check 403；插件页加 no-store 头防旧 JS
 
 ```lua
 -- ============================================================
@@ -2772,51 +5194,53 @@ fi
 module("luci.controller.netmanager", package.seeall)
 
 function index()
+    -- v1.8.13：插件页禁止浏览器缓存，避免更新后旧标签页滞留旧版 JS，
+    -- 用旧解析逻辑读新后端输出导致编辑表单/列表状态错乱
+    luci.http.header("Cache-Control", "no-store, no-cache, must-revalidate")
+    luci.http.header("Pragma", "no-cache")
     entry({"admin", "netmanager"}, alias("admin", "netmanager", "overview"), _("网络管理"), 60).dependent = true
     entry({"admin", "netmanager", "overview"}, template("netmanager/overview"), _("系统概览"), 1)
     entry({"admin", "netmanager", "port_forward"}, template("netmanager/port_forward"), _("端口转发"), 2)
     entry({"admin", "netmanager", "firewall_rules"}, template("netmanager/firewall_rules"), _("规则管理"), 3)
     entry({"admin", "netmanager", "ssh_log"}, template("netmanager/ssh_log"), _("SSH登录日志"), 4)
     entry({"admin", "netmanager", "access_log"}, template("netmanager/access_log"), _("端口访问日志"), 5)
-    -- DNS 设置（CBI 标准表单，绑定 /etc/config/dnssettings）
-    entry({"admin", "netmanager", "dns"}, cbi("netmanager/dns_settings"), _("DNS设置"), 6)
-    entry({"admin", "netmanager", "dns_staticv6"}, cbi("netmanager/dns_staticv6"), _("静态IPv6分配"), 7)
+    -- 上网设置（CBI 标准表单，绑定 network + dhcp + dnssettings）
+    entry({"admin", "netmanager", "dns"}, cbi("netmanager/dns_settings"), _("上网设置"), 6)
+    entry({"admin", "netmanager", "dns_staticv6"}, cbi("netmanager/dns_staticv6"), _("静态IP分配"), 7)
     entry({"admin", "netmanager", "settings"}, template("netmanager/settings"), _("设置"), 8)
     entry({"admin", "netmanager", "api"}, call("api_handler"))
-    -- DNS 动作：应用配置 / 备份系统配置（由 DNS 页面按钮跳转调用）
-    entry({"admin", "netmanager", "dns_apply"}, call("action_dns_apply"), nil)
-    entry({"admin", "netmanager", "dns_backup"}, call("action_dns_backup"), nil)
+    -- 【v1.4.6】dns_apply / dns_backup 原 GET 路由已改为 api_handler 内 POST action
+    -- 【v1.4.7】保留两个兼容路由重定向到 DNS 设置页（v1.4.5 的书签/浏览器缓存仍
+    --  指向旧 GET 路由会 404；仅重定向不执行脚本，不复活"刷新即重复执行"问题）
+    entry({"admin", "netmanager", "dns_apply"}, call("dns_legacy_redirect"))
+    entry({"admin", "netmanager", "dns_backup"}, call("dns_legacy_redirect"))
+end
+
+-- 【v1.4.7】v1.4.5 旧 GET 路由兼容：重定向到 DNS 设置页（不执行任何脚本）
+function dns_legacy_redirect()
+    luci.http.redirect(luci.dispatcher.build_url("admin", "netmanager", "dns"))
 end
 
 -- ============================================================
--- DNS 设置：应用配置
--- 读取 /etc/config/dnssettings，写入 network/dhcp 并重载网络/dnsmasq/odhcpd
--- v1.4.5：用 exec 捕获脚本完整输出回传（含 WARN 空值防护提示）
+-- 【v1.4.7】CSRF 防护：对齐 LuCI 内建 authtoken 机制
+-- v1.4.6 曾用 luci.dispatcher.context.session.id 自派生 token——ucode 版 LuCI
+-- 的 context 没有 session.id（会话 ID 实际存于 context.authsession，框架内建
+-- CSRF token 存于 context.authtoken），导致 sid 取空 → 所有 API 被 fail-closed
+-- 拒绝 403。现改为直接比对框架 authtoken（与 CBI 表单 token 同源，由 ucode
+-- 分发器为每个已认证会话生成，跨站页面无法获得）。
 -- ============================================================
-function action_dns_apply()
-    -- ucode版LuCI的exec在无输出时可能返回nil，用 or "" 兜底
-    local out = luci.sys.exec("/usr/sbin/dnssettings-apply.sh 2>&1") or ""
-    luci.http.prepare_content("text/plain; charset=utf-8")
-    -- 通过输出内容判断成败（脚本致命错误时含 ERROR）
-    if out:match("ERROR:") then
-        luci.http.write("应用失败，详细输出：\n" .. out)
-    else
-        luci.http.write("DNS配置已应用，详细输出：\n" .. out .. "\n提示: 若有 WARN 行为空值防护跳过项，请补全对应 DNS 后重新应用\n")
-    end
+function csrf_token()
+    local ctx = luci.dispatcher.context
+    return (ctx and ctx.authtoken) and tostring(ctx.authtoken) or ""
 end
 
--- ============================================================
--- DNS 设置：备份当前系统 network/dhcp 配置到 /root/backup/
--- v1.4.5：同样捕获完整输出回传
--- ============================================================
-function action_dns_backup()
-    local out = luci.sys.exec("/usr/sbin/dnssettings-backup.sh 2>&1") or ""
-    luci.http.prepare_content("text/plain; charset=utf-8")
-    if out:match("备份失败") or out == "" then
-        luci.http.write("备份失败，详细输出：\n" .. out)
-    else
-        luci.http.write("配置已备份，详细输出：\n" .. out)
-    end
+local function csrf_check()
+    local expected = csrf_token()
+    -- authtoken 缺失说明未通过认证（正常到不了这里，防御性 fail-closed）
+    if expected == "" then return false end
+    local got = luci.http.formvalue("token") or ""
+    if type(got) == "table" then got = "" end
+    return (got == expected)
 end
 
 -- 安全转义，防止命令注入
@@ -2839,39 +5263,79 @@ local function form_str(key)
     return v or ""
 end
 
+-- 【v1.4.6 P2】命令参数包装：空值传 ''（防 shell 吞掉空参数错位），非空转义
+-- （原 arg() 在 4 个分支内重复定义，提取为模块级）
+local function arg(v)
+    if v == "" or v == nil then return "''" end
+    return shell_escape(v)
+end
+
 -- ============================================================
 -- LuCI multipart 文件上传：必须在首次 formvalue() 之前设置文件处理器
 -- 否则 formvalue() 解析 multipart 时不会保存上传的文件内容
 -- ============================================================
 local uploaded_tmp_file = nil
 local uploaded_file_size = 0
+-- 【v1.4.6 P1】multipart 上传大小上限 50MB（/tmp 是 tmpfs，无上限会 OOM）
+local MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 
 local function setup_upload_handler()
     local upload_dir = "/tmp/netmanager_upload"
     luci.sys.call("mkdir -p " .. upload_dir)
-    uploaded_tmp_file = upload_dir .. "/plugin_update_" .. os.time() .. ".tar.gz"
+    math.randomseed(os.time() + math.floor(os.clock() * 1000))
+    uploaded_tmp_file = upload_dir .. "/plugin_update_" .. os.time() .. "_" .. math.random(1000, 9999) .. ".tar.gz"
     uploaded_file_size = 0
-    
+    -- v1.6.1 备份文件上传临时路径
+    backup_tmp_file = upload_dir .. "/backup_import_" .. os.time() .. "_" .. math.random(1000, 9999) .. ".tar.gz"
+    backup_file_size = 0
+
     local fout = nil
+    local backup_fout = nil
     luci.http.setfilehandler(function(meta, chunk, eof)
-        -- meta: {name=表单字段名, file=原始文件名}
         if not meta or not meta.name then return end
-        -- 只处理 plugin_file 字段
-        if meta.name ~= "plugin_file" then return end
-        
-        if not fout then
-            fout = io.open(uploaded_tmp_file, "wb")
-            if not fout then
-                uploaded_tmp_file = nil
+        -- 处理 plugin_file 字段（插件更新）
+        if meta.name == "plugin_file" then
+            if uploaded_file_size > MAX_UPLOAD_BYTES then
+                if fout then fout:close() end
+                fout = nil
                 return
             end
+            if not fout then
+                fout = io.open(uploaded_tmp_file, "wb")
+                if not fout then
+                    uploaded_tmp_file = nil
+                    return
+                end
+            end
+            if fout and chunk and #chunk > 0 then
+                fout:write(chunk)
+                uploaded_file_size = uploaded_file_size + #chunk
+            end
+            if eof and fout then
+                fout:close()
+            end
         end
-        if fout and chunk and #chunk > 0 then
-            fout:write(chunk)
-            uploaded_file_size = uploaded_file_size + #chunk
-        end
-        if eof and fout then
-            fout:close()
+        -- v1.6.1 处理 backup_file 字段（备份导入）
+        if meta.name == "backup_file" then
+            if backup_file_size > MAX_UPLOAD_BYTES then
+                if backup_fout then backup_fout:close() end
+                backup_fout = nil
+                return
+            end
+            if not backup_fout then
+                backup_fout = io.open(backup_tmp_file, "wb")
+                if not backup_fout then
+                    backup_tmp_file = nil
+                    return
+                end
+            end
+            if backup_fout and chunk and #chunk > 0 then
+                backup_fout:write(chunk)
+                backup_file_size = backup_file_size + #chunk
+            end
+            if eof and backup_fout then
+                backup_fout:close()
+            end
         end
     end)
 end
@@ -2886,12 +5350,22 @@ function api_handler()
         return
     end
 
+    -- 【v1.4.6 安全】CSRF Token 校验：跨站 form POST 虽满足 POST-only，但可携带登录
+    -- cookie；token 由视图渲染时注入（common_head.htm apiFetch 自动附带），跨站页面无法获得
+    if not csrf_check() then
+        luci.http.status(403, "Forbidden")
+        luci.http.prepare_content("text/plain; charset=utf-8")
+        luci.http.write('[ERROR] CSRF 校验失败：请刷新页面后重试（会话已过期或非本站请求）')
+        return
+    end
+
     -- 【关键】先设置文件上传处理器，再读任何formvalue（包括action）
     setup_upload_handler()
     
     local action = luci.http.formvalue("action") or ""
     local result = ""
     local cmd = ""
+    local dns_action = nil
 
     if action == "overview" then
         cmd = "/usr/sbin/netmanager overview"
@@ -2903,10 +5377,7 @@ function api_handler()
         local target = luci.http.formvalue("target") or ""
         local ipver = luci.http.formvalue("ipver") or "both"
         local dport = luci.http.formvalue("dport") or ""
-        local function arg(v)
-            if v == "" then return "''" end
-            return shell_escape(v)
-        end
+
         -- 关键修复：target为空时不传第3参数，避免shell吞掉空参数导致错位
         -- dport为内部端口，留空传''占位（后端默认与外部端口一致）
         if target ~= "" then
@@ -2919,7 +5390,8 @@ function api_handler()
     elseif action == "port_del" then
         local port = luci.http.formvalue("port") or ""
         local proto = luci.http.formvalue("proto") or "tcp"
-        cmd = string.format("/usr/sbin/netmanager port_del %s %s", shell_escape(port), shell_escape(proto))
+        local ipver = luci.http.formvalue("ipver") or "both"
+        cmd = string.format("/usr/sbin/netmanager port_del %s %s %s", shell_escape(port), shell_escape(proto), shell_escape(ipver))
     elseif action == "port_edit" then
         local old_port = luci.http.formvalue("old_port") or ""
         local old_proto = luci.http.formvalue("old_proto") or "tcp"
@@ -2928,14 +5400,21 @@ function api_handler()
         local new_target = luci.http.formvalue("new_target") or ""
         local new_ipver = luci.http.formvalue("new_ipver") or "both"
         local new_dport = luci.http.formvalue("new_dport") or ""
-        local function arg(v)
-            if v == "" then return "''" end
-            return shell_escape(v)
-        end
-        cmd = string.format("/usr/sbin/netmanager port_edit %s %s %s %s %s %s %s",
+        local old_ipver = luci.http.formvalue("old_ipver") or "v4"
+
+        cmd = string.format("/usr/sbin/netmanager port_edit %s %s %s %s %s %s %s %s",
             shell_escape(old_port), shell_escape(old_proto),
             shell_escape(new_port), shell_escape(new_proto),
-            arg(new_target), shell_escape(new_ipver), arg(new_dport))
+            arg(new_target), shell_escape(new_ipver), arg(new_dport), shell_escape(old_ipver))
+    elseif action == "port_track_v6" then
+        -- v1.8.0：登记/取消 IPv6 转发目标跟踪锚点
+        local port = luci.http.formvalue("port") or ""
+        local proto = luci.http.formvalue("proto") or "tcp"
+        local anchor = luci.http.formvalue("anchor") or ""
+        cmd = string.format("/usr/sbin/netmanager port_track_v6 %s %s %s",
+            shell_escape(port), shell_escape(proto), shell_escape(anchor))
+    elseif action == "port_sync_v6" then
+        cmd = "/usr/sbin/netmanager port_sync_v6"
     elseif action == "rule_list" then
         cmd = "/usr/sbin/netmanager rule_list"
     elseif action == "rule_add" then
@@ -2947,10 +5426,7 @@ function api_handler()
         local target = luci.http.formvalue("target") or "ACCEPT"
         local fam = luci.http.formvalue("family") or "any"
         -- 修复：所有可能为空的参数都传 '' 空引号，防止shell吞掉空参数导致错位
-        local function arg(v)
-            if v == "" then return "''" end
-            return shell_escape(v)
-        end
+
         cmd = string.format("/usr/sbin/netmanager rule_add %s %s %s %s %s %s %s",
             arg(name), arg(src), arg(dst),
             arg(proto), arg(port), arg(target), arg(fam))
@@ -2966,13 +5442,14 @@ function api_handler()
         local port = luci.http.formvalue("port") or ""
         local target = luci.http.formvalue("target") or "ACCEPT"
         local fam = luci.http.formvalue("family") or "any"
-        local function arg(v)
-            if v == "" then return "''" end
-            return shell_escape(v)
-        end
+
         cmd = string.format("/usr/sbin/netmanager rule_edit %s %s %s %s %s %s %s %s",
             shell_escape(idx), arg(name), arg(src), arg(dst),
             arg(proto), arg(port), arg(target), arg(fam))
+    elseif action == "rule_toggle" then
+        local idx = luci.http.formvalue("idx") or ""
+        local en = luci.http.formvalue("en") or ""
+        cmd = string.format("/usr/sbin/netmanager rule_toggle %s %s", shell_escape(idx), shell_escape(en))
     elseif action == "ssh_log" then
         local limit = luci.http.formvalue("limit") or "50"
         cmd = string.format("/usr/sbin/netmanager ssh_log %s", shell_escape(limit))
@@ -2984,6 +5461,22 @@ function api_handler()
         else
             cmd = string.format("/usr/sbin/netmanager access_log '' %s", shell_escape(limit))
         end
+    elseif action == "static_bind" then
+        -- v1.8.4：在线客户端一键绑定静态IP（创建 dhcp host）
+        local mac = luci.http.formvalue("mac") or ""
+        local ip = luci.http.formvalue("ip") or ""
+        local name = luci.http.formvalue("name") or ""
+        local duid = luci.http.formvalue("duid") or ""
+        cmd = string.format("/usr/sbin/netmanager static_bind %s %s %s %s",
+            shell_escape(mac), arg(ip), arg(name), arg(duid))
+    elseif action == "static_unbind" then
+        -- v1.8.5：在线客户端一键解绑（按 MAC 删除 dhcp host）
+        local mac = luci.http.formvalue("mac") or ""
+        cmd = string.format("/usr/sbin/netmanager static_unbind %s", shell_escape(mac))
+    elseif action == "block_detail" then
+        -- v1.8.5：拦截统计点击查看被拦截源IP明细（便于拉黑）
+        local key = luci.http.formvalue("key") or ""
+        cmd = string.format("/usr/sbin/netmanager block_detail %s", arg(key))
     elseif action == "restart" then
         cmd = "/usr/sbin/netmanager restart"
     elseif action == "reload" then
@@ -2998,6 +5491,48 @@ function api_handler()
     elseif action == "backup_delete" then
         local filename = luci.http.formvalue("filename") or ""
         cmd = string.format("/usr/sbin/netmanager backup_delete %s", shell_escape(filename))
+    elseif action == "backup_import" then
+        local filename = luci.http.formvalue("filename") or ""
+        cmd = string.format("/usr/sbin/netmanager backup_import %s", shell_escape(filename))
+    elseif action == "backup_prune" then
+        local keep = luci.http.formvalue("keep") or "20"
+        cmd = string.format("/usr/sbin/netmanager backup_prune %s", shell_escape(keep))
+    elseif action == "backup_import_upload" then
+        -- v1.6.1 备份文件上传导入
+        local upload_dir = "/tmp/netmanager_upload"
+        local dest_file = upload_dir .. "/backup_import.tar.gz"
+        luci.sys.call("mkdir -p " .. upload_dir)
+        local src = backup_tmp_file
+        local got_file = false
+        if src and luci.sys.call("test -f " .. shell_escape(src) .. " && test -s " .. shell_escape(src)) == 0 then
+            got_file = true
+        end
+        if not got_file then
+            local alt_path = form_str("backup_file")
+            if alt_path ~= "" and alt_path ~= "backup_file" and luci.sys.call("test -f " .. shell_escape(alt_path)) == 0 then
+                src = alt_path
+                got_file = true
+            end
+        end
+        if not got_file then
+            result = '{"error":"未接收到上传的备份文件，请重新选择 .tar.gz 文件"}'
+        else
+            luci.sys.call("cp -f " .. shell_escape(src) .. " " .. shell_escape(dest_file) .. " 2>/dev/null || mv -f " .. shell_escape(src) .. " " .. shell_escape(dest_file) .. " 2>/dev/null")
+            if luci.sys.call("test -f " .. shell_escape(dest_file) .. " && test -s " .. shell_escape(dest_file)) == 0 then
+                local sz_str = luci.sys.exec("ls -nl " .. shell_escape(dest_file) .. " 2>/dev/null | awk '{print $5}'") or ""
+                local sz_num = tonumber(sz_str) or 0
+                if sz_num < 100 then
+                    result = '{"error":"上传的文件太小（' .. sz_num .. '字节），可能不是有效的备份文件"}'
+                else
+                    local import_cmd = "/usr/sbin/netmanager backup_import backup_import.tar.gz"
+                    result = "[CMD] " .. import_cmd .. "\n"
+                        .. "[DEBUG] dest_file=" .. dest_file .. " size=" .. sz_num .. "字节\n"
+                        .. (luci.sys.exec(import_cmd) or "")
+                end
+            else
+                result = '{"error":"备份文件保存失败"}'
+            end
+        end
     elseif action == "plugin_upload_update" then
         -- 文件已通过 setfilehandler() 在读取formvalue时自动保存
         local upload_dir = "/tmp/netmanager_upload"
@@ -3058,7 +5593,8 @@ function api_handler()
             -- 确保目录存在
             os.execute("mkdir -p " .. upload_dir)
             -- 写入base64临时文件（避免shell命令行长度限制和特殊字符问题）
-            local b64file = upload_dir .. "/.b64_" .. os.time()
+            -- 【v1.4.6 P1】时间戳+随机数防同秒冲突（与 setup_upload_handler 同策略）
+            local b64file = upload_dir .. "/.b64_" .. os.time() .. "_" .. math.random(1000, 9999)
             local f = io.open(b64file, "w")
             if f then
                 f:write(filecontent)
@@ -3090,6 +5626,16 @@ function api_handler()
         cmd = string.format("/usr/sbin/netmanager log_get %s", shell_escape(lines))
     elseif action == "log_clear" then
         cmd = "/usr/sbin/netmanager log_clear"
+    elseif action == "log_query" then
+        local level = luci.http.formvalue("level") or "ALL"
+        local keyword = luci.http.formvalue("keyword") or ""
+        local lines = luci.http.formvalue("lines") or "200"
+        -- 【v1.6.1 修复】keyword 可能为空，必须用 arg() 包装传 ''，
+        -- 否则 shell_escape("") 返回空字符串导致参数错位（lines 的值被当作 keyword）
+        cmd = string.format("/usr/sbin/netmanager log_query %s %s %s",
+            shell_escape(level), arg(keyword), shell_escape(lines))
+    elseif action == "log_export" then
+        cmd = "/usr/sbin/netmanager log_export"
     elseif action == "china_filter_status" then
         cmd = "/usr/sbin/netmanager china_filter status"
     elseif action == "china_filter_enable" then
@@ -3104,6 +5650,31 @@ function api_handler()
     elseif action == "china_filter_set_cron" then
         local cron = luci.http.formvalue("cron") or ""
         cmd = string.format("/usr/sbin/netmanager china_filter set_cron %s", shell_escape(cron))
+    elseif action == "china6_filter_status" then
+        cmd = "/usr/sbin/netmanager china6_filter status"
+    elseif action == "china6_filter_enable" then
+        cmd = "/usr/sbin/netmanager china6_filter enable"
+    elseif action == "china6_filter_disable" then
+        cmd = "/usr/sbin/netmanager china6_filter disable"
+    elseif action == "china6_filter_update" then
+        cmd = "/usr/sbin/netmanager china6_filter update"
+    elseif action == "china6_filter_set_url" then
+        local url = luci.http.formvalue("url") or ""
+        cmd = string.format("/usr/sbin/netmanager china6_filter set_url %s", shell_escape(url))
+    elseif action == "china6_filter_set_cron" then
+        local cron = luci.http.formvalue("cron") or ""
+        cmd = string.format("/usr/sbin/netmanager china6_filter set_cron %s", shell_escape(cron))
+    elseif action == "blacklist_list" then
+        cmd = "/usr/sbin/netmanager blacklist list"
+    elseif action == "blacklist_add" then
+        local ip = luci.http.formvalue("ip") or ""
+        cmd = string.format("/usr/sbin/netmanager blacklist add %s", shell_escape(ip))
+    elseif action == "blacklist_del" then
+        local ip = luci.http.formvalue("ip") or ""
+        cmd = string.format("/usr/sbin/netmanager blacklist del %s", shell_escape(ip))
+    elseif action == "blacklist_clear" then
+        local family = luci.http.formvalue("family") or "all"
+        cmd = string.format("/usr/sbin/netmanager blacklist clear %s", shell_escape(family))
     elseif action == "update_check" then
         cmd = "/usr/sbin/netmanager update_check"
     elseif action == "update_apply" then
@@ -3116,8 +5687,31 @@ function api_handler()
         local keep = luci.http.formvalue("keep") or "0"
         local mode = (keep == "1") and "keep" or "full"
         cmd = string.format("/usr/sbin/netmanager uninstall %s", shell_escape(mode))
+    elseif action == "dns_apply" then
+        -- 【v1.4.6】DNS 应用配置由 GET 路由并入 POST action（原路由刷新即重复执行）
+        dns_action = "apply"
+    elseif action == "dns_backup" then
+        -- 【v1.4.6】DNS 备份系统配置同上
+        dns_action = "backup"
     else
         result = '{"error":"unknown action"}'
+    end
+
+    -- 【v1.4.6】DNS 动作执行（单次调用同时捕获输出与退出码）
+    if dns_action then
+        local script = (dns_action == "apply")
+            and "/usr/sbin/dnssettings-apply.sh" or "/usr/sbin/dnssettings-backup.sh"
+        local out = luci.sys.exec(script .. " 2>&1; echo \"__RC__$?\"") or ""
+        local rc = tonumber(out:match("__RC__(%-?%d+)")) or -1
+        out = out:gsub("__RC__%-?%d+\n?$", "")
+        if rc == 0 then
+            result = "[CMD] " .. script .. " (exit=0)\n" ..
+                ((dns_action == "apply") and "DNS配置已应用" or "配置已备份") ..
+                "，详细输出：\n" .. out
+        else
+            result = "[CMD] " .. script .. " (exit=" .. tostring(rc) .. ")\n" ..
+                "执行失败，详细输出：\n" .. out
+        end
     end
 
     if cmd ~= "" then
@@ -3130,33 +5724,159 @@ function api_handler()
     luci.http.prepare_content("text/plain; charset=utf-8")
     luci.http.write(result)
 end
+
+
 ```
 
 ### 5.5 files/usr/lib/lua/luci/model/cbi/netmanager/dns_settings.lua
 
-- **用途**：DNS 设置 CBI 模型：Map 绑定 /etc/config/dnssettings（wan/lan/dnsmasq 三节 + 应用/备份按钮）
-- **规模**：125 行
-- **维护要点**：forward_v4/forward_v6 为 DynamicList（L93-101）；L108-120 apply/backup 按钮通过 redirect 触发 GET 路由（v1.4.6 待修 POST 化）；v1.4.6 已注入 cbi_nav 导航模板（L14-16）
+- **用途**：上网设置 CBI 模型：Map 绑定 /etc/config/dnssettings（wan/lan/dnsmasq 三节 + 应用/备份按钮）
+- **规模**：405 行
+- **维护要点**：forward_v4/forward_v6 为 DynamicList；按钮经 api 触发 POST 动作，不再走 GET 路由
 
 ```lua
--- DNS设置插件 - CBI 表单模型
--- 绑定 /etc/config/dnssettings
+-- 上网设置插件 - CBI 表单模型
+-- 原 DNS 设置模块，v1.6.1 扩展为上网设置：WAN口上网方式 + LAN口地址 + DNS设置
+-- 绑定 /etc/config/network + /etc/config/dnssettings
 
 local m, s, o
 
-m = Map("dnssettings", translate("DNS设置"),
-    translate("统一管理 WAN/LAN 的 IPv4 和 IPv6 DNS 服务器。修改后点击「应用配置」生效。")
-    .. "<br><em style='color:#6b7280;font-size:12px;'>"
-    .. translate("防护说明：自定义 DNS 模式下若 DNS 留空，应用时将跳过该接口保持现状（防止断网）；每次应用前自动备份到 /root/backup/。")
-    .. "</em>")
+-- v1.8.4：模块级 trim（IPv6 模式读取运行时配置用）
+local function trim(s) return (s or ""):gsub("^%s+", ""):gsub("%s+$", "") end
 
--- v1.4.6 修复：CBI 页面缺少页内导航（从自绘页面进入后页签消失），注入导航模板
+-- ============================================================
+-- 第一部分：上网设置（WAN口 + LAN口，绑定 network 配置）
+-- v1.6.1：隐藏 Map 级别标题栏，统一用 section 级别标题（灰色标题栏）
+-- ============================================================
+m = Map("network", nil,
+    translate("统一管理 WAN 口上网方式、LAN 口地址与 DNS 服务器。修改后点击「应用配置」生效。")
+    .. "<br><em style='color:#6b7280;font-size:12px;'>"
+    .. translate("修改 WAN/LAN 口设置会重载网络服务，期间可能短暂断网；DNS 配置应用前自动备份到 /root/backup/。")
+    .. "</em>")
+m.pageaction = false  -- v1.8.6：关闭本 Map 默认保存按钮，统一由底部「应用配置」提交
+
+-- v1.4.6 修复：CBI 页面缺少页内导航，注入导航模板
 m:append(Template("netmanager/cbi_nav"))
 
+-- ---------- WAN 口上网方式 ----------
+s = m:section(NamedSection, "wan", "interface", translate("WAN 口上网方式"),
+    translate("路由器接入互联网的方式，PPPoE 拨号 / DHCP 自动获取 / 静态 IP。"))
+
+o = s:option(ListValue, "proto", translate("上网方式"))
+o:value("pppoe", translate("PPPoE 拨号"))
+o:value("dhcp", translate("DHCP 自动获取"))
+o:value("static", translate("静态 IP"))
+o.default = "dhcp"
+o.rmempty = false
+
+-- PPPoE 拨号
+o = s:option(Value, "username", translate("PPPoE 账号"))
+o:depends("proto", "pppoe")
+o.placeholder = "宽带账号"
+
+o = s:option(Value, "password", translate("PPPoE 密码"))
+o:depends("proto", "pppoe")
+o.password = true
+o.placeholder = "宽带密码"
+
+-- 静态 IP
+o = s:option(Value, "ipaddr", translate("IP 地址"))
+o:depends("proto", "static")
+o.datatype = "ip4addr"
+o.placeholder = "192.168.1.100"
+
+o = s:option(Value, "netmask", translate("子网掩码"))
+o:depends("proto", "static")
+o.datatype = "ip4addr"
+o.placeholder = "255.255.255.0"
+
+o = s:option(Value, "gateway", translate("网关"))
+o:depends("proto", "static")
+o.datatype = "ip4addr"
+o.placeholder = "192.168.1.1"
+
+o = s:option(DynamicList, "dns", translate("WAN 口 DNS"))
+o:depends("proto", "static")
+o.datatype = "ip4addr"
+o.placeholder = "223.5.5.5"
+o.description = translate("静态 IP 模式下手动指定 DNS，可添加多个")
+
 -- ============================================================
--- 第一部分：WAN 口 DNS（上游 DNS，路由器自己用）
+-- IPv6 获取与分发（v1.8.6：独立 Map，渲染在 WAN 上网方式之后、LAN 口地址之前）
+-- 页面顺序：WAN上网方式 → IPv6获取分发 → LAN口地址 → WAN-DNS → LAN-DNS → dnsmasq → 操作
+-- CBI 每个 Map 绑定单一配置、写入只走本 Map 配置，交错顺序需拆成多 Map 按序渲染。
 -- ============================================================
-s = m:section(NamedSection, "wan", "wan", translate("WAN 口上游 DNS"),
+local m_v6 = Map("dnssettings", nil, nil)
+m_v6.pageaction = false  -- v1.8.6：关闭默认保存按钮
+
+-- ---------- IPv6 获取与分发模式 ----------
+-- 与 iStoreOS 原生网络管理共用同一套 dhcp.lan / network.wan6 配置，两边互通：
+-- 这里改的模式，原生「网络→接口→LAN→DHCP服务器→IPv6设置」里同步可见，反之亦然。
+-- 选项值存 dnssettings.ipv6，点「应用配置」时由 dnssettings-apply.sh 翻译写入 dhcp/network。
+s = m_v6:section(NamedSection, "ipv6", "dnssettings", translate("IPv6 获取与分发"),
+    translate("管理 WAN 口 IPv6 前缀获取（PD）与 LAN 口 IPv6 分发模式。配置写入 iStoreOS 原生网络管理同一套参数，互不冲突。"))
+
+o = s:option(ListValue, "wan_prefix", translate("WAN 前缀请求长度 (PD)"))
+o:value("auto", translate("自动（运营商决定）"))
+o:value("60", "/60")
+o:value("56", "/56")
+o:value("64", "/64")
+o:value("no", translate("不请求前缀（关闭 PD）"))
+o.default = "auto"
+o.rmempty = false
+function o.cfgvalue(self, section)
+    local v = trim(luci.sys.exec("uci -q get network.wan6.reqprefix 2>/dev/null"))
+    return (v ~= "") and v or "auto"
+end
+o.description = translate("向运营商请求的 IPv6 前缀长度。前缀越短可划分的子网越多；「不请求」则关闭前缀委托。修改后应用会重新协商 wan6。")
+
+o = s:option(ListValue, "lan_mode", translate("LAN 口 IPv6 分发模式"))
+o:value("server", translate("服务器模式（RA + DHCPv6 状态化）"))
+o:value("slaac", translate("服务器模式（SLAAC 无状态）"))
+o:value("relay", translate("中继模式（透传上级路由 IPv6）"))
+o:value("disabled", translate("关闭 IPv6 分发"))
+o.default = "server"
+o.rmempty = false
+function o.cfgvalue(self, section)
+    local ra = trim(luci.sys.exec("uci -q get dhcp.lan.ra 2>/dev/null"))
+    local d6 = trim(luci.sys.exec("uci -q get dhcp.lan.dhcpv6 2>/dev/null"))
+    if ra == "relay" or d6 == "relay" then return "relay" end
+    if ra == "disabled" and (d6 == "disabled" or d6 == "") then return "disabled" end
+    if d6 == "server" then return "server" end
+    if ra == "server" then return "slaac" end
+    return "server"
+end
+o.description = translate("服务器模式：由本机给内网设备分配 IPv6（状态化=DHCPv6 分配地址；SLAAC=设备按 RA 前缀自行生成）。中继模式：上级路由已有 IPv6 时透传给内网（需上级支持）。关闭：内网不再分发 IPv6。")
+
+-- ============================================================
+-- LAN 口地址（v1.8.6：独立 Map，绑定 network，渲染在 IPv6 之后）
+-- ============================================================
+local m_lan = Map("network", nil, nil)
+m_lan.pageaction = false  -- v1.8.6：关闭默认保存按钮
+
+-- ---------- LAN 口地址设置 ----------
+s = m_lan:section(NamedSection, "lan", "interface", translate("LAN 口地址"),
+    translate("路由器局域网管理地址与子网掩码，修改后需用新地址登录管理页面。"))
+
+o = s:option(Value, "ipaddr", translate("LAN 口 IP 地址"))
+o.datatype = "ip4addr"
+o.placeholder = "192.168.1.1"
+o.rmempty = false
+
+o = s:option(Value, "netmask", translate("子网掩码"))
+o.datatype = "ip4addr"
+o.placeholder = "255.255.255.0"
+o.rmempty = false
+
+-- ============================================================
+-- DNS 设置（绑定 dnssettings 配置）
+-- v1.6.1：隐藏 Map 级别标题栏，统一用 section 级别标题（灰色标题栏）
+-- ============================================================
+local m2 = Map("dnssettings", nil, nil)
+m2.pageaction = false  -- v1.8.6：关闭默认「保存并应用」，仅保留自定义「应用配置」按钮
+
+-- ---------- WAN 口上游 DNS ----------
+s = m2:section(NamedSection, "wan", "dnssettings", translate("WAN 口上游 DNS"),
     translate("路由器本身解析域名使用的 DNS，PPPoE/DHCP 拨号时生效。"))
 
 o = s:option(Flag, "peerdns", translate("使用运营商下发的 DNS"),
@@ -3164,34 +5884,34 @@ o = s:option(Flag, "peerdns", translate("使用运营商下发的 DNS"),
 o.default = "0"
 o.rmempty = false
 
+-- v1.8.0 修复：原先这四个字段用 o:depends("peerdns", "0")，
+-- 但 iStoreOS 24.10 的 CBI 对 Flag「等于0」的依赖判定不成立，
+-- 服务端直接不渲染这些选项 —— 页面上看不到也无法配置 WAN DNS，
+-- 只能沿用默认值，与实际生效的运营商 DNS 长期不一致。
+-- 改为始终显示，并在说明中标注生效条件。
 o = s:option(Value, "dns1_v4", translate("IPv4 主 DNS"))
 o.datatype = "ip4addr"
 o.placeholder = "223.5.5.5"
 o.default = "223.5.5.5"
-o:depends("peerdns", "0")
+o.description = translate("以下四项仅在未勾选「使用运营商下发的 DNS」时生效")
 
 o = s:option(Value, "dns2_v4", translate("IPv4 备 DNS"))
 o.datatype = "ip4addr"
 o.placeholder = "119.29.29.29"
 o.default = "119.29.29.29"
-o:depends("peerdns", "0")
 
 o = s:option(Value, "dns1_v6", translate("IPv6 主 DNS"))
 o.datatype = "ip6addr"
 o.placeholder = "2400:3200::1"
 o.default = "2400:3200::1"
-o:depends("peerdns", "0")
 
 o = s:option(Value, "dns2_v6", translate("IPv6 备 DNS"))
 o.datatype = "ip6addr"
 o.placeholder = "2402:4e00::"
 o.default = "2402:4e00::"
-o:depends("peerdns", "0")
 
--- ============================================================
--- 第二部分：LAN 口 DNS（下发给设备的 DNS）
--- ============================================================
-s = m:section(NamedSection, "lan", "lan", translate("LAN 口设备 DNS"),
+-- ---------- LAN 口设备 DNS ----------
+s = m2:section(NamedSection, "lan", "dnssettings", translate("LAN 口设备 DNS"),
     translate("通过 DHCP/RA 下发给手机、电脑等局域网设备的 DNS 服务器。"))
 
 o = s:option(Flag, "force_dns", translate("强制下发自定义 DNS 给设备"),
@@ -3223,16 +5943,22 @@ o.placeholder = "2402:4e00::"
 o.default = "2402:4e00::"
 o:depends("force_dns", "1")
 
--- ============================================================
--- 第三部分：dnsmasq 全局转发
--- ============================================================
-s = m:section(NamedSection, "dnsmasq", "dnsmasq", translate("dnsmasq 全局转发"),
+-- ---------- dnsmasq 全局转发 ----------
+s = m2:section(NamedSection, "dnsmasq", "dnssettings", translate("dnsmasq 全局转发"),
     translate("dnsmasq 上游解析服务器，设备走路由器缓存时实际使用的 DNS。"))
 
 o = s:option(Flag, "enable", translate("启用全局转发"),
     translate("将上述 DNS 同时写入 dnsmasq 全局转发列表。"))
 o.default = "1"
 o.rmempty = false
+
+-- v1.8.0：noresolv —— 解决「页面配置的 DNS」与「首页/实际生效 DNS」不一致
+o = s:option(Flag, "noresolv", translate("只用上方转发列表（忽略运营商 DNS）"),
+    translate("dnsmasq 默认除转发列表外，还会并用系统 resolv 里的上游（运营商拨号下发、wan6 自动获取、LAN 接口 DNS）。"
+        .. "这会让实际解析路径与本页配置不一致。勾选后严格只使用上方列表。"))
+o.default = "0"
+o.rmempty = false
+o:depends("enable", "1")
 
 o = s:option(DynamicList, "forward_v4", translate("IPv4 转发 DNS"))
 o.datatype = "ip4addr"
@@ -3244,37 +5970,197 @@ o.datatype = "ip6addr"
 o.placeholder = "2400:3200::1"
 o:depends("enable", "1")
 
--- ============================================================
--- 第四部分：操作按钮（通过自定义 HTML 模板注入）
--- ============================================================
-s = m:section(NamedSection, "actions", "actions", translate("操作"))
+-- ---------- 操作按钮（v1.6.1 移除备份按钮，统一由设置页面备份模块管理） ----------
+-- ---------- v1.8.0：实际生效 DNS 只读面板 ----------
+-- 首页显示的是运行时真实上游，本页配置的是期望值，二者来源不同容易看着「冲突」。
+-- 这里把运行时实际值直接摊开，并标注每项来源，便于对照。
+local function _runtime_dns_panel()
+    -- iStoreOS 24.10 起 pcdata 迁到 luci.xml，旧路径会打印弃用告警污染页面
+    local esc
+    local okx, xml = pcall(require, "luci.xml")
+    if okx and xml and xml.pcdata then
+        esc = function(s) return xml.pcdata(tostring(s or "")) end
+    else
+        local util = require "luci.util"
+        esc = function(s) return util.pcdata(tostring(s or "")) end
+    end
+    local function trim(s) return (s or ""):gsub("^%s+", ""):gsub("%s+$", "") end
+
+    -- dnsmasq 实际转发列表
+    local srv = trim(luci.sys.exec("uci -q get dhcp.@dnsmasq[0].server 2>/dev/null"))
+    local nr = trim(luci.sys.exec("uci -q get dhcp.@dnsmasq[0].noresolv 2>/dev/null"))
+    -- 系统 resolv 上游（运营商 / 各接口自动下发）
+    local auto = luci.sys.exec("cat /tmp/resolv.conf.d/resolv.conf.auto 2>/dev/null")
+    -- 下发给 LAN 设备的 DNS
+    local opt4 = trim(luci.sys.exec("uci -q get dhcp.lan.dhcp_option 2>/dev/null"))
+    local opt6 = trim(luci.sys.exec("uci -q get dhcp.lan.dns 2>/dev/null"))
+
+    local html = "<div style='background:#f8fafc;border:1px solid #e5e7eb;border-radius:6px;padding:10px 12px;margin:8px 0;font-size:12px;line-height:1.9;'>"
+    html = html .. "<b style='color:#374151;'>当前实际生效的 DNS（运行时读取，非本页配置值）</b><br>"
+    html = html .. "<span style='color:#6b7280;'>路由器自身解析：</span> dnsmasq (127.0.0.1) → "
+    if srv ~= "" then
+        html = html .. "<code>" .. esc(srv) .. "</code>"
+    else
+        html = html .. "<i>未配置转发列表</i>"
+    end
+    if nr == "1" then
+        html = html .. " <span style='color:#059669;'>[noresolv=1，只用上述列表]</span>"
+    else
+        html = html .. " <span style='color:#d97706;'>[noresolv=0，还会并用下方系统上游]</span>"
+    end
+    html = html .. "<br><span style='color:#6b7280;'>系统 resolv 上游（首页数据来源）：</span><br>"
+    html = html .. "<pre style='margin:4px 0;padding:6px 8px;background:#fff;border:1px solid #e5e7eb;border-radius:4px;max-height:160px;overflow:auto;'>"
+    html = html .. esc(trim(auto) ~= "" and auto or "(空)") .. "</pre>"
+    html = html .. "<span style='color:#6b7280;'>下发给内网设备：</span> IPv4 <code>"
+        .. esc(opt4 ~= "" and opt4 or "(未下发，设备用路由器 IP)")
+        .. "</code> ／ IPv6 <code>" .. esc(opt6 ~= "" and opt6 or "(未下发)") .. "</code>"
+    html = html .. "</div>"
+    return html
+end
+
+s = m2:section(NamedSection, "actions", "dnssettings", translate("操作"))
+s.description = _runtime_dns_panel()
+
+-- 执行 DNS 脚本并返回结果
+local function run_dns_script(script)
+    local out = luci.sys.exec(script .. " 2>&1; echo \"__RC__$?\"") or ""
+    local rc = tonumber(out:match("__RC__(%-?%d+)")) or -1
+    out = out:gsub("__RC__%-?%d+\n?$", "")
+    return rc, out
+end
+
+-- 输出压缩为单行消息
+local function to_one_line(str, max)
+    str = (str or ""):gsub("%c", " "):gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+    if #str > (max or 300) then str = str:sub(1, max) .. "..." end
+    return str
+end
 
 o = s:option(Button, "_apply", translate("应用配置"))
 o.inputtitle = translate("应用配置")
 o.inputstyle = "apply"
 o.write = function()
-    luci.http.redirect(luci.dispatcher.build_url("admin", "netmanager", "dns_apply"))
+    -- v1.8.6：四个 Map 各持独立 cursor，需逐一提交（WAN/LAN 属 network，IPv6/DNS 属 dnssettings）
+    m.uci:commit("network")        -- WAN 上网方式
+    m_lan.uci:commit("network")    -- LAN 口地址
+    m_v6.uci:commit("dnssettings") -- IPv6 获取分发
+    m2.uci:commit("dnssettings")   -- DNS 各节
+
+    -- 执行 DNS 应用脚本
+    local ok, rc, out = pcall(run_dns_script, "/usr/sbin/dnssettings-apply.sh")
+    if not ok then
+        m2.message = "DNS 配置应用执行异常：" .. to_one_line(tostring(rc))
+        return
+    end
+
+    -- v1.8.0：改用 reload 而非 restart。
+    -- restart 会重建 br-lan，导致以 DirectInterface 绑定该网卡的 dropbear
+    -- 监听套接字失效（端口仍 LISTEN 但连接被拒），管理 SSH 随之中断。
+    -- apply 脚本内部已做 network reload，这里仅在 WAN 口参数确有变化时才重启接口。
+    luci.sys.exec("/etc/init.d/network reload >/dev/null 2>&1")
+
+    -- v1.8.1：此处不再做 SSH 自连探测。
+    -- dropbear 绑 DirectInterface 时，本机连自身地址走回环路由必然失败，
+    -- 探测无法区分"真失效"与"绑定特性"，只会造成无谓重启并踢掉在线会话。
+    -- 应用走的是 reload（不重建 br-lan），本就无需重启 dropbear；
+    -- 真正重建网卡的场景由 hotplug 96-netmanager-v6sync 按 ifindex 变化处理。
+
+    if rc == 0 then
+        m2.message = "配置已应用成功，已写入 /etc/config/ 并重载网络服务（详细输出见「设置 → 运行日志」）"
+    else
+        m2.message = "配置应用失败 (exit=" .. tostring(rc) .. ")：" .. to_one_line(out)
+    end
 end
 
-o = s:option(Button, "_backup", translate("备份当前系统配置"))
-o.inputtitle = translate("备份配置")
-o.inputstyle = "save"
-o.write = function()
-    luci.http.redirect(luci.dispatcher.build_url("admin", "netmanager", "dns_backup"))
-end
+-- v1.6.1 修复：/etc/config/dnssettings 为空或缺失节时，自动初始化默认节
+-- v1.8.0 增强：节存在但个别选项缺失时也要补齐（历史版本只建了 wan 节
+--              却没写 DNS 值，导致页面显示默认值而实际未生效）
+local function _ensure_dns_defaults()
+    local defaults = {
+        wan = {
+            peerdns = "0",
+            dns1_v4 = "223.5.5.5", dns2_v4 = "119.29.29.29",
+            dns1_v6 = "2400:3200::1", dns2_v6 = "2402:4e00::",
+        },
+        lan = {
+            force_dns = "1",
+            dns1_v4 = "223.5.5.5", dns2_v4 = "119.29.29.29",
+            dns1_v6 = "2400:3200::1", dns2_v6 = "2402:4e00::",
+        },
+        dnsmasq = { enable = "1", noresolv = "0" },
+        ipv6 = { lan_mode = "server", wan_prefix = "auto" },
+    }
+    local changed = false
 
-return m
+    for sec, opts in pairs(defaults) do
+        if not m2.uci:get("dnssettings", sec) then
+            -- 建节走命令行，避免桥接 cursor 对三参 set 支持不一致
+            luci.sys.exec("uci set dnssettings." .. sec .. "=dnssettings")
+            changed = true
+        end
+        for k, v in pairs(opts) do
+            if not m2.uci:get("dnssettings", sec, k) then
+                -- WAN DNS 缺失时优先沿用 network 现值，避免覆盖用户已有设置
+                local cur = nil
+                if sec == "wan" then
+                    if k == "dns1_v4" then
+                        cur = (luci.sys.exec("uci -q get network.wan.dns 2>/dev/null"):match("(%S+)"))
+                    elseif k == "dns1_v6" then
+                        cur = (luci.sys.exec("uci -q get network.wan6.dns 2>/dev/null"):match("(%S+)"))
+                    end
+                end
+                local val = (cur and cur ~= "") and cur or v
+                luci.sys.exec("uci set dnssettings." .. sec .. "." .. k .. "='" .. val .. "'")
+                changed = true
+            end
+        end
+    end
+
+    if not m2.uci:get("dnssettings", "actions") then
+        luci.sys.exec("uci set dnssettings.actions=dnssettings")
+        changed = true
+    end
+
+    -- 转发列表为空时补默认
+    -- 注意：iStoreOS 24.10 的 ucode uci 桥接不提供 cursor:list_add，
+    -- 必须走命令行 uci add_list，否则页面加载即报错。
+    if not m2.uci:get("dnssettings", "dnsmasq", "forward_v4") then
+        luci.sys.exec("uci add_list dnssettings.dnsmasq.forward_v4='223.5.5.5'")
+        luci.sys.exec("uci add_list dnssettings.dnsmasq.forward_v4='119.29.29.29'")
+        changed = true
+    end
+    if not m2.uci:get("dnssettings", "dnsmasq", "forward_v6") then
+        luci.sys.exec("uci add_list dnssettings.dnsmasq.forward_v6='2400:3200::1'")
+        luci.sys.exec("uci add_list dnssettings.dnsmasq.forward_v6='2402:4e00::'")
+        changed = true
+    end
+
+    if changed then luci.sys.exec("uci commit dnssettings") end
+end
+_ensure_dns_defaults()
+
+return m, m_v6, m_lan, m2
+
+
 ```
 
 ### 5.6 files/usr/lib/lua/luci/model/cbi/netmanager/dns_staticv6.lua
 
-- **用途**：静态 IPv6 分配 CBI 模型：绑定 dhcp.host + 在线客户端速览（4 数据源交叉）+ 冲突检测
-- **规模**：489 行
-- **维护要点**：L32-166 get_online_devices 四数据源（dnsmasq 租约/ARP/odhcpd 租约/NDP）；v1.4.6 修复：L45-54 first_opt 用 foreach 替代 get_first（ucode 桥无此方法）；L171-216 merge_duplicate_hosts；L221 页面 GET 加载即执行 merge+commit（v1.4.6 待修）；L290 已注入 cbi_nav；L293/L308 on_before_commit/on_after_commit；L469-481 DUID 校验 4-130 hex
+- **用途**：静态 IP 分配 CBI 模型：绑定 dhcp.host + 在线客户端速览（四数据源交叉）+ 冲突检测
+- **规模**：693 行
+- **维护要点**：get_online_devices 四源（dnsmasq 租约/ARP/odhcpd/NDP）；first_opt() 替代 ucode 桥无 get_first；merge 只在 on_before_commit 执行
 
 ```lua
--- 静态 IP / IPv6 分配 - v1.4.4
--- v1.4.3 更新：
+-- 静态 IP / IPv6 分配 - v1.4.7
+-- v1.4.7 更新：
+--   on_before_commit 以 pcall 包裹：重复条目合并/幽灵清理异常不再中断保存，
+--   错误文本透传到页面消息（ucode LuCI 环境差异导致的问题可被用户直接看到）
+-- v1.4.6 更新：
+--   1. 重复 host 合并改为"仅检测、提交时执行"（原页面加载即 commit，GET 刷新就会改配置）
+--   2. DUID 误判修复：排除 DHCPv4 clientid 中的 MAC 原文型 / 01+MAC 硬件型标识
+--   3. WAN 侧过滤增强：设备名匹配 wan 前缀同时覆盖 pppoe-wan / pppoe-wan6 等命名
+--   4. odhcpd 重启改为按需（m.changed 才 restart，无改动不扰动 IPv6 分配）
+-- v1.4.3 历史：
 --   1. 在线客户端识别增强：IPv4（dnsmasq 租约 + ARP）+ IPv6（odhcpd 租约 + NDP 邻居表，覆盖 SLAAC 地址）
 --   2. 自动捕获 DUID：dnsmasq clientid / odhcpd 租约 / 主机名关联，在线设备 DUID 直接可见
 --   3. 冲突检测增强：MAC / IPv4 / 完整IPv6 / hostid 全部实时查重（修复旧版快照导致同批提交漏检）
@@ -3365,12 +6251,29 @@ local function get_online_devices()
                 end
                 if clientid and clientid ~= "" then
                     -- DHCPv6 客户端通常以 DUID 作为 DHCPv4 的 clientid（形如 id:00:01:...）
+                    -- 【v1.4.6 误判修复】排除两种"伪 DUID"：
+                    --   a) MAC 原文型：部分客户端直接把 MAC 塞进 clientid（dnsmasq 去掉冒号后 12 位 hex 与本条目 MAC 相同）
+                    --   b) 01+MAC 硬件型：DUID-LLT/DUID-EN 前缀形如 01:xx:xx:xx:xx:xx:xx...，其中含 MAC 的非真正 DUID
                     local cid = clientid:gsub("^id:", ""):gsub(":", "")
-                    if looks_like_duid(cid) then d.duid = cid end
+                    if looks_like_duid(cid) then
+                        local mac_nocolon = mac:gsub(":", ""):lower()
+                        local is_mac_itself = (cid:lower() == mac_nocolon)
+                        local is_01mac_type = cid:lower():sub(1, 2) == "01" and cid:lower():find(mac_nocolon, 1, true)
+                        if not is_mac_itself and not is_01mac_type then
+                            d.duid = cid
+                        end
+                    end
                 end
             end
         end
         f:close()
+    end
+
+    -- 【v1.4.6】WAN 侧设备判定：设备名或命名以 wan 结尾/包含 wan 词段（覆盖 wan / wan6 /
+    -- pppoe-wan / pppoe-wan6 / ppp0-wan / wan-eth 等），避免把 PPPoE 拨号对端误判为 LAN 设备
+    local function is_wan_side(dev)
+        if not dev or dev == "" then return false end
+        return dev:match("wan") ~= nil
     end
 
     -- 2. ARP 表: IP | HWtype | Flags | HWaddress | Mask | Device
@@ -3382,7 +6285,7 @@ local function get_online_devices()
                 first = false
             else
                 local ip, flags, mac, dev = line:match("^(%S+)%s+%S+%s+(%S+)%s+(%S+)%s+%S+%s+(%S+)")
-                if mac and ip and mac ~= "00:00:00:00:00:00" and dev and not dev:match("^wan") then
+                if mac and ip and mac ~= "00:00:00:00:00:00" and not is_wan_side(dev) then
                     local d = ensure(mac:upper())
                     if d.ip == "" then d.ip = ip end
                     if flags ~= "0x0" then d.online = true end
@@ -3391,6 +6294,7 @@ local function get_online_devices()
         end
         f:close()
     end
+
 
     -- 3. odhcpd DHCPv6 租约: <duid> <iaid> <name> <ts> <id> <len> <addr>
     --    行首 '#' 为前缀委托(PD)行，跳过；len=128 为地址分配
@@ -3417,7 +6321,7 @@ local function get_online_devices()
     if f then
         for line in f:lines() do
             local addr, dev, rest = line:match("^(%S+)%s+dev%s+(%S+)%s*(.-)%s*$")
-            if addr and dev and not dev:match("^wan") and not addr:match("^fe80") then
+            if addr and dev and not is_wan_side(dev) and not addr:match("^fe80") then
                 local mac6 = rest:match("lladdr%s+(%S+)")
                 if mac6 and mac6 ~= "00:00:00:00:00:00" then
                     local d = ensure(mac6:upper())
@@ -3442,9 +6346,35 @@ end
 
 -- ============================================================
 -- 工具函数：合并同 MAC 的重复 host 条目
+-- 【v1.4.6】拆分为两步：
+--   1. detect_duplicate_hosts()：页面加载时只统计不写库（原实现 GET 刷新页面
+--      就会静默 commit 修改 /etc/config/dhcp）
+--   2. do_merge_duplicate_hosts()：真正执行合并，挪到 on_before_commit
+--      （仅用户点击「保存并应用」时触发）
 -- ============================================================
-local function merge_duplicate_hosts()
+local function detect_duplicate_hosts()
     local x = require "uci".cursor()
+    local mac_seen = {}
+    local count = 0
+
+    x:foreach("dhcp", "host", function(s)
+        local mac = s.mac
+        if mac and mac ~= "" then
+            mac = mac:upper()
+            if mac_seen[mac] then
+                count = count + 1
+            else
+                mac_seen[mac] = true
+            end
+        end
+    end)
+
+    return count
+end
+
+-- 提交时真正执行合并（保留首条字段较全的条目，补齐其缺失字段后删除重复项）
+local function do_merge_duplicate_hosts(uci_handle)
+    local x = uci_handle or require "uci".cursor()
     local mac_seen = {}
     local to_delete = {}
 
@@ -3483,17 +6413,13 @@ local function merge_duplicate_hosts()
         x:delete("dhcp", name)
     end
 
-    if #to_delete > 0 then
-        x:commit("dhcp")
-    end
-
     return #to_delete
 end
 
 -- ============================================================
--- 页面加载时执行合并 + 获取在线设备 + 已绑定 MAC
+-- 页面加载时执行：仅检测重复（只读）+ 获取在线设备 + 已绑定 MAC
 -- ============================================================
-local merged_count = merge_duplicate_hosts()
+local merged_count = detect_duplicate_hosts()
 local online_devices = get_online_devices()
 
 -- 已绑定 MAC（在线速览标记用）
@@ -3519,32 +6445,119 @@ for mac, d in pairs(online_devices) do
 end
 table.sort(ov_rows, function(a, b) return a.mac < b.mac end)
 
--- 生成在线客户端速览 HTML
+-- 生成在线客户端速览 HTML（v1.6.1 优化：IPv6 地址折叠、彩色徽章、在线状态、DUID 显示）
 local function build_online_html()
     local out = {}
     if #ov_rows == 0 then
-        table.insert(out, '<em style="color:#999">' .. translate("未发现任何在线客户端") .. '</em>')
+        table.insert(out, '<div style="padding:20px;text-align:center;color:#9ca3af;font-size:13px;">' .. translate("未发现任何在线客户端") .. '</div>')
         return table.concat(out, "\n")
     end
-    table.insert(out, '<table class="table" style="width:auto;min-width:70%;margin-bottom:0;font-size:13px;">')
-    table.insert(out, '<tr><th>MAC</th><th>' .. translate("主机名") .. '</th><th>IPv4</th><th>IPv6</th><th>' .. translate("绑定状态") .. '</th></tr>')
+
+    -- 内联样式 + JS（IPv6 折叠展开）
+    table.insert(out, '<style>')
+    table.insert(out, '.nm-ov-table { width:100%; border-collapse:collapse; font-size:13px; margin-bottom:0; }')
+    table.insert(out, '.nm-ov-table th { background:#f9fafb; padding:10px 12px; text-align:left; font-weight:600; color:#6b7280; font-size:12px; border-bottom:2px solid #e5e7eb; }')
+    table.insert(out, '.nm-ov-table td { padding:9px 12px; border-bottom:1px solid #f3f4f6; vertical-align:top; }')
+    table.insert(out, '.nm-ov-table tr:hover td { background:#f9fafb; }')
+    table.insert(out, '.nm-ov-mono { font-family:"Consolas","Monaco",monospace; font-size:12px; }')
+    table.insert(out, '.nm-ov-v6-main { color:#2563eb; font-family:"Consolas","Monaco",monospace; font-size:12px; word-break:break-all; }')
+    table.insert(out, '.nm-ov-v6-more { color:#6b7280; font-size:11px; cursor:pointer; text-decoration:underline; margin-left:4px; }')
+    table.insert(out, '.nm-ov-v6-all { display:none; margin-top:4px; }')
+    table.insert(out, '.nm-ov-v6-all span { display:block; color:#2563eb; font-family:"Consolas","Monaco",monospace; font-size:11px; word-break:break-all; margin-bottom:2px; }')
+    table.insert(out, '.nm-ov-badge { display:inline-block; padding:2px 10px; border-radius:10px; font-size:11px; font-weight:600; }')
+    table.insert(out, '.nm-ov-badge-bound { background:#d1fae5; color:#059669; }')
+    table.insert(out, '.nm-ov-badge-unbound { background:#fef3c7; color:#d97706; }')
+    table.insert(out, '.nm-ov-online { display:inline-block; width:8px; height:8px; border-radius:50%; background:#10b981; margin-right:5px; box-shadow:0 0 4px #10b981; }')
+    table.insert(out, '.nm-ov-offline { display:inline-block; width:8px; height:8px; border-radius:50%; background:#d1d5db; margin-right:5px; }')
+    table.insert(out, '.nm-ov-duid { color:#9ca3af; font-size:10px; font-family:"Consolas",monospace; word-break:break-all; max-width:160px; }')
+    table.insert(out, '.nm-bind-btn { background:#2563eb; color:#fff; border:none; border-radius:5px; padding:3px 12px; font-size:12px; cursor:pointer; }')
+    table.insert(out, '.nm-bind-btn:hover { opacity:0.85; }')
+    table.insert(out, '.nm-bind-btn:disabled { opacity:0.5; cursor:default; }')
+    table.insert(out, '.nm-unbind-btn { background:#dc2626; color:#fff; border:none; border-radius:5px; padding:3px 12px; font-size:12px; cursor:pointer; }')
+    table.insert(out, '.nm-unbind-btn:hover { opacity:0.85; }')
+    table.insert(out, '.nm-unbind-btn:disabled { opacity:0.5; cursor:default; }')
+    table.insert(out, '</style>')
+
+    -- v1.8.4：一键绑定 API 地址与 CSRF token（与控制器 csrf_token 同源）
+    local nm_api = luci.dispatcher.build_url("admin", "netmanager", "api")
+    local nm_tok = (luci.dispatcher.context and luci.dispatcher.context.authtoken) and tostring(luci.dispatcher.context.authtoken) or ""
+    table.insert(out, '<script>')
+    table.insert(out, 'function nmToggleV6(id){var el=document.getElementById(id);var btn=document.getElementById(id+"_btn");if(el.style.display==="block"){el.style.display="none";btn.textContent=btn.getAttribute("data-more");}else{el.style.display="block";btn.textContent="收起";}}')
+    table.insert(out, 'var NM_API="' .. nm_api .. '";var NM_TOKEN="' .. nm_tok .. '";')
+    table.insert(out, 'function nmBind(btn){var mac=btn.getAttribute("data-mac"),ip=btn.getAttribute("data-ip"),name=btn.getAttribute("data-name"),duid=btn.getAttribute("data-duid");btn.disabled=true;btn.textContent="绑定中";var body=new URLSearchParams();body.set("action","static_bind");body.set("token",NM_TOKEN);body.set("mac",mac);body.set("ip",ip||"");body.set("name",name||"");body.set("duid",duid||"");fetch(NM_API,{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded; charset=UTF-8"},body:body.toString(),credentials:"same-origin"}).then(function(r){return r.text();}).then(function(t){if(t.indexOf("[ERROR]")>=0){alert("绑定失败："+t.replace(/\\[CMD\\][^\\n]*\\n?/,"").trim());btn.disabled=false;btn.textContent="绑定";}else{location.reload();}}).catch(function(e){alert("请求失败："+e);btn.disabled=false;btn.textContent="绑定";});}')
+    table.insert(out, 'function nmUnbind(btn){var mac=btn.getAttribute("data-mac");if(!confirm("确定解绑 "+mac+" ？解绑后该设备恢复动态分配。"))return;btn.disabled=true;btn.textContent="解绑中";var body=new URLSearchParams();body.set("action","static_unbind");body.set("token",NM_TOKEN);body.set("mac",mac);fetch(NM_API,{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded; charset=UTF-8"},body:body.toString(),credentials:"same-origin"}).then(function(r){return r.text();}).then(function(t){if(t.indexOf("[ERROR]")>=0){alert("解绑失败："+t.replace(/\\[CMD\\][^\\n]*\\n?/,"").trim());btn.disabled=false;btn.textContent="解绑";}else{location.reload();}}).catch(function(e){alert("请求失败："+e);btn.disabled=false;btn.textContent="解绑";});}')
+    table.insert(out, 'document.addEventListener("click",function(e){if(!e.target.closest)return;var b=e.target.closest(".nm-bind-btn");if(b){nmBind(b);return;}var u=e.target.closest(".nm-unbind-btn");if(u){nmUnbind(u);}});')
+    table.insert(out, '</script>')
+
+    table.insert(out, '<table class="nm-ov-table">')
+    table.insert(out, '<tr><th style="width:130px">' .. translate("状态") .. '</th><th style="width:140px">MAC</th><th>' .. translate("主机名") .. '</th><th style="width:130px">IPv4</th><th>IPv6</th><th style="width:90px">' .. translate("绑定") .. '</th><th style="width:80px">' .. translate("操作") .. '</th></tr>')
+
+    local row_idx = 0
     for _, r in ipairs(ov_rows) do
-        local v4 = r.ip ~= "" and esc(r.ip) or '-'
-        local v6s = {}
+        row_idx = row_idx + 1
+        local v4 = r.ip ~= "" and esc(r.ip) or '<span style="color:#d1d5db">—</span>'
+        local name = r.name ~= "" and esc(r.name) or '<span style="color:#d1d5db">—</span>'
+
+        -- IPv6 地址折叠：过滤掉链路本地地址(fe80)，全局地址第一个显示，其余折叠
+        local global_v6 = {}
         for _, a in ipairs(r.ip6s) do
-            table.insert(v6s, '<span style="color:#2471a3">' .. esc(a) .. '</span>')
+            if not a:match("^fe80") then
+                table.insert(global_v6, a)
+            end
         end
-        local v6 = (#v6s > 0) and table.concat(v6s, '<br>') or '-'
-        local name = r.name ~= "" and esc(r.name) or '-'
+
+        local v6_html = ""
+        -- v1.8.6：标注地址性质——公网 GUA(2000::/3) 随前缀/SLAAC 变化属动态，
+        -- ULA(fd/fc) 才是可静态绑定的稳定地址，避免把动态公网误认为静态绑定。
+        local function v6tag(a)
+            if a:match("^[23]") then
+                return '<span style="color:#9ca3af;font-size:10px;">动态公网 </span>'
+            elseif a:lower():match("^f[cd]") then
+                return '<span style="color:#059669;font-size:10px;">ULA </span>'
+            end
+            return ''
+        end
+        if #global_v6 == 0 then
+            v6_html = '<span style="color:#d1d5db">—</span>'
+        else
+            v6_html = '<span class="nm-ov-v6-main">' .. v6tag(global_v6[1]) .. esc(global_v6[1]) .. '</span>'
+            if #global_v6 > 1 then
+                local more_count = #global_v6 - 1
+                local all_id = 'nm_v6_all_' .. row_idx
+                local btn_id = all_id .. '_btn'
+                v6_html = v6_html .. '<span class="nm-ov-v6-more" id="' .. btn_id .. '" data-more="+' .. more_count .. ' 个" onclick="nmToggleV6(\'' .. all_id .. '\')">+' .. more_count .. ' 个</span>'
+                v6_html = v6_html .. '<div class="nm-ov-v6-all" id="' .. all_id .. '">'
+                for i = 2, #global_v6 do
+                    v6_html = v6_html .. '<span>' .. v6tag(global_v6[i]) .. esc(global_v6[i]) .. '</span>'
+                end
+                v6_html = v6_html .. '</div>'
+            end
+        end
+
+        -- 绑定状态徽章
         local badge = r.bound
-            and '<span style="color:#2ecc71">●</span> ' .. translate("已绑定")
-            or '<span style="color:#e67e22">○</span> ' .. translate("未绑定")
+            and '<span class="nm-ov-badge nm-ov-badge-bound">' .. translate("已绑定") .. '</span>'
+            or '<span class="nm-ov-badge nm-ov-badge-unbound">' .. translate("未绑定") .. '</span>'
+
+        -- 在线状态 + DUID
+        local status_html = '<span class="nm-ov-online"></span><span style="color:#059669;font-size:11px;font-weight:600;">在线</span>'
+        if r.duid and r.duid ~= "" then
+            status_html = status_html .. '<br><span class="nm-ov-duid" title="DUID: ' .. esc(r.duid) .. '">DUID: ' .. esc(r.duid:sub(1, 16)) .. '...</span>'
+        end
+
+        -- v1.8.5：操作列——已绑定设备可一键解绑，未绑定设备一键绑定（data 属性传参，委托点击）
+        local action_html
+        if r.bound then
+            action_html = '<button class="nm-unbind-btn" data-mac="' .. esc(r.mac) .. '">' .. translate("解绑") .. '</button>'
+        else
+            action_html = '<button class="nm-bind-btn" data-mac="' .. esc(r.mac) .. '" data-ip="' .. esc(r.ip)
+                .. '" data-name="' .. esc(r.name) .. '" data-duid="' .. esc(r.duid) .. '">' .. translate("绑定") .. '</button>'
+        end
+
         table.insert(out, string.format(
-            '<tr><td style="font-family:monospace">%s</td><td>%s</td>' ..
-            '<td style="font-family:monospace">%s</td>' ..
-            '<td style="font-family:monospace;word-break:break-all;max-width:280px">%s</td>' ..
-            '<td>%s</td></tr>',
-            esc(r.mac), name, v4, v6, badge))
+            '<tr><td>%s</td><td class="nm-ov-mono">%s</td><td>%s</td>' ..
+            '<td class="nm-ov-mono">%s</td><td>%s</td><td>%s</td><td>%s</td></tr>',
+            status_html, esc(r.mac), name, v4, v6_html, badge, action_html))
     end
     table.insert(out, '</table>')
     return table.concat(out, "\n")
@@ -3556,7 +6569,8 @@ local online_html = build_online_html()
 -- ============================================================
 local desc = translate("为设备绑定静态 IPv4 / IPv6 地址。IPv4 填 ip；IPv6 推荐填 hostid（地址后缀），运营商前缀变化时地址仍保持一致；ip6 填完整地址，仅适合 ULA 或前缀固定场景。")
 if merged_count > 0 then
-    desc = desc .. " \n\n" .. translate("注意") .. "：" .. translate("已自动合并") .. " " .. merged_count .. " " .. translate("个重复的 MAC 绑定条目。")
+    desc = desc .. " \n\n" .. translate("注意") .. "：" .. translate("检测到") .. " " .. merged_count .. " " ..
+        translate("个重复的 MAC 绑定条目，点击「保存并应用」时将自动合并。")
 end
 
 m = Map("dhcp", translate("静态 IP / IPv6 分配"), desc)
@@ -3564,24 +6578,53 @@ m = Map("dhcp", translate("静态 IP / IPv6 分配"), desc)
 -- v1.4.6 修复：CBI 页面缺少页内导航（从自绘页面进入后页签消失），注入导航模板
 m:append(Template("netmanager/cbi_nav"))
 
--- 保存前清理幽灵条目（MAC 与 DUID 均为空，避免"消失但占位"无法删除）
+-- 保存前：合并重复 MAC 条目 + 清理幽灵条目（MAC 与 DUID 均为空，避免"消失但占位"无法删除）
+-- 【v1.4.6】合并由页面加载时移入此处（仅在真实提交时写库，GET 刷新不再改配置）
+-- 【v1.4.7 防御】pcall 包裹：合并/清理异常不阻断用户保存，错误透传到页面消息
 m.on_before_commit = function(self)
-    local to_del = {}
-    self.uci:foreach("dhcp", "host", function(s)
-        local mac = s.mac or ""
-        local duid = s.duid or ""
-        if mac == "" and duid == "" then
-            table.insert(to_del, s[".name"])
+    local ok, err = pcall(function()
+        do_merge_duplicate_hosts(self.uci)
+        local to_del = {}
+        self.uci:foreach("dhcp", "host", function(s)
+            local mac = s.mac or ""
+            local duid = s.duid or ""
+            if mac == "" and duid == "" then
+                table.insert(to_del, s[".name"])
+            end
+        end)
+        for _, n in ipairs(to_del) do
+            self.uci:delete("dhcp", n)
         end
     end)
-    for _, n in ipairs(to_del) do
-        self.uci:delete("dhcp", n)
+    if not ok then
+        self.message = "重复条目合并/幽灵清理失败（保存仍已继续）：" .. tostring(err)
     end
 end
 
--- 保存后应用配置（odhcpd 需 restart；dnsmasq 用 reload 避免 DNS 中断）
+-- 保存后应用配置（dnsmasq 用 reload 避免 DNS 中断）
+-- 【v1.4.6】odhcpd 由无条件 restart 改为按需：仅本次有实际改动（changed）才重启，
+-- 避免每次保存（甚至无改动提交）都导致 IPv6 租约重置、设备短暂掉线
 m.on_after_commit = function(self)
-    sys.call("/etc/init.d/odhcpd restart >/dev/null 2>&1")
+    if self.changed then
+        -- v1.8.0：先收敛可能存在的重复 odhcpd 实例再统一拉起。
+        -- 直接 restart 在已有手动实例时会留下两个进程同时写 RFC9096 piofile，
+        -- 造成前缀记忆互相覆盖、RA 广播不一致。
+        sys.call([=[
+            n=$(ps w 2>/dev/null | grep -c '[o]dhcpd')
+            if [ "$n" -gt 1 ]; then
+                /etc/init.d/odhcpd stop >/dev/null 2>&1
+                sleep 1
+                killall odhcpd 2>/dev/null
+                sleep 1
+                /etc/init.d/odhcpd start >/dev/null 2>&1
+            else
+                /etc/init.d/odhcpd restart >/dev/null 2>&1
+            fi
+        ]=])
+        -- v1.8.0：hostid / 静态绑定变化会改变主机的 IPv6 后缀，
+        -- 已登记跟踪的端口转发目标需要随之重算。
+        sys.call("/usr/sbin/netmanager port_sync_v6 --quiet >/dev/null 2>&1 &")
+    end
     sys.call("/etc/init.d/dnsmasq reload >/dev/null 2>&1")
 end
 
@@ -3644,31 +6687,52 @@ function o_mac.validate(self, value, section)
     return value
 end
 
--- ---------- 当前在线 IP（只读，IPv4 + IPv6） ----------
+-- ---------- 当前在线 IP（只读，IPv4 + IPv6 折叠显示） ----------
 o_cur_ip = s:option(DummyValue, "_current_ip", translate("当前在线IP"))
 o_cur_ip.rawhtml = true
+local cur_ip_row = 0
 function o_cur_ip.cfgvalue(self, section)
+    cur_ip_row = cur_ip_row + 1
     local mac_val = m.uci:get("dhcp", section, "mac")
     if mac_val then
         local dev = online_devices[mac_val:upper()]
         if dev then
             local parts = {}
             if dev.ip and dev.ip ~= "" then
-                table.insert(parts, '<span style="font-family:monospace">' .. esc(dev.ip) .. '</span>')
+                table.insert(parts, '<span style="font-family:monospace;font-size:12px;color:#111827">' .. esc(dev.ip) .. '</span>')
             end
+            -- IPv6 全局地址折叠（过滤 fe80 链路本地）
+            local global_v6 = {}
             for _, a in ipairs(dev.ip6s) do
-                table.insert(parts, '<span style="font-family:monospace;color:#2471a3;word-break:break-all">' .. esc(a) .. '</span>')
+                if not a:match("^fe80") then
+                    table.insert(global_v6, a)
+                end
+            end
+            if #global_v6 > 0 then
+                local v6_html = '<span style="font-family:monospace;font-size:11px;color:#2563eb;word-break:break-all">' .. esc(global_v6[1]) .. '</span>'
+                if #global_v6 > 1 then
+                    local more = #global_v6 - 1
+                    local aid = 'nm_cur_v6_' .. cur_ip_row
+                    v6_html = v6_html .. '<span class="nm-ov-v6-more" id="' .. aid .. '_btn" data-more="+' .. more .. '" onclick="nmToggleV6(\'' .. aid .. '\')">+' .. more .. '</span>'
+                    v6_html = v6_html .. '<div class="nm-ov-v6-all" id="' .. aid .. '">'
+                    for i = 2, #global_v6 do
+                        v6_html = v6_html .. '<span>' .. esc(global_v6[i]) .. '</span>'
+                    end
+                    v6_html = v6_html .. '</div>'
+                end
+                table.insert(parts, v6_html)
             end
             if dev.duid and dev.duid ~= "" then
-                table.insert(parts, '<span style="color:#e67e22;font-family:monospace;font-size:10px">DUID: ' .. esc(dev.duid) .. '</span>')
+                table.insert(parts, '<span style="color:#9ca3af;font-family:monospace;font-size:10px" title="DUID: ' .. esc(dev.duid) .. '">DUID: ' .. esc(dev.duid:sub(1, 12)) .. '…</span>')
             end
             if #parts > 0 then
-                local dot = dev.online and '<span style="color:#2ecc71">●</span>' or '<span style="color:#999">○</span>'
-                return dot .. ' ' .. table.concat(parts, '<br>')
+                local dot = dev.online and '<span class="nm-ov-online"></span>' or '<span class="nm-ov-offline"></span>'
+                local label = dev.online and '<span style="color:#059669;font-size:10px;font-weight:600">在线</span>' or '<span style="color:#9ca3af;font-size:10px">离线</span>'
+                return dot .. label .. '<br>' .. table.concat(parts, '<br>')
             end
         end
     end
-    return '<span style="color:#999">○ ' .. translate("离线/未发现") .. '</span>'
+    return '<span class="nm-ov-offline"></span><span style="color:#9ca3af;font-size:11px">' .. translate("离线/未发现") .. '</span>'
 end
 
 -- ---------- IPv4 静态地址 ----------
@@ -3686,6 +6750,18 @@ function o_ip4.validate(self, value, section)
         end)
         if conflict then
             return nil, translate("该 IPv4 已被其他条目使用") .. ": " .. esc(conflict)
+        end
+        -- v1.8.4：校验落在 LAN 网段且不等于路由器自身地址
+        local lanip = sys.exec("uci -q get network.lan.ipaddr 2>/dev/null"):gsub("%s+", "")
+        if lanip ~= "" then
+            if value == lanip then
+                return nil, translate("该 IPv4 是路由器自身地址，不可绑定")
+            end
+            local lp = lanip:match("^(%d+%.%d+%.%d+)%.")
+            local vp = value:match("^(%d+%.%d+%.%d+)%.")
+            if lp and vp and lp ~= vp then
+                return nil, translate("该 IPv4 不在 LAN 网段") .. " " .. lp .. ".0/24 " .. translate("内")
+            end
         end
     end
     return value
@@ -3727,6 +6803,12 @@ o_ip6.description = translate("仅适合 ULA(fd开头)，留空则用 hostid 自
 function o_ip6.validate(self, value, section)
     if value and value ~= "" then
         local val_lower = value:lower()
+        -- v1.8.6：完整 IPv6 仅允许 ULA（fc00::/7，实际 fd 开头）。
+        -- 公网 GUA（2000::/3，如 24xx/2408）随运营商前缀重拨变化、SLAAC 后缀随机，
+        -- 设为静态必失效；公网地址请改用 hostid 后缀（按当前前缀自动合成，前缀变仍一致）。
+        if not val_lower:match("^f[cd]") then
+            return nil, translate("完整IPv6仅支持 ULA(fd/fc 开头)；公网地址(如2408)会随前缀变化失效，请改用 hostid 后缀")
+        end
         local conflict
         m.uci:foreach("dhcp", "host", function(s2)
             if s2[".name"] ~= section and s2.ip6 and s2.ip6 ~= "" and s2.ip6:lower() == val_lower then
@@ -3762,13 +6844,15 @@ o_enabled.rmempty = false
 o_enabled.default = "1"
 
 return m
+
+
 ```
 
 ### 5.7 files/usr/lib/lua/luci/view/netmanager/common_head.htm
 
-- **用途**：全部视图公共头：CSS 样式 + 公共 JS（escapeHtml / apiFetch / withBusy）
-- **规模**：156 行
-- **维护要点**：L74-155 公共 JS 区。apiFetch 带超时与会话过期处理，但目前仅 ssh_log 使用（v1.4.6 统一）；withBusy 为死代码待启用或删除；L75 附近版本注释是版本号登记处之一
+- **用途**：全部视图公共头：CSS 样式 + 公共 JS（escapeHtml / nmFetch / CSRF token / withBusy）
+- **规模**：232 行
+- **维护要点**：nmFetch 支持 FormData/string/URLSearchParams 三种体，新增调用勿绕开它
 
 ```html
 <style>
@@ -3845,9 +6929,20 @@ return m
 .text-info { color: #2563eb; }
 </style>
 <script>
-/* ===== 公共 JS（v1.4.5）：HTML转义 + API 调用封装 =====
+/* ===== 公共 JS（v1.4.7）：HTML转义 + API 调用封装（token/超时/会话过期） =====
    背景：命令输出（含用户可控的文件名/用户名/日志内容）此前直接拼 innerHTML，
-   构成存储型 XSS；统一走本封装消除注入面。 */
+   构成存储型 XSS；统一走本封装消除注入面。
+   v1.4.6：API 强制 CSRF Token（渲染时注入变量），apiFetch 自动携带。
+   v1.4.7：改用 LuCI 框架内建模板变量 token（= context.authtoken，与 CBI 表单
+   同源），不再 require controller 模块（v1.4.6 的自派生 token 在 ucode LuCI
+   下因 context.session.id 不存在而恒为空，导致全部 API 403）。 */
+
+/* CSRF Token：框架 authtoken，所有 API 调用必须携带（跨站页面拿不到）
+   注：CBI 页面不加载本文件，其表单按钮由 LuCI 框架自身 token 机制保护
+   v1.4.7 修复：不依赖模板变量 token（ucode LuCI 中该变量可能为空导致全部 API 403），
+   直接从 luci.dispatcher.context.authtoken 获取，与控制器 csrf_token() 同源 */
+<% local _nm_authtok = (luci.dispatcher.context and luci.dispatcher.context.authtoken) and tostring(luci.dispatcher.context.authtoken) or "" %>
+var CSRF_TOKEN = '<%=pcdata(_nm_authtok)%>';
 
 /* HTML 转义：任何要写入 innerHTML 的动态内容必须先过此函数 */
 function escapeHtml(s) {
@@ -3875,15 +6970,31 @@ function showResult(el, data) {
 	el.innerHTML = '<pre class="result-pre">' + lines.join('\n') + '</pre>';
 }
 
-/* API 调用封装：POST + 超时控制 + 错误提示
-   action: API 动作名；params: 参数对象；opts: {timeout, parseFn}
-   返回 Promise<response 文本>；失败时 reject Error（message 已可读） */
+/* API 调用封装：POST + CSRF Token + 超时控制 + 错误提示
+   v1.4.6 兼容三种调用形态：
+   1) apiFetch('action', {k: 'v'}, opts)   —— 常规调用（推荐）
+   2) apiFetch('action=x&k=v')              —— 兼容旧 fetch 的原始 body 字符串
+      （首参含 '=' 视为原始 body，自动追加 token）
+   3) apiFetch(null, formData)              —— FormData 上传（调用方自行 append action，
+      本函数只补 token） */
 function apiFetch(action, params, opts) {
 	opts = opts || {};
-	params = params || {};
-	var body = new URLSearchParams();
-	body.set('action', action);
-	for (var k in params) { if (params.hasOwnProperty(k)) body.set(k, params[k]); }
+	var isForm = (params instanceof FormData);
+	var body;
+	if (isForm) {
+		body = params;
+		body.append('token', CSRF_TOKEN);
+	} else if (typeof action === 'string' && action.indexOf('=') > 0) {
+		// 原始 body 字符串形态：直接追加 token
+		body = action + '&token=' + encodeURIComponent(CSRF_TOKEN);
+	} else {
+		params = params || {};
+		body = new URLSearchParams();
+		body.set('action', action);
+		body.set('token', CSRF_TOKEN);
+		for (var k in params) { if (params.hasOwnProperty(k)) body.set(k, params[k]); }
+		body = body.toString();
+	}
 
 	var ctrl = new AbortController();
 	var timer = setTimeout(function () { ctrl.abort(); }, opts.timeout || 30000);
@@ -3892,8 +7003,8 @@ function apiFetch(action, params, opts) {
 	var API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
 	return fetch(API_URL, {
 		method: 'POST',
-		headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
-		body: body.toString(),
+		headers: isForm ? {} : { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+		body: body,
 		signal: ctrl.signal,
 		credentials: 'same-origin'
 	}).then(function (res) {
@@ -3901,8 +7012,57 @@ function apiFetch(action, params, opts) {
 		if (res.redirected && /\/login\.html|\/admin\/login/.test(res.url)) {
 			throw new Error('会话已过期，请刷新页面重新登录');
 		}
+		if (res.status === 403) {
+			return res.text().then(function (t) { throw new Error(t.replace('[ERROR] ', '') || 'CSRF 校验失败，请刷新页面'); });
+		}
 		if (!res.ok) throw new Error('服务器响应异常: HTTP ' + res.status);
 		return res.text();
+	}).catch(function (err) {
+		clearTimeout(timer);
+		if (err.name === 'AbortError') throw new Error('请求超时，请稍后重试');
+		throw err;
+	});
+}
+
+/* nmFetch：v1.4.6 兼容层——原 fetch(API_URL, {...}) 调用的零改动迁移
+   自动完成：POST + CSRF Token 附加 + 超时 + 会话过期/403 检测 + FormData 支持
+   形态1：nmFetch({method:'POST', headers:{...}, body:'action=x&k=v'})
+   形态2：nmFetch({method:'POST', body: formData})  // multipart 上传，token 附加到 FormData
+   v1.4.9 修复：返回 Response 对象（与原生 fetch 一致），此前内部已 res.text() 返回字符串，
+   但调用方仍写 .then(r => r.text()) 导致 "r.text is not a function" 全部 API 失败 */
+function nmFetch(opts) {
+	opts = opts || {};
+	var isForm = (opts.body instanceof FormData);
+	if (isForm) {
+		opts.body.append('token', CSRF_TOKEN);
+	} else if (typeof URLSearchParams !== 'undefined' && opts.body instanceof URLSearchParams) {
+		// v1.8.10：URLSearchParams 形态此前漏补 token → 403 静默失败（规则页"添加无反应"根因）
+		opts.body.set('token', CSRF_TOKEN);
+		opts.body = opts.body.toString();
+	} else if (typeof opts.body === 'string') {
+		opts.body = opts.body + (opts.body ? '&' : '') + 'token=' + encodeURIComponent(CSRF_TOKEN);
+	}
+
+	var ctrl = new AbortController();
+	var timer = setTimeout(function () { ctrl.abort(); }, 90000); // 在线更新下载等长操作给足 90s
+
+	var API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
+	return fetch(API_URL, {
+		method: opts.method || 'POST',
+		headers: isForm ? {} : (opts.headers || { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' }),
+		body: opts.body,
+		signal: ctrl.signal,
+		credentials: 'same-origin'
+	}).then(function (res) {
+		clearTimeout(timer);
+		if (res.redirected && /\/login\.html|\/admin\/login/.test(res.url)) {
+			throw new Error('会话已过期，请刷新页面重新登录');
+		}
+		if (res.status === 403) {
+			return res.text().then(function (t) { throw new Error(t.replace('[ERROR] ', '') || 'CSRF 校验失败，请刷新页面'); });
+		}
+		if (!res.ok) throw new Error('服务器响应异常: HTTP ' + res.status);
+		return res;  // v1.4.9：返回 Response 对象，调用方自行 .text() / .json()
 	}).catch(function (err) {
 		clearTimeout(timer);
 		if (err.name === 'AbortError') throw new Error('请求超时，请稍后重试');
@@ -3927,13 +7087,15 @@ function withBusy(btn, fn) {
 	);
 }
 </script>
+
+
 ```
 
 ### 5.8 files/usr/lib/lua/luci/view/netmanager/nav.htm
 
-- **用途**：页内导航条：防火墙 6 页 + DNS 设置 / 静态 IPv6 两个 CBI 入口
+- **用途**：页内导航条：防火墙 6 页 + 上网设置 / 静态 IP 两个 CBI 入口
 - **规模**：10 行
-- **维护要点**：与 controller 菜单双维护：新增页面需两处同步修改
+- **维护要点**：与 controller 菜单双维护，新增页面两处同步
 
 ```html
 <div class="netmanager-nav">
@@ -3942,55 +7104,144 @@ function withBusy(btn, fn) {
     <a href="<%=luci.dispatcher.build_url("admin/netmanager/firewall_rules")%>" class="<% if luci.dispatcher.context.requestpath[3] == 'firewall_rules' then %>active<% end %>">📋 规则管理</a>
     <a href="<%=luci.dispatcher.build_url("admin/netmanager/ssh_log")%>" class="<% if luci.dispatcher.context.requestpath[3] == 'ssh_log' then %>active<% end %>">🔐 SSH登录日志</a>
     <a href="<%=luci.dispatcher.build_url("admin/netmanager/access_log")%>" class="<% if luci.dispatcher.context.requestpath[3] == 'access_log' then %>active<% end %>">🌐 端口访问日志</a>
-    <a href="<%=luci.dispatcher.build_url("admin/netmanager/dns")%>" class="<% if luci.dispatcher.context.requestpath[3] == 'dns' then %>active<% end %>">🧭 DNS设置</a>
-    <a href="<%=luci.dispatcher.build_url("admin/netmanager/dns_staticv6")%>" class="<% if luci.dispatcher.context.requestpath[3] == 'dns_staticv6' then %>active<% end %>">📮 静态IPv6分配</a>
+    <a href="<%=luci.dispatcher.build_url("admin/netmanager/dns")%>" class="<% if luci.dispatcher.context.requestpath[3] == 'dns' then %>active<% end %>">🌐 上网设置</a>
+    <a href="<%=luci.dispatcher.build_url("admin/netmanager/dns_staticv6")%>" class="<% if luci.dispatcher.context.requestpath[3] == 'dns_staticv6' then %>active<% end %>">📮 静态IP分配</a>
     <a href="<%=luci.dispatcher.build_url("admin/netmanager/settings")%>" class="<% if luci.dispatcher.context.requestpath[3] == 'settings' then %>active<% end %>">⚙️ 设置</a>
 </div>
+
+
 ```
 
 ### 5.9 files/usr/lib/lua/luci/view/netmanager/cbi_nav.htm
 
-- **用途**：CBI 页面专用导航条（v1.4.6 新增）：自带内联样式，由 dns_settings / dns_staticv6 以 Template 节点注入，修复 CBI 页页签消失
-- **规模**：28 行
-- **维护要点**：CBI 页面专用导航（v1.4.6 新增修复 bug2）：自带内联样式（CBI 页不加载 common_head）；active 判断 requestpath[3] 带 nil 防护
+- **用途**：CBI 页面专用导航条：自带内联样式，由两个 CBI 模型以 Template 节点注入
+- **规模**：114 行
+- **维护要点**：CBI 页不加载 common_head，样式必须内联；active 判断带 nil 防护
 
 ```html
-<%--
-    netmanager/cbi_nav.htm - CBI 页面专用页内导航条
-    用途：DNS设置 / 静态IPv6分配 两个 CBI 表单页面无自绘视图的 nav.htm 页内导航，
-         从自绘页面进入后页签消失（bug2），本模板以 CBI Template 节点注入补齐。
-    特点：自带内联样式（CBI 页面不加载 common_head.htm，不能依赖外部样式类）；
-         active 判断与 nav.htm 一致（requestpath[3]）。
---%>
+<%#
+    netmanager/cbi_nav.htm - CBI 页面专用页内导航 + 布局对齐
+    v1.8.4：让 CBI 页面（上网设置 / 静态IPv6分配）与自绘页面（端口转发等）布局一致：
+            主题头 → 「网络管理」标题栏 → 导航条 → 单一白卡内容区（h2页标题 + 各h3子节）。
+    做法：模板输出标题栏+导航+样式+脚本；脚本在 DOMContentLoaded 把两个 cbi-map
+          （连同各自 form 整体移动，不破坏表单提交）合并进一个 .netmanager-content 卡片，
+          页标题/描述移到导航下方。CBI 页面不加载 common_head.htm，样式在此自带。
+    注意：LuCI 模板注释用井号语法，注释内不可出现百分号加大于号组合。
+%>
 <%
 local path = luci.dispatcher.context.requestpath
 local cur = (type(path) == "table") and (path[3] or "") or ""
 local function url(...) return luci.dispatcher.build_url("admin", "netmanager", ...) end
 local function cls(id) return (cur == id) and ' class="active"' or '' end
 %>
-<style>
-.netmanager-nav { display: flex; gap: 2px; background: #fff; padding: 6px; border-radius: 8px; margin: 0 0 14px 0; box-shadow: 0 1px 2px rgba(0,0,0,0.06); border: 1px solid #e5e7eb; flex-wrap: wrap; }
-.netmanager-nav a { padding: 7px 14px; text-decoration: none; color: #6b7280; border-radius: 6px; font-size: 13px; transition: all 0.15s; }
-.netmanager-nav a:hover { background: #f3f4f6; color: #111827; }
-.netmanager-nav a.active { background: #2563eb; color: #fff; }
-</style>
+<div class="netmanager-header">
+    <h1>网络管理</h1>
+    <span class="netmanager-author">吾爱破解liyu0828</span>
+</div>
 <div class="netmanager-nav">
     <a href="<%=url('overview')%>"<%=cls('overview')%>>📊 系统概览</a>
     <a href="<%=url('port_forward')%>"<%=cls('port_forward')%>>🔄 端口转发</a>
     <a href="<%=url('firewall_rules')%>"<%=cls('firewall_rules')%>>📋 规则管理</a>
     <a href="<%=url('ssh_log')%>"<%=cls('ssh_log')%>>🔐 SSH登录日志</a>
     <a href="<%=url('access_log')%>"<%=cls('access_log')%>>🌐 端口访问日志</a>
-    <a href="<%=url('dns')%>"<%=cls('dns')%>>🧭 DNS设置</a>
-    <a href="<%=url('dns_staticv6')%>"<%=cls('dns_staticv6')%>>📮 静态IPv6分配</a>
+    <a href="<%=url('dns')%>"<%=cls('dns')%>>🌐 上网设置</a>
+    <a href="<%=url('dns_staticv6')%>"<%=cls('dns_staticv6')%>>📮 静态IP分配</a>
     <a href="<%=url('settings')%>"<%=cls('settings')%>>⚙️ 设置</a>
 </div>
+<style>
+/* ===== 与 common_head.htm 一致的框架样式（CBI 页面不加载 common_head，自带） ===== */
+.netmanager-header { display:flex; justify-content:space-between; align-items:center; padding:14px 20px; background:#fff; border-radius:8px; margin-bottom:12px; box-shadow:0 1px 2px rgba(0,0,0,0.06); border:1px solid #e5e7eb; }
+.netmanager-header h1 { margin:0; font-size:18px; font-weight:600; color:#111827; }
+.netmanager-author { font-size:12px; color:#9ca3af; }
+.netmanager-nav { display:flex; gap:2px; background:#fff; padding:6px; border-radius:8px; margin-bottom:12px; box-shadow:0 1px 2px rgba(0,0,0,0.06); border:1px solid #e5e7eb; flex-wrap:wrap; }
+.netmanager-nav a { padding:7px 14px; text-decoration:none; color:#6b7280; border-radius:6px; font-size:13px; transition:all 0.15s; }
+.netmanager-nav a:hover { background:#f3f4f6; color:#111827; }
+.netmanager-nav a.active { background:#2563eb; color:#fff; }
+.netmanager-content { background:#fff; border-radius:8px; padding:20px; box-shadow:0 1px 2px rgba(0,0,0,0.06); border:1px solid #e5e7eb; max-width:1200px; }
+.netmanager-content > h2 { margin:0 0 16px 0; font-size:16px; font-weight:600; color:#111827; padding-bottom:12px; border-bottom:1px solid #f3f4f6; }
+.nm-page-intro { color:#6b7280; font-size:13px; line-height:1.7; margin:0 0 18px 0; }
+/* ===== CBI 元素改为内容卡内的扁平子节（对齐端口转发页的 h3 子节风格） ===== */
+.cbi-map { background:transparent !important; border:none !important; box-shadow:none !important; padding:0 !important; margin:0 !important; max-width:none; }
+.cbi-map > h2 { display:none; }
+.cbi-section { background:transparent !important; border:none !important; box-shadow:none !important; padding:0 !important; margin:0 0 22px 0 !important; }
+.cbi-section > h3 { color:#374151 !important; font-size:14px; font-weight:600; margin:0 0 10px 0; padding:0; border:none; }
+.cbi-section-descr { color:#6b7280; font-size:13px; line-height:1.6; margin-bottom:12px; }
+.cbi-value { padding:8px 0; border-bottom:1px solid #f9fafb; }
+.cbi-value-title { color:#374151; font-weight:500; font-size:13px; }
+.cbi-value-field { font-size:13px; color:#374151; }
+.cbi-input-text, .cbi-input-select, .cbi-input-textarea,
+input.cbi-input-text, select.cbi-input-select, textarea.cbi-input-textarea {
+    border:1px solid #d1d5db !important; border-radius:5px; padding:5px 9px; font-size:13px; background:#fff; color:#1f2937; }
+.cbi-input-text:focus, .cbi-input-select:focus, textarea:focus { outline:none; border-color:#2563eb !important; }
+.cbi-button { border-radius:6px; font-size:13px; padding:6px 14px; border:none; cursor:pointer; }
+.cbi-button-apply, .cbi-button-save { background:#2563eb !important; color:#fff !important; }
+.cbi-button-neutral { background:#6b7280 !important; color:#fff !important; }
+.cbi-button-reset, .cbi-button-link { background:#f3f4f6 !important; color:#374151 !important; }
+.cbi-section-table, table.cbi-section-table { width:100%; border-collapse:collapse; font-size:13px; }
+.cbi-section-table th { background:#f9fafb; color:#6b7280; font-weight:600; font-size:12px; padding:9px 12px; border-bottom:1px solid #e5e7eb; text-align:left; }
+.cbi-section-table td { padding:9px 12px; border-bottom:1px solid #f3f4f6; vertical-align:top; }
+.cbi-section-table tr:hover td { background:#f9fafb; }
+.cbi-page-actions { padding:12px 0 0 0; text-align:right; }
+</style>
+<script>
+/* v1.8.4：把 CBI 页面结构对齐自绘页面。
+   将标题栏/导航提到内容卡之外，两个 cbi-map（含 form 整体）合并进单一 .netmanager-content，
+   页标题取首个 map 的 h2（无则取导航 active 文本），描述作为引言置于标题下。
+   整体移动 map 节点（form 随之移动），不拆解 form，保证 CBI 表单提交不受影响。 */
+document.addEventListener('DOMContentLoaded', function () {
+    var maps = Array.prototype.slice.call(document.querySelectorAll('.cbi-map'));
+    if (!maps.length) return;
+    var nav = document.querySelector('.netmanager-nav');
+    var hdr = document.querySelector('.netmanager-header');
+    if (!nav || !hdr) return;
+    var first = maps[0];
+    var parent = first.parentNode;
+    if (!parent) return;
+
+    var content = document.createElement('div');
+    content.className = 'netmanager-content';
+    parent.insertBefore(hdr, first);
+    parent.insertBefore(nav, first);
+    parent.insertBefore(content, first);
+
+    /* 页标题：优先首个 map 自带 h2，否则用导航 active 文本（去掉开头 emoji） */
+    var mh = first.querySelector(':scope > h2');
+    var title = (mh && mh.textContent.trim()) ? mh.textContent.trim() : '';
+    if (!title) {
+        var active = nav.querySelector('a.active');
+        title = active ? active.textContent.trim() : '';
+        title = title.replace(/^[^一-龥A-Za-z]+/, '').trim();
+    }
+    if (title) {
+        var h2 = document.createElement('h2');
+        h2.textContent = title;
+        content.appendChild(h2);
+    }
+    /* 描述作为引言 */
+    var descr = first.querySelector('.cbi-map-descr');
+    if (descr) { descr.className = 'nm-page-intro'; content.appendChild(descr); }
+
+    /* 整体移动各 map（保留 form），去掉 map 级重复 h2 */
+    maps.forEach(function (mp) {
+        var h = mp.querySelector(':scope > h2');
+        if (h && h.parentNode) h.parentNode.removeChild(h);
+        content.appendChild(mp);
+    });
+
+    /* 框架保存按钮栏移入内容卡底部（与自绘页面按钮在卡内一致） */
+    var acts = document.querySelector('.cbi-page-actions');
+    if (acts) content.appendChild(acts);
+});
+</script>
+
+
 ```
 
 ### 5.10 files/usr/lib/lua/luci/view/netmanager/overview.htm
 
 - **用途**：系统概览页：防火墙状态 / 端口统计 / 网络信息 / 快捷操作
-- **规模**：105 行
-- **维护要点**：裸 fetch（v1.4.6 统一 apiFetch）；L142 附近 grep -v '172\.' / grep -v '192.168' 过滤会误伤公网 IP（待修）
+- **规模**：118 行
+- **维护要点**：footer 含版本号（登记处 4）
 
 ```html
 <%+header%>
@@ -3998,7 +7249,7 @@ local function cls(id) return (cur == id) and ' class="active"' or '' end
 <div class="netmanager-container">
     <div class="netmanager-header">
         <h1>网络管理</h1>
-        <span class="netmanager-author">Network Manager</span>
+        <span class="netmanager-author">吾爱破解liyu0828</span>
     </div>
     <%+netmanager/nav%>
     <div class="netmanager-content">
@@ -4043,6 +7294,19 @@ local function cls(id) return (cur == id) and ' class="active"' or '' end
             <tr><td>运行时间</td><td id="uptime">--</td></tr>
             <tr><td>系统负载</td><td id="load">--</td></tr>
         </table>
+        <h3>IPv6 状态</h3>
+        <table class="netmanager-table">
+            <tr><td width="30%">IPv6 出口</td><td id="ipv6_status">--</td></tr>
+            <tr><td>WAN IPv6</td><td id="wan_ipv6">--</td></tr>
+            <tr><td>PD 前缀</td><td id="pd_prefix">--</td></tr>
+            <tr><td>LAN 分发地址</td><td id="lan_ipv6">--</td></tr>
+            <tr><td>IPv6 默认路由</td><td id="ipv6_gw">--</td></tr>
+        </table>
+        <h3>DNS</h3>
+        <table class="netmanager-table">
+            <tr><td width="30%">DNS 模式</td><td id="dns_mode">--</td></tr>
+            <tr><td>上游服务器</td><td id="dns_servers">--</td></tr>
+        </table>
         <h3>快捷操作</h3>
         <div class="netmanager-toolbar">
             <button class="btn btn-primary" onclick="fwAction('reload')">重载防火墙</button>
@@ -4052,12 +7316,12 @@ local function cls(id) return (cur == id) and ' class="active"' or '' end
         </div>
         <div id="action_result" class="netmanager-result"></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.4.5</div>
+    <div class="footer-sign">网络管理插件 v1.8.14</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
 function loadOverview() {
-    fetch(API_URL, {
+    nmFetch({
         method: 'POST',
         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
         body: 'action=overview'
@@ -4085,7 +7349,7 @@ function loadOverview() {
 function fwAction(action) {
     const resultDiv = document.getElementById('action_result');
     resultDiv.innerHTML = '<span class="text-info">执行中...</span>';
-    fetch(API_URL, {
+    nmFetch({
         method: 'POST',
         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
         body: 'action=' + action
@@ -4098,13 +7362,15 @@ loadOverview();
 setInterval(loadOverview, 30000);
 </script>
 <%+footer%>
+
+
 ```
 
 ### 5.11 files/usr/lib/lua/luci/view/netmanager/port_forward.htm
 
-- **用途**：端口转发管理页：列表 / 添加 / 编辑 / 删除，外部端口到内部端口映射
-- **规模**：181 行
-- **维护要点**：L104/L110 delPort onclick 传自由文本（escapeHtml 在 onclick 属性上下文无效，v1.4.6 P1 待修，方案改数组下标传参）；L135-142 delPort；L143-157 editPort 已用数组下标（v1.4.4 修复）；L162-178 savePortEdit
+- **用途**：端口转发管理页：IPv4/IPv6 DNAT 列表 + 「IPv6 端口放行（直连）」区 + 添加/编辑/删除/跟踪
+- **规模**：284 行
+- **维护要点**：放行区来源标注（自动配套/自定义）；删除/编辑一律数组下标传参，不传自由文本
 
 ```html
 <%+header%>
@@ -4112,7 +7378,7 @@ setInterval(loadOverview, 30000);
 <div class="netmanager-container">
     <div class="netmanager-header">
         <h1>网络管理</h1>
-        <span class="netmanager-author">Network Manager</span>
+        <span class="netmanager-author">吾爱破解liyu0828</span>
     </div>
     <%+netmanager/nav%>
     <div class="netmanager-content">
@@ -4170,34 +7436,53 @@ setInterval(loadOverview, 30000);
             </div>
             <input type="hidden" id="edit_old_port">
             <input type="hidden" id="edit_old_proto">
+            <input type="hidden" id="edit_old_ipver">
         </div>
         <h3>IPv4 端口转发 (DNAT)</h3>
         <table class="netmanager-table" id="ipv4_table">
             <thead><tr><th>名称</th><th>协议</th><th>外部端口</th><th>目标地址</th><th>命中数</th><th>状态</th><th>操作</th></tr></thead>
             <tbody><tr><td colspan="7" class="empty-state">—</td></tr></tbody>
         </table>
-        <h3>IPv6 端口放行</h3>
-        <table class="netmanager-table" id="ipv6_table">
-            <thead><tr><th>名称</th><th>协议</th><th>端口</th><th>命中数</th><th>状态</th><th>操作</th></tr></thead>
-            <tbody><tr><td colspan="6" class="empty-state">—</td></tr></tbody>
+        <h3>IPv6 端口映射 (DNAT)</h3>
+        <div class="text-muted" style="margin-bottom:6px;">
+            与 IPv4 对称：外部端口映射到内网主机的 IPv6 地址（ipv6:port）。目标填 IPv4 时自动解析该主机当前公网 IPv6，
+            并登记「跟踪锚点」，运营商前缀变化时自动跟随。添加无翻译端口（外部=内部）的 IPv6 映射时，会在下方
+            「IPv6 端口放行」区同步生成配套 Allow-IPv6 直连放行规则（随映射自动增删与前缀跟随），无需手动维护。
+            <button class="btn btn-secondary btn-sm" onclick="syncV6()">立即同步</button>
+        </div>
+        <table class="netmanager-table" id="ipv6dnat_table">
+            <thead><tr><th>名称</th><th>协议</th><th>外部端口</th><th>目标地址</th><th>跟踪锚点</th><th>命中数</th><th>状态</th><th>操作</th></tr></thead>
+            <tbody><tr><td colspan="8" class="empty-state">—</td></tr></tbody>
+        </table>
+        <h3>IPv6 端口放行（直连）</h3>
+        <div class="text-muted" style="margin-bottom:6px;">
+            转发是转发，放行是放行：上表 DNAT 管「连路由器 WAN 地址」的翻译路径；本表放行规则管「域名直连内网主机 GUA」
+            的路径（无翻译端口时 DNAT 为空操作、不打 ct 标记，必须靠放行规则）。目的IP 锁定单台主机，非整段放行。
+            「自动配套」规则随 IPv6 映射自动增删；禁用只断直连路径，不影响转发。
+        </div>
+        <table class="netmanager-table" id="ipv6allow_table">
+            <thead><tr><th>名称</th><th>协议</th><th>放行端口</th><th>目的IP</th><th>来源</th><th>状态</th><th>操作</th></tr></thead>
+            <tbody><tr><td colspan="7" class="empty-state">—</td></tr></tbody>
         </table>
         <div id="action_result" class="netmanager-result"></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.4.5</div>
+    <div class="footer-sign">网络管理插件 v1.8.14</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
 function loadPortList() {
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=port_list'})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=port_list'})
     .then(r => r.text()).then(data => {
         const sections = data.split('---');
-        let ipv4Html = '', ipv6Html = '';
+        let ipv4Html = '', ipv6dHtml = '', ipv6aHtml = '';
         let currentSection = '';
         // 【安全】行数据存入 JS 数组，onclick 只传纯数字下标，杜绝自由文本注入 onclick
         window.PORT_ROWS = [];
+        window.ALLOW_ROWS = [];
         sections.forEach(section => {
-            if (section.includes('IPV4')) currentSection = 'ipv4';
-            else if (section.includes('IPV6')) currentSection = 'ipv6';
+            if (section.includes('IPV6DNAT')) currentSection = 'ipv6dnat';
+            else if (section.includes('IPV4')) currentSection = 'ipv4';
+            else if (section.includes('IPV6')) currentSection = 'ipv6allow'; // v1.8.13：放行规则回归本页「IPv6 端口放行」区
             else if (section.includes('DEFAULT_TARGET')) {
                 const m = section.match(/DEFAULT_TARGET=(.+)/);
                 if (m) document.getElementById('default_target_display').textContent = m[1].trim();
@@ -4209,19 +7494,90 @@ function loadPortList() {
                     const [idx, name, proto, sp, dip, dp, enabled, pkts] = parts;
                     const status = enabled === '1' ? '<span class="badge badge-green">启用</span>' : '<span class="badge badge-gray">禁用</span>';
                     const protoBadge = proto === 'tcp' ? '<span class="badge badge-blue">TCP</span>' : proto === 'udp' ? '<span class="badge badge-purple">UDP</span>' : '<span class="badge badge-blue">TCP+UDP</span>';
-                    const rowId = window.PORT_ROWS.push({sp: sp, proto: proto, dip: dip, dp: dp}) - 1;
-                    ipv4Html += `<tr><td>${escapeHtml(name)}</td><td>${protoBadge}</td><td><b>${escapeHtml(sp)}</b></td><td>${escapeHtml(dip)}:${escapeHtml(dp)}</td><td>${escapeHtml(pkts)}</td><td>${status}</td><td><button class="btn btn-primary btn-sm" onclick="editPort(${rowId})">编辑</button> <button class="btn btn-danger btn-sm" onclick="delPort('${escapeHtml(sp)}','${escapeHtml(proto)}')">删除</button></td></tr>`;
-                } else if (currentSection === 'ipv6' && parts.length >= 6) {
-                    const [idx, name, proto, dp, enabled, pkts] = parts;
+                    // 【安全 v1.4.7 P1-2】delPort 改数组下标传参（escapeHtml 在 onclick 属性上下文
+                    // 可被 &#39; 实体还原绕过，自由文本入 onclick 仍可注入）
+                    const rowId = window.PORT_ROWS.push({sp: sp, proto: proto, dip: dip, dp: dp, v6: false}) - 1;
+                    ipv4Html += `<tr><td>${escapeHtml(name)}</td><td>${protoBadge}</td><td><b>${escapeHtml(sp)}</b></td><td>${escapeHtml(dip)}:${escapeHtml(dp)}</td><td>${escapeHtml(pkts)}</td><td>${status}</td><td><button class="btn btn-primary btn-sm" onclick="editPort(${rowId})">编辑</button> <button class="btn btn-danger btn-sm" onclick="delPort(${rowId})">删除</button></td></tr>`;
+                } else if (currentSection === 'ipv6dnat' && parts.length >= 9) {
+                    const [idx, name, proto, sp, enabled, pkts, dip, anchor, dp] = parts;
                     const status = enabled === '1' ? '<span class="badge badge-green">启用</span>' : '<span class="badge badge-gray">禁用</span>';
                     const protoBadge = proto === 'tcp' ? '<span class="badge badge-blue">TCP</span>' : proto === 'udp' ? '<span class="badge badge-purple">UDP</span>' : '<span class="badge badge-blue">TCP+UDP</span>';
-                    const rowId = window.PORT_ROWS.push({sp: dp, proto: proto, dip: '', dp: dp}) - 1;
-                    ipv6Html += `<tr><td>${escapeHtml(name)}</td><td>${protoBadge}</td><td><b>${escapeHtml(dp)}</b></td><td>${escapeHtml(pkts)}</td><td>${status}</td><td><button class="btn btn-primary btn-sm" onclick="editPort(${rowId})">编辑</button> <button class="btn btn-danger btn-sm" onclick="delPort('${escapeHtml(dp)}','${escapeHtml(proto)}')">删除</button></td></tr>`;
+                    const rowId = window.PORT_ROWS.push({sp: sp, proto: proto, dip: dip || '', dp: dp, v6: true, anchor: anchor || ''}) - 1;
+                    const dipCell = dip ? '[' + escapeHtml(dip) + ']:' + escapeHtml(dp) : '<span class="badge badge-red">未设置目标</span>';
+                    const anchorCell = anchor
+                        ? '<span class="badge badge-green">跟随 ' + escapeHtml(anchor) + '</span>'
+                        : '<span class="text-muted">未跟踪</span>';
+                    ipv6dHtml += `<tr><td>${escapeHtml(name)}</td><td>${protoBadge}</td><td><b>${escapeHtml(sp)}</b></td><td>${dipCell}</td><td>${anchorCell}</td><td>${escapeHtml(pkts)}</td><td>${status}</td><td><button class="btn btn-success btn-sm" onclick="trackV6(${rowId})">跟踪</button> <button class="btn btn-primary btn-sm" onclick="editPort(${rowId})">编辑</button> <button class="btn btn-danger btn-sm" onclick="delPort(${rowId})">删除</button></td></tr>`;
+                } else if (currentSection === 'ipv6allow' && parts.length >= 8) {
+                    // v1.8.13：IPv6 端口放行区（idx|name|proto|dp|en|pkts|dip|anchor）
+                    const [idx, name, proto, dp, en, pkts, dip, anchor] = parts;
+                    const auto = (name === 'Allow-IPv6-' + dp + '-' + proto);
+                    const status = en === '1' ? '<span class="badge badge-green">启用</span>' : '<span class="badge badge-gray">禁用</span>';
+                    const protoBadge = proto === 'tcp' ? '<span class="badge badge-blue">TCP</span>' : proto === 'udp' ? '<span class="badge badge-purple">UDP</span>' : '<span class="badge badge-blue">TCP+UDP</span>';
+                    const srcBadge = auto ? '<span class="badge badge-blue">自动配套</span>' : '<span class="badge badge-gray">自定义</span>';
+                    const aRowId = window.ALLOW_ROWS.push({idx: idx, en: en, auto: auto, name: name}) - 1;
+                    const toggleLabel = en === '1' ? '禁用' : '启用';
+                    let ops = `<button class="btn btn-secondary btn-sm" onclick="toggleAllow(${aRowId})">${toggleLabel}</button>`;
+                    if (!auto) ops += ` <button class="btn btn-danger btn-sm" onclick="delAllow(${aRowId})">删除</button>`;
+                    ipv6aHtml += `<tr><td><b>${escapeHtml(name)}</b></td><td>${protoBadge}</td><td><b>${escapeHtml(dp)}</b></td><td>${dip ? escapeHtml(dip) : '<span class="text-muted">任意</span>'}</td><td>${srcBadge}</td><td>${status}</td><td>${ops}</td></tr>`;
                 }
             });
         });
         document.querySelector('#ipv4_table tbody').innerHTML = ipv4Html || '<tr><td colspan="7" class="empty-state">暂无规则</td></tr>';
-        document.querySelector('#ipv6_table tbody').innerHTML = ipv6Html || '<tr><td colspan="6" class="empty-state">暂无规则</td></tr>';
+        document.querySelector('#ipv6dnat_table tbody').innerHTML = ipv6dHtml || '<tr><td colspan="8" class="empty-state">暂无规则</td></tr>';
+        document.querySelector('#ipv6allow_table tbody').innerHTML = ipv6aHtml || '<tr><td colspan="7" class="empty-state">暂无放行规则</td></tr>';
+    });
+}
+// v1.8.13：IPv6 端口放行区 启用/禁用 与 删除（仅自定义规则可删）
+function toggleAllow(rowId) {
+    const r = window.ALLOW_ROWS && window.ALLOW_ROWS[rowId];
+    if (!r) return;
+    const en = r.en === '1' ? '0' : '1';
+    if (en === '0' && r.auto && !confirm('禁用自动配套放行规则 ' + r.name + ' 后，域名直连该主机 IPv6 的路径将不通（转发路径不受影响）。确定禁用？')) return;
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=rule_toggle&idx=' + encodeURIComponent(r.idx) + '&en=' + en})
+    .then(r2 => r2.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        setTimeout(loadPortList, 500);
+    }).catch(e => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">[ERROR] ' + escapeHtml(e.message || String(e)) + '</pre>';
+    });
+}
+function delAllow(rowId) {
+    const r = window.ALLOW_ROWS && window.ALLOW_ROWS[rowId];
+    if (!r || r.auto) return;
+    if (!confirm('确定删除放行规则 ' + r.name + ' ?')) return;
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=rule_del&idx=' + encodeURIComponent(r.idx)})
+    .then(r2 => r2.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        setTimeout(loadPortList, 500);
+    }).catch(e => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">[ERROR] ' + escapeHtml(e.message || String(e)) + '</pre>';
+    });
+}
+// v1.8.3：登记/取消 IPv6 目标跟踪锚点
+function trackV6(rowId) {
+    const r = window.PORT_ROWS && window.PORT_ROWS[rowId];
+    if (!r) return;
+    const cur = r.anchor || '';
+    const input = prompt('请输入跟踪锚点（目标主机的内网 IPv4 / MAC / 主机名）\n'
+        + '例如 192.168.31.3；输入 off 取消跟踪。\n\n'
+        + '登记后，运营商前缀变化时会自动重算该主机的 IPv6 并更新映射目标。', cur);
+    if (input === null) return;
+    const anchor = input.trim();
+    if (!anchor) { alert('锚点不能为空（取消跟踪请输入 off）'); return; }
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+        body:'action=port_track_v6&port=' + encodeURIComponent(r.sp) + '&proto=' + encodeURIComponent(r.proto) + '&anchor=' + encodeURIComponent(anchor)})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        setTimeout(loadPortList, 500);
+    });
+}
+function syncV6() {
+    document.getElementById('action_result').innerHTML = '<span class="text-info">同步中...</span>';
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=port_sync_v6'})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        setTimeout(loadPortList, 500);
     });
 }
 function addPortForward() {
@@ -4232,21 +7588,30 @@ function addPortForward() {
     const ipver = document.getElementById('add_ipver').value;
     if (!port) { alert('请输入端口号'); return; }
     const body = 'action=port_add&port=' + encodeURIComponent(port) + '&dport=' + encodeURIComponent(dport) + '&proto=' + proto + '&target=' + encodeURIComponent(target) + '&ipver=' + ipver;
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
     .then(r => r.text()).then(data => {
         document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         document.getElementById('add_port').value = '';
         document.getElementById('add_dport').value = '';
         document.getElementById('add_target').value = '';
         setTimeout(loadPortList, 400);
+    }).catch(e => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">[ERROR] ' + escapeHtml(e.message || String(e)) + '</pre>';
     });
 }
-function delPort(port, proto) {
-    if (!confirm('确定删除端口 ' + port + '/' + proto + ' ?')) return;
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=port_del&port=' + encodeURIComponent(port) + '&proto=' + encodeURIComponent(proto)})
+function delPort(rowId) {
+    // 【安全 v1.4.7 P1-2】由 onclick 传入数组下标，再从 window.PORT_ROWS 取端口/协议
+    const r = (window.PORT_ROWS && window.PORT_ROWS[rowId]) || {};
+    const port = r.sp, proto = r.proto;
+    if (!port || !proto) return;
+    const ipver = r.v6 ? 'v6' : 'v4';
+    if (!confirm('确定删除 ' + (r.v6 ? 'IPv6' : 'IPv4') + ' 端口映射 ' + port + '/' + proto + ' ?')) return;
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=port_del&port=' + encodeURIComponent(port) + '&proto=' + encodeURIComponent(proto) + '&ipver=' + ipver})
     .then(r => r.text()).then(data => {
         document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         setTimeout(loadPortList, 300);
+    }).catch(e => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">[ERROR] ' + escapeHtml(e.message || String(e)) + '</pre>';
     });
 }
 function editPort(rowId) {
@@ -4257,11 +7622,13 @@ function editPort(rowId) {
     document.getElementById('edit_form').style.display = 'block';
     document.getElementById('edit_old_port').value = port;
     document.getElementById('edit_old_proto').value = proto;
+    document.getElementById('edit_old_ipver').value = r.v6 ? 'v6' : 'v4';
     document.getElementById('edit_port').value = port;
     document.getElementById('edit_proto').value = proto;
+    document.getElementById('edit_ipver').value = r.v6 ? 'v6' : 'v4';
     document.getElementById('edit_target').value = target || '';
     document.getElementById('edit_dport').value = dport || '';
-    document.getElementById('edit_old_info').textContent = '(原: ' + port + '/' + proto + ')';
+    document.getElementById('edit_old_info').textContent = '(原: ' + (r.v6 ? 'IPv6 ' : 'IPv4 ') + port + '/' + proto + ')';
     document.getElementById('edit_form').scrollIntoView({behavior:'smooth', block:'center'});
 }
 function cancelPortEdit() {
@@ -4277,24 +7644,28 @@ function savePortEdit() {
     const new_target = document.getElementById('edit_target').value.trim();
     const new_ipver = document.getElementById('edit_ipver').value;
     if (!new_port) { alert('请输入新端口号'); return; }
-    const body = 'action=port_edit&old_port=' + encodeURIComponent(old_port) + '&old_proto=' + old_proto + '&new_port=' + encodeURIComponent(new_port) + '&new_dport=' + encodeURIComponent(new_dport) + '&new_proto=' + new_proto + '&new_target=' + encodeURIComponent(new_target) + '&new_ipver=' + new_ipver;
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
+    const body = 'action=port_edit&old_port=' + encodeURIComponent(old_port) + '&old_proto=' + old_proto + '&old_ipver=' + document.getElementById('edit_old_ipver').value + '&new_port=' + encodeURIComponent(new_port) + '&new_dport=' + encodeURIComponent(new_dport) + '&new_proto=' + new_proto + '&new_target=' + encodeURIComponent(new_target) + '&new_ipver=' + new_ipver;
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
     .then(r => r.text()).then(data => {
         document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         cancelPortEdit();
         setTimeout(loadPortList, 300);
+    }).catch(e => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">[ERROR] ' + escapeHtml(e.message || String(e)) + '</pre>';
     });
 }
 loadPortList();
 </script>
 <%+footer%>
+
+
 ```
 
 ### 5.12 files/usr/lib/lua/luci/view/netmanager/firewall_rules.htm
 
-- **用途**：防火墙规则管理页：自定义规则增删改 + 常用模板一键应用
-- **规模**：229 行
-- **维护要点**：L137 editRule 已改数组下标传参（v1.4.4 修复）
+- **用途**：防火墙规则管理页：自定义规则增删改 + 常用模板一键应用 + 源IP/目的IP 列
+- **规模**：251 行
+- **维护要点**：IPv6 放行规则不在此页渲染（v1.8.13 移至端口转发页），保留迁移提示
 
 ```html
 <%+header%>
@@ -4302,11 +7673,13 @@ loadPortList();
 <div class="netmanager-container">
     <div class="netmanager-header">
         <h1>网络管理</h1>
-        <span class="netmanager-author">Network Manager</span>
+        <span class="netmanager-author">吾爱破解liyu0828</span>
     </div>
     <%+netmanager/nav%>
     <div class="netmanager-content">
         <h2>防火墙规则管理</h2>
+        <div class="text-muted" style="margin-bottom:8px;">管理 ACCEPT / DROP / REJECT 通用通信规则。IPv6 端口放行规则（wan→lan 带端口）在「端口转发」页「IPv6 端口放行」区管理，转发与放行分离。</div>
+        <div class="text-muted" id="allow_moved_hint" style="margin-bottom:6px;display:none;"></div>
         <!-- 添加表单 -->
         <div class="netmanager-form" id="add_form">
             <div style="margin-bottom:8px;"><b>添加自定义规则</b></div>
@@ -4401,8 +7774,8 @@ loadPortList();
         </div>
         <h3>当前所有规则</h3>
         <table class="netmanager-table" id="rule_table">
-            <thead><tr><th>#</th><th>名称</th><th>源</th><th>目标</th><th>协议</th><th>端口</th><th>动作</th><th>IP版本</th><th>状态</th><th>操作</th></tr></thead>
-            <tbody><tr><td colspan="10" class="empty-state">加载中...</td></tr></tbody>
+            <thead><tr><th>#</th><th>名称</th><th>源</th><th>目标</th><th>协议</th><th>端口</th><th>源IP</th><th>目的IP</th><th>动作</th><th>IP版本</th><th>状态</th><th>操作</th></tr></thead>
+            <tbody><tr><td colspan="12" class="empty-state">加载中...</td></tr></tbody>
         </table>
         <h3>常用规则模板</h3>
         <div class="netmanager-toolbar">
@@ -4413,14 +7786,15 @@ loadPortList();
         </div>
         <div id="action_result" class="netmanager-result"></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.4.5</div>
+    <div class="footer-sign">网络管理插件 v1.8.14</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
 function loadRuleList() {
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=rule_list'})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=rule_list'})
     .then(r => r.text()).then(data => {
         let html = '';
+        let allowMoved = 0;
         // 【安全】行数据存入 JS 数组，onclick 只传纯数字下标，杜绝 UCI 自由文本注入 onclick
         window.RULE_ROWS = [];
         const lines = data.split('\n').filter(l => l.includes('|') && !l.includes('---'));
@@ -4428,15 +7802,28 @@ function loadRuleList() {
             const parts = line.split('|');
             if (parts.length >= 9) {
                 const [idx, name, src, dst, proto, port, target, fam, enabled] = parts;
+                // v1.8.13：IPv6 端口放行规则（与 port_list IPV6 区同口径）移至端口转发页，本页不渲染
+                if (fam === 'ipv6' && port && dst === 'lan') { allowMoved++; return; }
+                // v1.8.13：末尾追加的源IP/目的IP（旧后端无这两字段时显示「任意」）
+                const sip = parts[9] || '', dip = parts[10] || '';
                 const tBadge = target === 'ACCEPT' ? '<span class="badge badge-green">ACCEPT</span>' : target === 'DROP' ? '<span class="badge badge-red">DROP</span>' : '<span class="badge badge-orange">REJECT</span>';
                 const fBadge = fam === 'any' ? '全部' : escapeHtml(fam.toUpperCase());
                 const status = enabled === '1' ? '<span class="badge badge-green">启用</span>' : '<span class="badge badge-gray">禁用</span>';
+                const sipCell = sip ? escapeHtml(sip) : '<span class="text-muted">任意</span>';
+                const dipCell = dip ? escapeHtml(dip) : '<span class="text-muted">任意</span>';
                 const rowId = window.RULE_ROWS.length;
-                window.RULE_ROWS.push({idx: idx, name: name, src: src, dst: dst, proto: proto, port: port, target: target, fam: fam});
-                html += `<tr><td>${escapeHtml(idx)}</td><td><b>${escapeHtml(name)}</b></td><td>${escapeHtml(src || '-')}</td><td>${escapeHtml(dst || '-')}</td><td>${escapeHtml(proto || '-')}</td><td>${escapeHtml(port || '-')}</td><td>${tBadge}</td><td>${fBadge}</td><td>${status}</td><td><button class="btn btn-primary btn-sm" onclick="editRule(${parseInt(idx)},${rowId})">编辑</button> <button class="btn btn-danger btn-sm" onclick="delRule(${parseInt(idx)})">删除</button></td></tr>`;
+                window.RULE_ROWS.push({idx: idx, name: name, src: src, dst: dst, proto: proto, port: port, target: target, fam: fam, sip: sip, dip: dip});
+                html += `<tr><td>${escapeHtml(idx)}</td><td><b>${escapeHtml(name)}</b></td><td>${escapeHtml(src || '-')}</td><td>${escapeHtml(dst || '-')}</td><td>${escapeHtml(proto || '-')}</td><td>${escapeHtml(port || '-')}</td><td>${sipCell}</td><td>${dipCell}</td><td>${tBadge}</td><td>${fBadge}</td><td>${status}</td><td><button class="btn btn-primary btn-sm" onclick="editRule(${parseInt(idx)},${rowId})">编辑</button> <button class="btn btn-danger btn-sm" onclick="delRule(${parseInt(idx)})">删除</button></td></tr>`;
             }
         });
-        document.querySelector('#rule_table tbody').innerHTML = html || '<tr><td colspan="10" class="empty-state">暂无规则</td></tr>';
+        document.querySelector('#rule_table tbody').innerHTML = html || '<tr><td colspan="12" class="empty-state">暂无规则</td></tr>';
+        const hint = document.getElementById('allow_moved_hint');
+        if (allowMoved > 0) {
+            hint.textContent = '另有 ' + allowMoved + ' 条 IPv6 端口放行规则已在「端口转发」页「IPv6 端口放行」区管理（含自动配套直连放行），本页不再列出。';
+            hint.style.display = 'block';
+        } else {
+            hint.style.display = 'none';
+        }
     });
 }
 function addRule() {
@@ -4451,20 +7838,24 @@ function addRule() {
         target:document.getElementById('rule_target').value,
         family:document.getElementById('rule_family').value
     });
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
     .then(r => r.text()).then(data => {
         document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         document.getElementById('rule_name').value = '';
         document.getElementById('rule_port').value = '';
         setTimeout(loadRuleList, 1500);
+    }).catch(e => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">[ERROR] ' + escapeHtml(e.message || String(e)) + '</pre>';
     });
 }
 function delRule(idx) {
     if (!confirm('确定删除规则 #' + idx + ' ?')) return;
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=rule_del&idx=' + idx})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=rule_del&idx=' + idx})
     .then(r => r.text()).then(data => {
         document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         setTimeout(loadRuleList, 1500);
+    }).catch(e => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">[ERROR] ' + escapeHtml(e.message || String(e)) + '</pre>';
     });
 }
 function editRule(idx, rowId) {
@@ -4499,11 +7890,13 @@ function saveRuleEdit() {
         target:document.getElementById('edit_target').value,
         family:document.getElementById('edit_family').value
     });
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
     .then(r => r.text()).then(data => {
         document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         cancelRuleEdit();
         setTimeout(loadRuleList, 1500);
+    }).catch(e => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">[ERROR] ' + escapeHtml(e.message || String(e)) + '</pre>';
     });
 }
 function applyTemplate(type) {
@@ -4526,13 +7919,15 @@ function applyTemplate(type) {
 loadRuleList();
 </script>
 <%+footer%>
+
+
 ```
 
 ### 5.13 files/usr/lib/lua/luci/view/netmanager/ssh_log.htm
 
 - **用途**：SSH 登录日志页：成功/失败记录 + 失败 IP Top10 + 自动刷新
 - **规模**：103 行
-- **维护要点**：L54 已用 apiFetch；SSH 用户名/IP 等字段写入前已转义（v1.4.4 修复存储型 XSS）
+- **维护要点**：所有字段写 DOM 前转义（v1.4.4 修存储型 XSS）
 
 ```html
 <%+header%>
@@ -4540,7 +7935,7 @@ loadRuleList();
 <div class="netmanager-container">
     <div class="netmanager-header">
         <h1>网络管理</h1>
-        <span class="netmanager-author">Network Manager</span>
+        <span class="netmanager-author">吾爱破解liyu0828</span>
     </div>
     <%+netmanager/nav%>
     <div class="netmanager-content">
@@ -4581,7 +7976,7 @@ loadRuleList();
         <h3>失败登录记录</h3>
         <div class="netmanager-log" id="failed_log"><div class="text-muted">加载中...</div></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.4.5</div>
+    <div class="footer-sign">网络管理插件 v1.8.14</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -4638,13 +8033,15 @@ function toggleAuto() {
 loadSshLog();
 </script>
 <%+footer%>
+
+
 ```
 
 ### 5.14 files/usr/lib/lua/luci/view/netmanager/access_log.htm
 
 - **用途**：端口访问日志页：活跃连接 / 入站出站计数 / 拦截统计
-- **规模**：112 行
-- **维护要点**：裸 fetch（v1.4.6 统一 apiFetch）
+- **规模**：171 行
+- **维护要点**：统一走 nmFetch；footer 版本号（登记处 5）
 
 ```html
 <%+header%>
@@ -4652,7 +8049,7 @@ loadSshLog();
 <div class="netmanager-container">
     <div class="netmanager-header">
         <h1>网络管理</h1>
-        <span class="netmanager-author">Network Manager</span>
+        <span class="netmanager-author">吾爱破解liyu0828</span>
     </div>
     <%+netmanager/nav%>
     <div class="netmanager-content">
@@ -4691,9 +8088,17 @@ loadSshLog();
         <h3>当前活跃连接</h3>
         <div class="netmanager-log" id="active_log"><div class="text-muted">加载中...</div></div>
         <h3>防火墙拦截统计 (按端口)</h3>
+        <div class="text-muted" style="font-size:12px;margin-bottom:6px;">点击任意一行可查看被拦截的源 IP 明细并一键拉黑（境外IP拦截已启用限速源IP记录）。</div>
         <div class="netmanager-log" id="blocked_log"><div class="text-muted">加载中...</div></div>
+        <div id="block_detail_panel" style="display:none;margin-top:12px;border:1px solid #e5e7eb;border-radius:8px;padding:12px;background:#f9fafb;color:#1f2937;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                <b id="bd_title" style="color:#111827;">拦截明细</b>
+                <button class="btn btn-secondary btn-sm" onclick="closeBlockDetail()">关闭</button>
+            </div>
+            <div id="bd_body" style="background:#ffffff;border:1px solid #e5e7eb;border-radius:6px;padding:4px;color:#1f2937;max-height:420px;overflow-y:auto;"></div>
+        </div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.4.5</div>
+    <div class="footer-sign">网络管理插件 v1.8.14</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -4702,7 +8107,7 @@ const PORT_SVC = {'22':'SSH','21':'FTP','23':'Telnet','25':'SMTP','53':'DNS','80
 function loadAccessLog() {
     const port = document.getElementById('filter_port').value.trim();
     const limit = document.getElementById('access_limit').value;
-    fetch(API_URL, {
+    nmFetch({
         method: 'POST',
         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
         body: 'action=access_log&port=' + encodeURIComponent(port) + '&limit=' + limit
@@ -4714,7 +8119,6 @@ function loadAccessLog() {
         sections.forEach(section => {
             if (section.includes('ACTIVE')) current = 'active';
             else if (section.includes('BLOCKED')) current = 'blocked';
-            else if (section.includes('===END')) current = '';
             const lines = section.split('\n').filter(l => l.trim());
             lines.forEach(line => {
                 // 统计行（带=号）
@@ -4739,10 +8143,18 @@ function loadAccessLog() {
                 } else if (current === 'blocked' && parts.length >= 3) {
                     const proto = parts[0], dport = parts[1], pkts = parts[2];
                     if (parseInt(pkts) > 0) {
-                        blockedHtml += `<div><span class="log-fail">拦截</span> ${escapeHtml(proto.toUpperCase())} 端口 <b>${escapeHtml(dport)}</b> 累计 <b>${escapeHtml(pkts)}</b> 个包</div>`;
+                        // v1.8.4：dport 可能是端口号，也可能是用途标签（境外IP拦截/黑名单/WAN口丢弃）
+                        const target = /^\d+(-\d+)?$/.test(dport)
+                            ? ('端口 <b>' + escapeHtml(dport) + '</b>')
+                            : ('<b>' + escapeHtml(dport) + '</b>');
+                        const protoLabel = (proto === 'any') ? '全部协议' : escapeHtml(proto.toUpperCase());
+                        blockedHtml += `<div class="nm-block-row" data-key="${escapeHtml(dport)}" style="cursor:pointer;" title="点击查看被拦截源IP明细"><span class="log-fail">拦截</span> ${protoLabel} ${target} 累计 <b>${escapeHtml(pkts)}</b> 个包 <span style="color:#2563eb;font-size:11px;">🔍明细</span></div>`;
                     }
                 }
             });
+            // v1.8.4：===END 重置放在解析之后——拦截数据行与 ===END=== 同段，
+            // 若在段首重置 current 会漏掉本段拦截行（明细区一直空白的根因）
+            if (section.includes('===END')) current = '';
         });
         document.getElementById('active_count').textContent = activeCount;
         document.getElementById('inbound_count').textContent = inboundCount;
@@ -4756,16 +8168,62 @@ function toggleAuto() {
     if (autoTimer) { clearInterval(autoTimer); autoTimer = null; document.getElementById('auto_status').textContent = '自动刷新已关闭'; }
     else { autoTimer = setInterval(loadAccessLog, 5000); document.getElementById('auto_status').textContent = '自动刷新中(5s)'; }
 }
+// v1.8.5：点击拦截统计行 → 查看被拦截源IP明细 → 一键拉黑
+function showBlockDetail(key) {
+    const panel = document.getElementById('block_detail_panel');
+    panel.style.display = 'block';
+    document.getElementById('bd_title').textContent = '拦截明细 — ' + key;
+    document.getElementById('bd_body').innerHTML = '<div class="text-muted">加载中...</div>';
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=block_detail&key=' + encodeURIComponent(key)})
+    .then(r => r.text()).then(data => {
+        if (data.indexOf('NO_LOG=1') >= 0) {
+            document.getElementById('bd_body').innerHTML = '<div class="text-muted">暂无源IP日志。境外IP拦截启用限速记录(10条/分钟)，需有拦截发生后才记录；黑名单/WAN/Ping 等类别不记录源IP。</div>';
+            return;
+        }
+        const lines = data.split('\n').filter(l => l.includes('|'));
+        if (data.indexOf('NO_MATCH=1') >= 0 || lines.length === 0) {
+            document.getElementById('bd_body').innerHTML = '<div class="text-muted">该类别暂无匹配的源IP记录（可能拦截发生在日志记录之前，或属未启用源IP记录的类别）。</div>';
+            return;
+        }
+        let html = '<table style="width:100%;border-collapse:collapse;font-size:12px;color:#1f2937;"><tr style="background:#f3f4f6;color:#374151;"><th style="padding:6px;text-align:left;">源IP</th><th style="padding:6px;">协议</th><th style="padding:6px;">命中端口</th><th style="padding:6px;">次数</th><th style="padding:6px;">最近时间</th><th style="padding:6px;">操作</th></tr>';
+        lines.forEach(line => {
+            const p = line.split('|'); if (p.length < 5) return;
+            const src = p[0], proto = p[1], ports = p[2], cnt = p[3], last = p[4];
+            html += `<tr style="border-bottom:1px solid #e5e7eb;"><td style="padding:6px;font-family:monospace;">${escapeHtml(src)}</td><td style="text-align:center;">${escapeHtml(proto)}</td><td style="text-align:center;">${escapeHtml(ports)}</td><td style="text-align:center;"><b>${escapeHtml(cnt)}</b></td><td style="color:#6b7280;">${escapeHtml(last)}</td><td style="text-align:center;"><button class="btn btn-danger btn-sm nm-ban-btn" data-ip="${escapeHtml(src)}">拉黑</button></td></tr>`;
+        });
+        html += '</table>';
+        document.getElementById('bd_body').innerHTML = html;
+    });
+}
+function closeBlockDetail() { document.getElementById('block_detail_panel').style.display = 'none'; }
+function banIP(ip, btn) {
+    if (!confirm('确定拉黑 ' + ip + ' ？拉黑后该IP的所有访问将被丢弃。')) return;
+    if (btn) { btn.disabled = true; btn.textContent = '拉黑中'; }
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=blacklist_add&ip=' + encodeURIComponent(ip)})
+    .then(r => r.text()).then(data => {
+        if (data.indexOf('[ERROR]') >= 0) { alert('拉黑失败：' + data.replace(/\[CMD\][^\n]*\n?/,'').trim()); if (btn) { btn.disabled = false; btn.textContent = '拉黑'; } }
+        else { alert('已拉黑 ' + ip); if (btn) { btn.textContent = '已拉黑'; } loadAccessLog(); }
+    }).catch(e => { alert('请求失败：' + e); if (btn) { btn.disabled = false; btn.textContent = '拉黑'; } });
+}
+document.addEventListener('click', function(e) {
+    if (!e.target.closest) return;
+    const row = e.target.closest('.nm-block-row');
+    if (row) { showBlockDetail(row.getAttribute('data-key')); return; }
+    const ban = e.target.closest('.nm-ban-btn');
+    if (ban) { banIP(ban.getAttribute('data-ip'), ban); }
+});
 loadAccessLog();
 </script>
 <%+footer%>
+
+
 ```
 
 ### 5.15 files/usr/lib/lua/luci/view/netmanager/settings.htm
 
-- **用途**：设置页：默认目标 / 备份恢复 / 插件更新 / 在线更新 / 中国IPv4过滤 / 运行日志 / 卸载
-- **规模**：660 行
-- **维护要点**：最复杂视图。L101/L202 footer 版本号（登记处）；L236-260 API_URL+loadSettings；L396-435 listBackups（L421-429 b[0] 直拼 innerHTML 未转义，v1.4.6 P1 待修）；L443-467 restoreBackup/deleteBackup；L512-555 loadChinaStatus（L535-536 lu/cnt/devs 三处未转义待修）；L564-586 saveChinaUrl/saveChinaCron；L595-622 enable/disable/updateChinaFilter；L624-655 uninstallPlugin
+- **用途**：设置页（最复杂视图，1100 行）：默认目标 / 备份恢复 / 插件更新 / 在线更新 / 中国 IPv4·IPv6 过滤 / 黑名单 / 运行日志 / 卸载
+- **规模**：1107 行
+- **维护要点**：三个版本号登记处（L186/L305/L338）；备份列表与过滤状态均需 escapeHtml + 数组下标传参
 
 ```html
 <%+header%>
@@ -4773,7 +8231,7 @@ loadAccessLog();
 <div class="netmanager-container">
     <div class="netmanager-header">
         <h1>网络管理</h1>
-        <span class="netmanager-author">Network Manager</span>
+        <span class="netmanager-author">吾爱破解liyu0828</span>
     </div>
     <%+netmanager/nav%>
     <div class="netmanager-content">
@@ -4848,17 +8306,102 @@ loadAccessLog();
             </div>
         </div>
 
+        <!-- 中国IPv6访问限制 -->
+        <h3>中国IPv6访问限制</h3>
+        <div class="netmanager-form" style="border-left:3px solid #8b5cf6;">
+            <div style="margin-bottom:10px;">
+                <b>仅允许中国大陆 IPv6 访问已开放端口</b>
+                <span class="text-muted" style="margin-left:8px;">境外IPv6新建TCP/UDP连接将被丢弃；已建立连接/出站/局域网间转发不受影响；与IPv4过滤相互独立</span>
+            </div>
+            <table class="netmanager-table" style="margin-bottom:10px;">
+                <tr>
+                    <td width="35%">当前状态</td>
+                    <td id="china6_status_cell"><span class="text-muted">加载中...</span></td>
+                </tr>
+                <tr>
+                    <td>IP库订阅链接</td>
+                    <td>
+                        <input type="text" id="china6_url" style="width:70%;" placeholder="以 http:// 或 https:// 开头，每行一个 IPv6 CIDR 的纯文本订阅">
+                        <button class="btn btn-secondary btn-sm" onclick="saveChina6Url()">保存链接</button>
+                    </td>
+                </tr>
+                <tr>
+                    <td>更新计划</td>
+                    <td>
+                        <select id="china6_cron_preset" onchange="onCronPresetChangeFor('china6_cron_preset','china6_cron_custom')" style="padding:2px 5px;">
+                            <option value="0 3 * * *">每天凌晨3点</option>
+                            <option value="0 3 * * 0">每周日凌晨3点(默认)</option>
+                            <option value="0 3 1 * *">每月1日凌晨3点</option>
+                            <option value="0 */12 * * *">每12小时</option>
+                            <option value="__custom__">自定义...</option>
+                        </select>
+                        <input type="text" id="china6_cron_custom" placeholder="5段cron: 分 时 日 月 周" style="width:200px; display:none; margin-left:8px;">
+                        <button class="btn btn-secondary btn-sm" onclick="saveChina6Cron()">保存计划</button>
+                        <span class="text-muted" style="margin-left:8px; font-size:12px;">仅允许 0-9 * / , - 字符</span>
+                    </td>
+                </tr>
+                <tr>
+                    <td>上次更新 / 条数</td>
+                    <td id="china6_update_cell"><span class="text-muted">—</span></td>
+                </tr>
+                <tr>
+                    <td>生效WAN口 / 规则</td>
+                    <td id="china6_wan_cell"><span class="text-muted">—</span></td>
+                </tr>
+            </table>
+            <div class="netmanager-toolbar">
+                <button class="btn btn-success btn-sm" id="btn_china6_enable" onclick="enableChina6Filter()">立即启用</button>
+                <button class="btn btn-warning btn-sm" id="btn_china6_disable" onclick="disableChina6Filter()">关闭</button>
+                <button class="btn btn-primary btn-sm" id="btn_china6_update" onclick="updateChina6Filter()">更新IP库</button>
+                <button class="btn btn-secondary btn-sm" onclick="loadChina6Status()">刷新状态</button>
+            </div>
+        </div>
+
+        <!-- 手动黑名单（IPv4/IPv6） -->
+        <h3>手动黑名单（IPv4 / IPv6）</h3>
+        <div class="netmanager-form" style="border-left:3px solid #ef4444;">
+            <div style="margin-bottom:10px;">
+                <b>手动拉黑 IP / IP段</b>
+                <span class="text-muted" style="margin-left:8px;">支持单个 IP 与 CIDR 网段（如 1.2.3.4、1.2.3.0/24、2001:db8::1、2001:db8::/32）；入站与转发流量直接丢弃，独立 nft 表 inet netmanager_ban，fw4 重载不影响</span>
+            </div>
+            <div class="netmanager-toolbar" style="margin-bottom:10px;">
+                <input type="text" id="ban_input" placeholder="输入 IP 或 CIDR，如 10.0.0.0/8 或 2001:db8::/32" style="width:45%;">
+                <button class="btn btn-danger btn-sm" onclick="addBlacklistEntry()">添加拉黑</button>
+                <button class="btn btn-secondary btn-sm" onclick="loadBlacklist()">刷新</button>
+                <button class="btn btn-warning btn-sm" onclick="clearBlacklist('v4')">清空IPv4</button>
+                <button class="btn btn-warning btn-sm" onclick="clearBlacklist('v6')">清空IPv6</button>
+            </div>
+            <table class="netmanager-table">
+                <tr>
+                    <td width="22%">IPv4 黑名单 (<span id="ban_v4_count">0</span>)</td>
+                    <td id="ban_v4_list"><span class="text-muted">—</span></td>
+                </tr>
+                <tr>
+                    <td>IPv6 黑名单 (<span id="ban_v6_count">0</span>)</td>
+                    <td id="ban_v6_list"><span class="text-muted">—</span></td>
+                </tr>
+            </table>
+            <div class="text-muted" style="margin-top:6px;font-size:11px;">
+                规则状态: <span id="ban_active_cell">—</span> | 条目持久化于 <code>/etc/netmanager/blacklist_v4.list</code> / <code>blacklist_v6.list</code>，重启或WAN重连后自动恢复
+            </div>
+        </div>
+
         <!-- 备份管理 -->
         <h3>备份管理</h3>
         <div class="netmanager-form" style="border-left:3px solid #10b981;">
             <div style="margin-bottom:10px;">
                 <b>配置备份</b>
-                <span class="text-muted" style="margin-left:8px;">支持查看、恢复、删除历史备份</span>
+                <span class="text-muted" style="margin-left:8px;">v1.6.1 全配置备份（firewall/network/dhcp/dnssettings/netmanager），支持导入导出与自动保留</span>
             </div>
             <div class="netmanager-toolbar">
-                <button class="btn btn-success btn-sm" onclick="listBackups()">刷新备份列表</button>
+                <button class="btn btn-success btn-sm" onclick="doBackup()">立即备份</button>
+                <button class="btn btn-secondary btn-sm" onclick="listBackups()">刷新列表</button>
+                <button class="btn btn-info btn-sm" onclick="document.getElementById('backup_import_file').click()">导入备份</button>
+                <button class="btn btn-warning btn-sm" onclick="pruneBackups()">清理旧备份</button>
                 <button class="btn btn-secondary btn-sm" onclick="runAction('cleanup_uploads')">清理临时文件</button>
+                <input type="file" id="backup_import_file" style="display:none;" accept=".tar.gz,.tgz" onchange="importBackup(this)">
             </div>
+            <div style="margin-top:6px;font-size:11px;color:#9ca3af;">备份内容: firewall/network/dhcp/dnssettings/netmanager 配置 + 黑名单/中国白名单列表（/etc/netmanager/） | 目录: <code>/root/backup/</code> | 自动保留最近 20 个 | 恢复前自动备份当前配置</div>
             <div id="backup_list" style="margin-top:10px;"></div>
         </div>
 
@@ -4868,7 +8411,7 @@ loadAccessLog();
             <table class="netmanager-table" style="margin-bottom:10px;">
                 <tr>
                     <td width="30%">当前版本</td>
-                    <td><b id="online_cur_version">v1.4.5</b></td>
+                    <td><b id="online_cur_version">v1.8.14</b></td>
                 </tr>
                 <tr>
                     <td>最新版本</td>
@@ -4952,9 +8495,22 @@ loadAccessLog();
                     <td id="log_path" colspan="2"><span class="text-muted">加载中...</span></td>
                 </tr>
             </table>
-            <div>
-                <label style="font-size:12px;color:#666;">显示最后
-                    <select id="log_lines" onchange="loadRunLog()" style="padding:2px 5px;">
+            <!-- v1.6.1 日志过滤工具栏 -->
+            <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;padding:8px 10px;background:#f9fafb;border-radius:4px;border:1px solid #e5e7eb;">
+                <label style="font-size:12px;color:#6b7280;">级别：
+                    <select id="log_level" onchange="loadRunLog()" style="padding:2px 6px;font-size:12px;">
+                        <option value="ALL" selected>全部</option>
+                        <option value="INFO">INFO</option>
+                        <option value="WARN">WARN</option>
+                        <option value="ERROR">ERROR</option>
+                        <option value="DEBUG">DEBUG</option>
+                    </select>
+                </label>
+                <label style="font-size:12px;color:#6b7280;">搜索：
+                    <input type="text" id="log_keyword" placeholder="关键词..." style="padding:2px 6px;font-size:12px;width:140px;" onkeydown="if(event.key==='Enter')loadRunLog()">
+                </label>
+                <label style="font-size:12px;color:#6b7280;">显示最后
+                    <select id="log_lines" onchange="loadRunLog()" style="padding:2px 5px;font-size:12px;">
                         <option value="100">100</option>
                         <option value="200" selected>200</option>
                         <option value="500">500</option>
@@ -4962,15 +8518,21 @@ loadAccessLog();
                     </select>
                     行
                 </label>
+                <button class="btn btn-secondary btn-sm" style="font-size:11px;padding:2px 8px;" onclick="exportLog()">导出下载</button>
+                <span style="flex:1;"></span>
+                <!-- 日志统计 -->
+                <span id="log_stats" style="font-size:11px;color:#9ca3af;"></span>
             </div>
-            <textarea id="run_log_box" readonly style="width:100%;height:260px;margin-top:8px;font-family:Consolas,'Courier New',monospace;font-size:12px;line-height:1.5;background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:4px;padding:8px;resize:vertical;"></textarea>
+            <!-- v1.6.1 彩色日志显示区 -->
+            <div id="run_log_box" style="width:100%;height:280px;overflow-y:auto;background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:4px;padding:8px;font-family:Consolas,'Courier New',monospace;font-size:12px;line-height:1.6;"></div>
         </div>
 
         <h3>关于插件</h3>
         <table class="netmanager-table">
             <tr><td width="30%">插件名称</td><td>网络管理 (luci-app-netmanager)</td></tr>
-            <tr><td>版本</td><td id="plugin_version">v1.4.5</td></tr>
-            <tr><td>作者</td><td><b>Network Manager</b></td></tr>
+            <tr><td>版本</td><td id="plugin_version">v1.8.14</td></tr>
+            <tr><td>作者</td><td><b>吾爱破解liyu0828</b></td></tr>
+            <tr><td>仓库地址</td><td><a href="https://github.com/District1655/luci-app-netmanager" target="_blank" style="color:#2563eb;">https://github.com/District1655/luci-app-netmanager</a></td></tr>
             <tr><td>适配系统</td><td>iStoreOS / OpenWrt (fw4/nftables)</td></tr>
             <tr><td>功能模块</td><td>系统概览 / 端口转发 / 规则管理 / SSH日志 / 访问日志</td></tr>
             <tr><td>后端脚本</td><td>/usr/sbin/netmanager</td></tr>
@@ -5001,13 +8563,13 @@ loadAccessLog();
             </div>
         </div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.4.5<br><span style="font-size:10px;">适配 iStoreOS / OpenWrt | 基于 fw4/nftables</span></div>
+    <div class="footer-sign">网络管理插件 v1.8.14<br><span style="font-size:10px;">适配 iStoreOS / OpenWrt | 基于 fw4/nftables</span></div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
 
 function loadSettings() {
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=settings'})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=settings'})
     .then(r => r.text()).then(data => {
         data.split('\n').forEach(line => {
             if (line.includes('=')) {
@@ -5030,7 +8592,7 @@ function checkUpdate() {
     const btn = document.getElementById('btn_check_update');
     btn.disabled = true;
     box.innerHTML = '<span class="text-info">正在连接 GitHub 检查最新版本（最长约 15 秒，直连受限时请先保存镜像加速）...</span>';
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=update_check'})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=update_check'})
     .then(r => r.text()).then(data => {
         let latest = '', avail = '', msg = '', mirror = '';
         data.split('\n').forEach(line => {
@@ -5071,7 +8633,7 @@ function applyUpdate() {
     const btn = document.getElementById('btn_apply_update');
     btn.disabled = true;
     box.innerHTML = '<span class="text-info">正在下载并安装最新版（取决于网速，可能需要 1~3 分钟），请勿关闭或刷新页面...</span>';
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=update_apply'})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=update_apply'})
     .then(r => r.text()).then(data => {
         box.innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         if (data.indexOf('插件更新完成') >= 0 || data.indexOf('install_rc=0') >= 0) {
@@ -5086,16 +8648,16 @@ function applyUpdate() {
 
 function saveUpdateMirror() {
     const m = document.getElementById('update_mirror').value.trim();
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=set_update_mirror&mirror=' + encodeURIComponent(m)})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=set_update_mirror&mirror=' + encodeURIComponent(m)})
     .then(r => r.text()).then(data => {
         document.getElementById('update_status').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
     });
 }
 
-// ========== 运行日志功能 ==========
+// ========== 运行日志功能（v1.6.1 增强：级别过滤/关键词搜索/统计/彩色渲染/导出） ==========
 function saveLogSetting() {
     const en = document.getElementById('log_enable').checked ? '1' : '0';
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=log_set&enable=' + en})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=log_set&enable=' + en})
     .then(r => r.text()).then(data => {
         document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         loadSettings();
@@ -5103,35 +8665,128 @@ function saveLogSetting() {
 }
 
 function loadRunLog() {
+    const level = document.getElementById('log_level').value;
+    const keyword = document.getElementById('log_keyword').value.trim();
     const lines = document.getElementById('log_lines').value;
     const box = document.getElementById('run_log_box');
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=log_get&lines=' + lines})
+    box.innerHTML = '<span style="color:#64748b;">加载中...</span>';
+
+    const body = 'action=log_query&level=' + encodeURIComponent(level)
+        + '&keyword=' + encodeURIComponent(keyword)
+        + '&lines=' + lines;
+
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
     .then(r => r.text()).then(data => {
         let content = '';
         let inContent = false;
+        let totalLines = 0, matchedLines = 0;
+        let cntInfo = 0, cntWarn = 0, cntError = 0, cntDebug = 0;
+
         data.split('\n').forEach(line => {
             if (line === '---CONTENT---') { inContent = true; return; }
             if (line === '===END===') return;
-            if (inContent) content += line + '\n';
-            else if (line.startsWith('LOG_LINES=')) {
-                const n = parseInt(line.split('=')[1]) || 0;
-                if (n === 0) content = '（暂无日志记录，请先在上方勾选"启用日志记录"并保存，然后操作页面功能以产生日志）\n';
+            if (inContent) {
+                content += line + '\n';
+            } else {
+                if (line.startsWith('TOTAL_LINES=')) totalLines = parseInt(line.split('=')[1]) || 0;
+                else if (line.startsWith('MATCHED_LINES=')) matchedLines = parseInt(line.split('=')[1]) || 0;
+                else if (line.startsWith('COUNT_INFO=')) cntInfo = parseInt(line.split('=')[1]) || 0;
+                else if (line.startsWith('COUNT_WARN=')) cntWarn = parseInt(line.split('=')[1]) || 0;
+                else if (line.startsWith('COUNT_ERROR=')) cntError = parseInt(line.split('=')[1]) || 0;
+                else if (line.startsWith('COUNT_DEBUG=')) cntDebug = parseInt(line.split('=')[1]) || 0;
             }
         });
-        box.value = content.trim();
+
+        // 统计显示
+        const statsEl = document.getElementById('log_stats');
+        if (statsEl) {
+            statsEl.innerHTML = `总计 <b style="color:#e2e8f0">${totalLines}</b> 条 | `
+                + `<span style="color:#60a5fa">INFO ${cntInfo}</span> | `
+                + `<span style="color:#fbbf24">WARN ${cntWarn}</span> | `
+                + `<span style="color:#f87171">ERROR ${cntError}</span> | `
+                + `<span style="color:#a78bfa">DEBUG ${cntDebug}</span>`
+                + (matchedLines !== totalLines ? ` | 匹配 <b>${matchedLines}</b> 条` : '');
+        }
+
+        // 彩色渲染
+        if (totalLines === 0) {
+            box.innerHTML = '<div style="color:#64748b;padding:10px;">（暂无日志记录，请先在上方勾选"启用日志记录"并保存，然后操作页面功能以产生日志）</div>';
+        } else if (matchedLines === 0 && (level !== 'ALL' || keyword)) {
+            box.innerHTML = '<div style="color:#64748b;padding:10px;">（当前过滤条件下无匹配日志）</div>';
+        } else {
+            let html = '';
+            content.trim().split('\n').forEach(line => {
+                if (!line.trim()) return;
+                // 解析 [时间] [级别] 内容
+                const m = line.match(/^\[([^\]]+)\]\s+\[([^\]]+)\]\s+(.*)$/);
+                if (m) {
+                    const ts = escapeHtml(m[1]);
+                    const lvl = m[2].toUpperCase();
+                    const msg = escapeHtml(m[3]);
+                    let lvlColor = '#e2e8f0', lvlBg = 'transparent';
+                    if (lvl === 'INFO') { lvlColor = '#60a5fa'; }
+                    else if (lvl === 'WARN') { lvlColor = '#fbbf24'; }
+                    else if (lvl === 'ERROR') { lvlColor = '#f87171'; }
+                    else if (lvl === 'DEBUG') { lvlColor = '#a78bfa'; }
+                    html += `<div style="white-space:pre-wrap;word-break:break-all;"><span style="color:#64748b;">[${ts}]</span> <span style="color:${lvlColor};font-weight:600;">[${lvl}]</span> ${msg}</div>`;
+                } else {
+                    html += `<div style="white-space:pre-wrap;word-break:break-all;color:#94a3b8;">${escapeHtml(line)}</div>`;
+                }
+            });
+            box.innerHTML = html;
+        }
         // 自动滚动到底部
         setTimeout(() => { box.scrollTop = box.scrollHeight; }, 50);
     }).catch(e => {
-        box.value = '加载日志失败: ' + e.message;
+        box.innerHTML = '<span style="color:#f87171;">加载日志失败: ' + escapeHtml(e.message) + '</span>';
     });
 }
 
 function clearRunLog() {
     if (!confirm('确定要清空运行日志吗？')) return;
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=log_clear'})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=log_clear'})
     .then(r => r.text()).then(data => {
         document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         setTimeout(loadRunLog, 500);
+    });
+}
+
+// v1.6.1 日志导出下载
+function exportLog() {
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=log_export'})
+    .then(r => r.text()).then(data => {
+        let inB64 = false;
+        let b64 = '';
+        let logSize = 0, logLines = 0;
+        data.split('\n').forEach(line => {
+            if (line === '---BASE64---') { inB64 = true; return; }
+            if (line === '===END===') return;
+            if (inB64) b64 += line.trim();
+            else {
+                if (line.startsWith('LOG_SIZE=')) logSize = parseInt(line.split('=')[1]) || 0;
+                else if (line.startsWith('LOG_LINES=')) logLines = parseInt(line.split('=')[1]) || 0;
+            }
+        });
+        if (logSize === 0 || !b64) {
+            alert('日志文件为空，无法导出');
+            return;
+        }
+        // base64 解码为 Blob 并下载
+        const binary = atob(b64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        const blob = new Blob([bytes], {type: 'text/plain'});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        const ts = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
+        a.href = url;
+        a.download = `netmanager-runlog-${ts}.log`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }).catch(e => {
+        alert('导出失败: ' + e.message);
     });
 }
 
@@ -5139,7 +8794,7 @@ function saveDefaultTarget() {
     const ip = document.getElementById('default_target').value.trim();
     if (!ip) { alert('请输入IP地址'); return; }
     if (!/^(\d{1,3}\.){3}\d{1,3}$/.test(ip)) { alert('IP格式不正确'); return; }
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=set_default_target&ip=' + ip})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=set_default_target&ip=' + ip})
     .then(r => r.text()).then(data => {
         document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
     });
@@ -5147,16 +8802,16 @@ function saveDefaultTarget() {
 
 function runAction(action) {
     document.getElementById('action_result').innerHTML = '<span class="text-info">执行中...</span>';
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=' + action})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=' + action})
     .then(r => r.text()).then(data => {
         document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
     });
 }
 
-// 备份功能
+// 备份功能（v1.6.1 增强：全配置备份、导入、清理、详情显示）
 function doBackup() {
-    if (!confirm('确定要备份当前防火墙配置吗？')) return;
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=backup'})
+    if (!confirm('确定要创建全配置备份吗？\n\n将备份：firewall / network / dhcp / dnssettings / netmanager')) return;
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=backup'})
     .then(r => r.text()).then(data => {
         document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         setTimeout(listBackups, 1500);
@@ -5164,43 +8819,97 @@ function doBackup() {
 }
 
 function listBackups() {
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=backup_list'})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=backup_list'})
     .then(r => r.text()).then(data => {
         let html = '';
         const lines = data.split('\n');
         let backups = [];
         let backupCount = 0;
-        
+
         lines.forEach(line => {
             if (line.includes('|') && !line.startsWith('=')) {
                 const parts = line.split('|');
-                if (parts.length >= 2 && parts[0].startsWith('firewall-')) {
-                    backups.push(parts);
+                // v1.6.1 新格式：文件名|大小|时间|类型|配置数；旧格式：文件名|大小
+                if (parts.length >= 5 && (parts[0].startsWith('netmanager-') || parts[0].startsWith('firewall-'))) {
+                    backups.push({name: parts[0], size: parseInt(parts[1]) || 0, time: parts[2], type: parts[3], cfgCount: parts[4], stateCount: parts[5] || '0'});
+                } else if (parts.length >= 2 && parts[0].startsWith('firewall-')) {
+                    backups.push({name: parts[0], size: parseInt(parts[1]) || 0, time: '—', type: 'legacy', cfgCount: '1'});
                 }
             }
             if (line.startsWith('BACKUP_COUNT=')) {
                 backupCount = parseInt(line.split('=')[1]) || 0;
             }
         });
-        
+
         if (backups.length === 0) {
-            html = '<div class="text-muted" style="padding:10px;">暂无备份文件</div>';
+            html = '<div class="text-muted" style="padding:15px;text-align:center;">暂无备份文件，点击上方「立即备份」创建</div>';
         } else {
-            html = `<table class="netmanager-table"><thead><tr><th>备份文件名</th><th>大小</th><th>操作</th></tr></thead><tbody>`;
+            html = `<table class="netmanager-table"><thead><tr><th>备份文件名</th><th style="width:140px;">创建时间</th><th style="width:70px;">类型</th><th style="width:80px;">配置/列表</th><th style="width:80px;">大小</th><th style="width:160px;">操作</th></tr></thead><tbody>`;
+            window.BACKUP_ROWS = [];
             backups.forEach(b => {
+                const rowId = window.BACKUP_ROWS.push(b.name) - 1;
+                const typeBadge = b.type === 'full'
+                    ? '<span class="badge badge-green">全配置</span>'
+                    : '<span class="badge badge-gray">旧版</span>';
                 html += `<tr>
-                    <td><code>${b[0]}</code></td>
-                    <td>${formatSize(parseInt(b[1]) || 0)}</td>
+                    <td><code style="font-size:11px;">${escapeHtml(b.name)}</code></td>
+                    <td style="font-size:12px;color:#6b7280;">${escapeHtml(b.time)}</td>
+                    <td>${typeBadge}</td>
+                    <td style="text-align:center;"><b>${escapeHtml(b.cfgCount)}</b> / ${escapeHtml(b.stateCount)}</td>
+                    <td>${escapeHtml(formatSize(b.size))}</td>
                     <td>
-                        <button class="btn btn-primary btn-sm" onclick="restoreBackup('${b[0]}')">恢复</button>
-                        <button class="btn btn-danger btn-sm" onclick="deleteBackup('${b[0]}')">删除</button>
+                        <button class="btn btn-primary btn-sm" onclick="restoreBackup(${rowId})">恢复</button>
+                        <button class="btn btn-danger btn-sm" onclick="deleteBackup(${rowId})">删除</button>
                     </td>
                 </tr>`;
             });
             html += '</tbody></table>';
+            html += `<div style="margin-top:6px;font-size:11px;color:#9ca3af;">共 ${backups.length} 个备份</div>`;
         }
-        
+
         document.getElementById('backup_list').innerHTML = html;
+    });
+}
+
+// v1.6.1 备份导入
+function importBackup(input) {
+    const file = input.files[0];
+    if (!file) return;
+    if (!file.name.endsWith('.tar.gz') && !file.name.endsWith('.tgz')) {
+        alert('只支持 .tar.gz 格式的备份文件');
+        input.value = '';
+        return;
+    }
+    if (!confirm('确定导入备份文件 ' + file.name + ' 吗？\n\n导入后可在备份列表中选择恢复。')) {
+        input.value = '';
+        return;
+    }
+    const formData = new FormData();
+    formData.append('action', 'backup_import_upload');
+    formData.append('backup_file', file);
+    nmFetch({method: 'POST', body: formData})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        input.value = '';
+        setTimeout(listBackups, 1000);
+    }).catch(e => {
+        alert('导入失败: ' + e.message);
+        input.value = '';
+    });
+}
+
+// v1.6.1 清理旧备份
+function pruneBackups() {
+    const keep = prompt('保留最近多少个备份？（默认 20）', '20');
+    if (keep === null) return;
+    if (!/^\d+$/.test(keep) || parseInt(keep) < 1) {
+        alert('请输入有效的正整数');
+        return;
+    }
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=backup_prune&keep=' + keep})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        setTimeout(listBackups, 1000);
     });
 }
 
@@ -5210,9 +8919,12 @@ function formatSize(bytes) {
     return (bytes / 1048576).toFixed(1) + ' MB';
 }
 
-function restoreBackup(filename) {
+function restoreBackup(rowId) {
+    // 【安全 v1.4.7】onclick 传数组下标，从 window.BACKUP_ROWS 取文件名（避免自由文本入 onclick）
+    const filename = (window.BACKUP_ROWS && window.BACKUP_ROWS[rowId]) || '';
+    if (!filename) return;
     if (!confirm(`确定要从备份 ${filename} 恢复配置吗？\n\n⚠️ 恢复前会自动备份当前配置！`)) return;
-    fetch(API_URL, {
+    nmFetch({
         method:'POST',
         headers:{'Content-Type':'application/x-www-form-urlencoded'},
         body:'action=backup_restore&filename=' + encodeURIComponent(filename)
@@ -5223,9 +8935,11 @@ function restoreBackup(filename) {
     });
 }
 
-function deleteBackup(filename) {
+function deleteBackup(rowId) {
+    const filename = (window.BACKUP_ROWS && window.BACKUP_ROWS[rowId]) || '';
+    if (!filename) return;
     if (!confirm(`确定要删除备份 ${filename} 吗？此操作不可恢复！`)) return;
-    fetch(API_URL, {
+    nmFetch({
         method:'POST',
         headers:{'Content-Type':'application/x-www-form-urlencoded'},
         body:'action=backup_delete&filename=' + encodeURIComponent(filename)
@@ -5260,7 +8974,7 @@ function uploadPlugin() {
     formData.append('action', 'plugin_upload_update');
     formData.append('plugin_file', file);
     
-    fetch(API_URL, {
+    nmFetch({
         method: 'POST',
         body: formData
     })
@@ -5280,7 +8994,7 @@ function uploadPlugin() {
 
 // ========== 中国IPv4访问限制 ==========
 function loadChinaStatus() {
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_status'})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_status'})
     .then(r => r.text()).then(data => {
         let en='0', url='', cron='', lu='', cnt='0', devs='', active='0';
         data.split('\n').forEach(line => {
@@ -5302,8 +9016,9 @@ function loadChinaStatus() {
         const statusBadge = en === '1' ? '<span class="badge badge-green">已启用</span>' + ruleBadge : '<span class="badge badge-gray">已关闭</span>';
         document.getElementById('china_status_cell').innerHTML = statusBadge;
         document.getElementById('china_url').value = url;
-        document.getElementById('china_update_cell').innerHTML = '上次更新: ' + (lu || '未更新') + ' | CIDR条数: <b>' + cnt + '</b>';
-        document.getElementById('china_wan_cell').innerHTML = 'WAN设备: <code>' + (devs || '(未探测到)') + '</code> | 规则: ' + (active === '1' ? '<span class="text-success">生效中</span>' : '<span class="text-muted">未生效</span>');
+        // 【安全 v1.4.7】lu/cnt/devs 来自后端命令输出（WAN_DEVS 含接口名），写入前必须转义
+        document.getElementById('china_update_cell').innerHTML = '上次更新: ' + escapeHtml(lu || '未更新') + ' | CIDR条数: <b>' + escapeHtml(cnt) + '</b>';
+        document.getElementById('china_wan_cell').innerHTML = 'WAN设备: <code>' + escapeHtml(devs || '(未探测到)') + '</code> | 规则: ' + (active === '1' ? '<span class="text-success">生效中</span>' : '<span class="text-muted">未生效</span>');
         // cron 预设回填
         const sel = document.getElementById('china_cron_preset');
         const customInput = document.getElementById('china_cron_custom');
@@ -5324,18 +9039,22 @@ function loadChinaStatus() {
     });
 }
 
-function onCronPresetChange() {
-    const sel = document.getElementById('china_cron_preset');
-    const customInput = document.getElementById('china_cron_custom');
+function onCronPresetChangeFor(presetId, customId) {
+    const sel = document.getElementById(presetId);
+    const customInput = document.getElementById(customId);
     if (sel.value === '__custom__') { customInput.style.display = ''; }
     else { customInput.style.display = 'none'; customInput.value = ''; }
+}
+
+function onCronPresetChange() {
+    onCronPresetChangeFor('china_cron_preset', 'china_cron_custom');
 }
 
 function saveChinaUrl() {
     const url = document.getElementById('china_url').value.trim();
     if (!url) { alert('请输入订阅链接'); return; }
     if (!/^https?:\/\//.test(url)) { alert('链接必须以 http:// 或 https:// 开头'); return; }
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_set_url&url=' + encodeURIComponent(url)})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_set_url&url=' + encodeURIComponent(url)})
     .then(r => r.text()).then(data => {
         document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
     });
@@ -5348,7 +9067,7 @@ function saveChinaCron() {
         cron = document.getElementById('china_cron_custom').value.trim();
         if (!cron) { alert('请输入自定义cron表达式(5段: 分 时 日 月 周)'); return; }
     }
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_set_cron&cron=' + encodeURIComponent(cron)})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_set_cron&cron=' + encodeURIComponent(cron)})
     .then(r => r.text()).then(data => {
         document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         setTimeout(loadChinaStatus, 300);
@@ -5365,7 +9084,7 @@ function setChinaBtns(enabled) {
 function enableChinaFilter() {
     if (!confirm('确定开启中国IPv4访问限制吗？\n\n开启后仅中国大陆IPv4可访问已开放端口（端口转发与路由器本地放行端口），境外IPv4新建连接将被丢弃。')) return;
     setChinaBtns(false);
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_enable'})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_enable'})
     .then(r => r.text()).then(data => {
         document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         setTimeout(() => { loadChinaStatus(); setChinaBtns(true); }, 600);
@@ -5375,7 +9094,7 @@ function enableChinaFilter() {
 function disableChinaFilter() {
     if (!confirm('确定关闭中国IPv4访问限制吗？\n\n关闭后境外IPv4可恢复访问已开放端口。')) return;
     setChinaBtns(false);
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_disable'})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_disable'})
     .then(r => r.text()).then(data => {
         document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         setTimeout(() => { loadChinaStatus(); setChinaBtns(true); }, 400);
@@ -5384,11 +9103,194 @@ function disableChinaFilter() {
 
 function updateChinaFilter() {
     setChinaBtns(false);
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_update'})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_update'})
     .then(r => r.text()).then(data => {
         document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         setTimeout(() => { loadChinaStatus(); setChinaBtns(true); }, 600);
     }).catch(e => { setChinaBtns(true); alert('更新失败: ' + e.message); });
+}
+
+// ========== 中国IPv6访问限制 ==========
+function loadChina6Status() {
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china6_filter_status'})
+    .then(r => r.text()).then(data => {
+        let en='0', url='', cron='', lu='', cnt='0', devs='', active='0';
+        data.split('\n').forEach(line => {
+            const idx = line.indexOf('=');
+            if (idx > 0) {
+                const k = line.substring(0, idx), v = line.substring(idx + 1);
+                if (k === 'CHINA6_FILTER_ENABLED') en = v;
+                else if (k === 'URL') url = v;
+                else if (k === 'CRON') cron = v;
+                else if (k === 'LAST_UPDATE') lu = v;
+                else if (k === 'COUNT') cnt = v;
+                else if (k === 'WAN_DEVS') devs = v;
+                else if (k === 'RULE_ACTIVE') active = v;
+            }
+        });
+        const ruleBadge = active === '1'
+            ? ' <span class="badge badge-blue">规则已加载</span>'
+            : (en === '1' ? ' <span class="badge badge-gray" style="background:#94a3b8;color:#fff;">规则未加载</span>' : '');
+        document.getElementById('china6_status_cell').innerHTML = (en === '1' ? '<span class="badge badge-purple">已启用</span>' + ruleBadge : '<span class="badge badge-gray">已关闭</span>');
+        document.getElementById('china6_url').value = url;
+        document.getElementById('china6_update_cell').innerHTML = '上次更新: ' + escapeHtml(lu || '未更新') + ' | IPv6 CIDR条数: <b>' + escapeHtml(cnt) + '</b>';
+        document.getElementById('china6_wan_cell').innerHTML = 'WAN设备: <code>' + escapeHtml(devs || '(未探测到)') + '</code> | 规则: ' + (active === '1' ? '<span class="text-success">生效中</span>' : '<span class="text-muted">未生效</span>');
+        const sel = document.getElementById('china6_cron_preset');
+        const customInput = document.getElementById('china6_cron_custom');
+        let matched = false;
+        for (let i = 0; i < sel.options.length; i++) {
+            if (sel.options[i].value === cron && sel.options[i].value !== '__custom__') { sel.selectedIndex = i; matched = true; break; }
+        }
+        if (!matched) {
+            sel.value = '__custom__';
+            customInput.value = cron;
+            customInput.style.display = '';
+        } else {
+            customInput.value = '';
+            customInput.style.display = 'none';
+        }
+    }).catch(e => {
+        document.getElementById('china6_status_cell').innerHTML = '<span class="text-danger">加载失败: ' + escapeHtml(e.message) + '</span>';
+    });
+}
+
+function saveChina6Url() {
+    const url = document.getElementById('china6_url').value.trim();
+    if (!url) { alert('请输入订阅链接'); return; }
+    if (!/^https?:\/\//.test(url)) { alert('链接必须以 http:// 或 https:// 开头'); return; }
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china6_filter_set_url&url=' + encodeURIComponent(url)})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+    });
+}
+
+function saveChina6Cron() {
+    const sel = document.getElementById('china6_cron_preset');
+    let cron = sel.value;
+    if (cron === '__custom__') {
+        cron = document.getElementById('china6_cron_custom').value.trim();
+        if (!cron) { alert('请输入自定义cron表达式(5段: 分 时 日 月 周)'); return; }
+    }
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china6_filter_set_cron&cron=' + encodeURIComponent(cron)})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        setTimeout(loadChina6Status, 300);
+    });
+}
+
+function setChina6Btns(enabled) {
+    ['btn_china6_enable','btn_china6_disable','btn_china6_update'].forEach(id => {
+        const b = document.getElementById(id);
+        if (b) b.disabled = !enabled;
+    });
+}
+
+function enableChina6Filter() {
+    if (!confirm('确定开启中国IPv6访问限制吗？\n\n开启后仅中国大陆IPv6可访问已开放端口，境外IPv6新建连接将被丢弃。')) return;
+    setChina6Btns(false);
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china6_filter_enable'})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        setTimeout(() => { loadChina6Status(); setChina6Btns(true); }, 600);
+    }).catch(e => { setChina6Btns(true); alert('启用失败: ' + e.message); });
+}
+
+function disableChina6Filter() {
+    if (!confirm('确定关闭中国IPv6访问限制吗？\n\n关闭后境外IPv6可恢复访问已开放端口。')) return;
+    setChina6Btns(false);
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china6_filter_disable'})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        setTimeout(() => { loadChina6Status(); setChina6Btns(true); }, 400);
+    }).catch(e => { setChina6Btns(true); alert('关闭失败: ' + e.message); });
+}
+
+function updateChina6Filter() {
+    setChina6Btns(false);
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china6_filter_update'})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        setTimeout(() => { loadChina6Status(); setChina6Btns(true); }, 600);
+    }).catch(e => { setChina6Btns(true); alert('更新失败: ' + e.message); });
+}
+
+// ========== 手动黑名单（IPv4 / IPv6） ==========
+let _banV4 = [], _banV6 = [];
+
+function renderBanList(family) {
+    const list = (family === 'v4') ? _banV4 : _banV6;
+    const el = document.getElementById(family === 'v4' ? 'ban_v4_list' : 'ban_v6_list');
+    if (!el) return;
+    if (!list.length) { el.innerHTML = '<span class="text-muted">（空）</span>'; return; }
+    let html = '';
+    list.forEach((entry, i) => {
+        html += '<span class="badge badge-gray" style="display:inline-block;margin:2px 4px 2px 0;padding:3px 8px;font-family:monospace;">'
+             + escapeHtml(entry)
+             + ' <a href="javascript:void(0)" style="color:#dc2626;text-decoration:none;margin-left:4px;font-weight:bold;" '
+             + 'onclick="deleteBlacklistEntry(\'' + family + '\',' + i + ')" title="删除">×</a></span>';
+    });
+    el.innerHTML = html;
+}
+
+function loadBlacklist() {
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=blacklist_list'})
+    .then(r => r.text()).then(data => {
+        let v4='', v6='', v4n='0', v6n='0', active='0';
+        data.split('\n').forEach(line => {
+            const idx = line.indexOf('=');
+            if (idx > 0) {
+                const k = line.substring(0, idx), v = line.substring(idx + 1);
+                if (k === 'V4') v4 = v;
+                else if (k === 'V6') v6 = v;
+                else if (k === 'V4_COUNT') v4n = v;
+                else if (k === 'V6_COUNT') v6n = v;
+                else if (k === 'ACTIVE') active = v;
+            }
+        });
+        _banV4 = v4 ? v4.split(',') : [];
+        _banV6 = v6 ? v6.split(',') : [];
+        document.getElementById('ban_v4_count').textContent = v4n;
+        document.getElementById('ban_v6_count').textContent = v6n;
+        document.getElementById('ban_active_cell').innerHTML = active === '1'
+            ? '<span class="text-success">规则生效中</span>'
+            : '<span class="text-muted">未生效（无条目或未应用）</span>';
+        renderBanList('v4');
+        renderBanList('v6');
+    }).catch(e => {
+        document.getElementById('ban_v4_list').innerHTML = '<span class="text-danger">加载失败: ' + escapeHtml(e.message) + '</span>';
+    });
+}
+
+function addBlacklistEntry() {
+    const ip = document.getElementById('ban_input').value.trim();
+    if (!ip) { alert('请输入 IP 或 CIDR 网段'); return; }
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=blacklist_add&ip=' + encodeURIComponent(ip)})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        if (data.indexOf('已拉黑') >= 0) document.getElementById('ban_input').value = '';
+        setTimeout(loadBlacklist, 300);
+    }).catch(e => alert('添加失败: ' + e.message));
+}
+
+function deleteBlacklistEntry(family, idx) {
+    const list = (family === 'v4') ? _banV4 : _banV6;
+    const entry = list[idx];
+    if (!entry) return;
+    if (!confirm('确定从黑名单移除该条目吗？\n\n' + entry)) return;
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=blacklist_del&ip=' + encodeURIComponent(entry)})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        setTimeout(loadBlacklist, 300);
+    }).catch(e => alert('删除失败: ' + e.message));
+}
+
+function clearBlacklist(family) {
+    if (!confirm('确定清空 ' + (family === 'v4' ? 'IPv4' : 'IPv6') + ' 黑名单吗？此操作不可撤销。')) return;
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=blacklist_clear&family=' + encodeURIComponent(family)})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        setTimeout(loadBlacklist, 300);
+    }).catch(e => alert('清空失败: ' + e.message));
 }
 
 // ========== 卸载插件 ==========
@@ -5409,7 +9311,7 @@ function uninstallPlugin() {
     if (!confirm(msg)) return;
     if (!confirm('⚠ 二次确认：这是最终确认，卸载后无法撤销，确定继续？')) return;
     document.getElementById('action_result').innerHTML = '<pre class="result-pre" style="color:#dc2626;">卸载进行中，请勿关闭页面...（uhttpd 重启会导致连接断开，属正常现象）</pre>';
-    fetch(API_URL, {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=uninstall&keep=' + keep})
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=uninstall&keep=' + keep})
     .then(r => r.text()).then(data => {
         document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
         // 3秒后uhttpd已重启，跳转首页
@@ -5427,15 +9329,19 @@ function uninstallPlugin() {
 // 初始化
 loadSettings();
 listBackups();
+loadChina6Status();
+loadBlacklist();
 </script>
 <%+footer%>
+
+
 ```
 
 ### 5.16 files/etc/config/netmanager
 
-- **用途**：防火墙模块 UCI 配置：默认目标 IP / 日志开关 / 中国过滤全部参数
-- **规模**：12 行
-- **维护要点**：默认订阅 metowolf china.txt；china_filter_cron 默认每周日 3 点
+- **用途**：防火墙模块 UCI 配置：默认目标 IP / 日志开关 / 中国 IPv4·IPv6 过滤参数 / 更新镜像
+- **规模**：17 行
+- **维护要点**：china_filter_url/cron 与 china6_filter_url/cron 默认值即官方订阅源
 
 ```uci
 config netmanager 'settings'
@@ -5449,14 +9355,21 @@ config netmanager 'settings'
     option china_filter_cron '0 3 * * 0'
     option china_filter_last_update ''
     option china_filter_count '0'
+    option china6_filter_enable '0'
+    option china6_filter_url 'https://ispip.clang.cn/all_cn_ipv6.txt'
+    option china6_filter_cron '0 3 * * 0'
+    option china6_filter_last_update ''
+    option china6_filter_count '0'
     option update_mirror ''
+
+
 ```
 
 ### 5.17 files/etc/config/dnssettings
 
-- **用途**：DNS 模块 UCI 配置：wan / lan / dnsmasq / actions 四节
+- **用途**：上网设置模块 UCI 配置：wan / lan / dnsmasq / actions 四节
 - **规模**：22 行
-- **维护要点**：wan/lan/dnsmasq 三节为 dns_settings.lua 表单绑定；actions 节为按钮占位
+- **维护要点**：wan/lan/dnsmasq 三节由 dns_settings.lua 绑定；actions 为按钮占位
 
 ```uci
 config wan 'wan'
@@ -5481,20 +9394,22 @@ config dnsmasq 'dnsmasq'
     list forward_v6 '2402:4e00::'
 
 config actions 'actions'
+
+
 ```
 
 ### 5.18 files/etc/init.d/netmanager-china
 
-- **用途**：开机自启脚本：重应用中国 IPv4 过滤规则
+- **用途**：开机自启脚本：重建中国 IPv4/IPv6 过滤与黑名单 nft 规则
 - **规模**：26 行
-- **维护要点**：START/STOP 顺序：参考 OpenWrt 规范，启动晚于防火墙以确保 fw4 就绪
+- **维护要点**：START/STOP 顺序须晚于防火墙，确保 fw4 就绪
 
 ```bash
 #!/bin/sh /etc/rc.common
 # ============================================================
-# 网络管理插件 - 中国IPv4访问限制 开机自启
+# 网络管理插件 - 中国IPv4/IPv6访问限制 + 手动黑名单 开机自启
 # 
-# 作用: 开机后从本地持久化列表重建 nft 集合与过滤规则
+# 作用: 开机后从本地持久化列表重建 nft 集合与过滤/黑名单规则
 #       (nft 规则在内核内存中，重启即清空，需重新应用)
 # ============================================================
 
@@ -5516,20 +9431,22 @@ stop() {
 restart() {
     /usr/sbin/netmanager china_filter boot
 }
+
+
 ```
 
 ### 5.19 files/etc/hotplug.d/iface/95-netmanager-china
 
-- **用途**：WAN 上线热插拔脚本：接口上线自动重应用规则（自愈机制）
-- **规模**：24 行
-- **维护要点**：编号 95 确保在 fw4 默认 hotplug 之后执行
+- **用途**：WAN 上线热插拔：接口 up 时重应用过滤与黑名单（自愈）
+- **规模**：30 行
+- **维护要点**：编号 95 保证在 fw4 默认 hotplug 之后执行
 
 ```bash
 #!/bin/sh
 # ============================================================
-# 网络管理插件 - 中国IPv4访问限制 WAN接口事件
+# 网络管理插件 - 中国IPv4/IPv6访问限制 + 手动黑名单 WAN接口事件
 # 
-# 作用: WAN 接口 up 时重新应用过滤规则，刷新 WAN 设备名
+# 作用: WAN 接口 up 时重新应用过滤/黑名单规则，刷新 WAN 设备名
 #       (解决 PPPoE 重连 / DHCP 续约导致设备名漂移后规则失效)
 # ============================================================
 
@@ -5542,30 +9459,111 @@ case "$INTERFACE" in
     *) exit 0 ;;
 esac
 
-# 仅在功能已启用时重应用（避免无谓执行）
-[ "$(uci -q get netmanager.settings.china_filter_enable 2>/dev/null)" = "1" ] || exit 0
+# 仅在功能已启用或存在黑名单条目时重应用（避免无谓执行）
+en4=$(uci -q get netmanager.settings.china_filter_enable 2>/dev/null)
+en6=$(uci -q get netmanager.settings.china6_filter_enable 2>/dev/null)
+if [ "$en4" != "1" ] && [ "$en6" != "1" ] \
+   && [ ! -s /etc/netmanager/blacklist_v4.list ] \
+   && [ ! -s /etc/netmanager/blacklist_v6.list ]; then
+    exit 0
+fi
 
 # 后台重应用，不阻塞 hotplug
 ( sleep 2; /usr/sbin/netmanager china_filter boot ) >/dev/null 2>&1 &
 
 exit 0
+
+
 ```
 
-### 5.20 install.sh
+### 5.20 files/etc/hotplug.d/iface/96-netmanager-v6sync
 
-- **用途**：一键安装脚本：7 步安装，复制文件 / 权限 / /bin/netmanager 符号链接 / init / cron，支持 SKIP_UHTTPD_RESTART
-- **规模**：109 行
-- **维护要点**：L3/L8 版本号（登记处）；L32 ln -sf /bin/netmanager 符号链接——uninstall 未清理该链接（v1.4.6 待修）
+- **用途**：WAN 上线热插拔：同步 IPv6 转发目标（前缀变化跟随）
+- **规模**：62 行
+- **维护要点**：与 */10 cron 兜底互补，两者都要保留
+
+```bash
+#!/bin/sh
+# ============================================================
+# 网络管理插件 - IPv6 前缀变更自愈 + SSH 监听自愈（v1.8.0 新增）
+#
+# 处理两类实测故障：
+#
+# 1) 运营商 PD 前缀变更后，IPv6 端口放行规则里写死的 dest_ip 失效。
+#    wan6/wan up 后延迟同步一次，按锚点重算目标主机的当前 IPv6。
+#
+# 2) dropbear 若以 DirectInterface 绑定到 br-lan（SO_BINDTODEVICE），
+#    netifd 重建 br-lan 后监听套接字绑定的 ifindex 失效：
+#    表现为端口仍 LISTEN、但连接被 refused。
+#    此时重启 dropbear 即可恢复。lan ifup 时做一次自检。
+# ============================================================
+
+[ "$ACTION" = "ifup" ] || exit 0
+
+case "$INTERFACE" in
+    wan|wan6|wan_6|wan-*|wan6-*)
+        # v1.8.7：WAN 上线/重拨后先自愈 IPv6 默认网关（pppoe 补默认路由 +
+        # 强制 ra_default=1 宣告网关），再按锚点同步端口放行目标。
+        # 前缀可能刚下发，延迟等待地址与租约就绪后再执行。
+        (
+            sleep 12
+            /usr/sbin/netmanager v6gw --quiet
+            if uci -q get netmanager.@v6track[0] >/dev/null 2>&1; then
+                /usr/sbin/netmanager port_sync_v6 --quiet
+            fi
+        ) >/dev/null 2>&1 &
+        ;;
+    lan)
+        # 仅当 dropbear 绑定了具体接口时才需要自愈（未绑定不受影响）
+        dif=$(uci -q get dropbear.@dropbear[0].DirectInterface 2>/dev/null)
+        [ -z "$dif" ] && exit 0
+        (
+            sleep 5
+            # v1.8.1：不能用本机 TCP 自连判断。dropbear 设 DirectInterface 后
+            # 以 SO_BINDTODEVICE 绑在该接口，而本机连自身地址走回环路由，
+            # 无论用 127.0.0.1 还是 LAN IP 都连不通 —— 探测必然失败，
+            # 会导致每次 lan ifup 都无谓重启 dropbear（并踢掉在线会话）。
+            # 真正的判据是网卡 ifindex 是否变过：变了才说明旧套接字失效。
+            dev="br-$dif"
+            [ -d "/sys/class/net/$dev" ] || dev="$dif"
+            cur=$(cat "/sys/class/net/$dev/ifindex" 2>/dev/null)
+            [ -z "$cur" ] && exit 0
+            state="/tmp/.netmanager_db_ifindex.$dif"
+            old=$(cat "$state" 2>/dev/null)
+            if [ -z "$old" ]; then
+                # 首次观测：dropbear 是在 lan 就绪后启动的，认定当前绑定有效
+                echo "$cur" > "$state"
+                exit 0
+            fi
+            if [ "$cur" != "$old" ]; then
+                logger -t netmanager "SSH 绑定网卡 $dev ifindex $old -> $cur，重启 dropbear 恢复监听"
+                /etc/init.d/dropbear restart >/dev/null 2>&1
+                echo "$cur" > "$state"
+            fi
+        ) >/dev/null 2>&1 &
+        ;;
+esac
+
+exit 0
+
+
+```
+
+### 5.21 install.sh
+
+- **用途**：一键安装脚本：7 步安装（复制文件/权限/符号链接/init/cron），支持 SKIP_UHTTPD_RESTART
+- **规模**：143 行
+- **维护要点**：版本号登记处 2、3；新增安装产物须三处同步（install.sh / uninstall / files/）
 
 ```bash
 #!/bin/ash
 # ============================================================
-# 网络管理插件 (luci-app-netmanager) - 一键安装脚本 v1.4.5
+# 网络管理插件 (luci-app-netmanager) - 一键安装脚本 v1.8.14
 # 由 luci-app-fwmanager (防火墙管理) 与 luci-app-dnssettings (DNS设置) 合并而成
 # ============================================================
 
 echo "============================================"
-echo "  网络管理插件 (luci-app-netmanager) v1.4.5"
+echo "  网络管理插件 (luci-app-netmanager) v1.8.14"
 echo "  防火墙管理 + DNS设置 一体化"
 echo "============================================"
 echo ""
@@ -5628,15 +9626,49 @@ else
     echo "  - /etc/config/dnssettings 已存在，跳过（保留原有DNS配置）"
 fi
 
-echo "[6/7] 复制系统脚本（中国IPv4过滤开机自启）..."
+echo "[6/7] 复制系统脚本（IPv4/IPv6过滤与黑名单开机自启）..."
 mkdir -p /etc/init.d /etc/hotplug.d/iface
 cp -f "$FILES_DIR/etc/init.d/netmanager-china" /etc/init.d/netmanager-china
 chmod +x /etc/init.d/netmanager-china
 cp -f "$FILES_DIR/etc/hotplug.d/iface/95-netmanager-china" /etc/hotplug.d/iface/95-netmanager-china
 chmod +x /etc/hotplug.d/iface/95-netmanager-china 2>/dev/null
+cp -f "$FILES_DIR/etc/hotplug.d/iface/96-netmanager-v6sync" /etc/hotplug.d/iface/96-netmanager-v6sync
+chmod +x /etc/hotplug.d/iface/96-netmanager-v6sync 2>/dev/null
 /etc/init.d/netmanager-china enable 2>/dev/null
 echo "  ✓ /etc/init.d/netmanager-china (开机自启)"
 echo "  ✓ /etc/hotplug.d/iface/95-netmanager-china (WAN上线重应用)"
+echo "  ✓ /etc/hotplug.d/iface/96-netmanager-v6sync (IPv6前缀变更同步 + SSH监听自愈)"
+
+# v1.8.3：IPv6 目标同步定时兜底。
+# PD 前缀可能在续租时静默变化而不触发 ifup，hotplug 会漏掉；
+# 每 10 分钟检查一次，前缀未变时开销极小（仅读一次地址与配置）。
+CRON_LINE='*/10 * * * * /usr/sbin/netmanager port_sync_v6 --quiet >/dev/null 2>&1'
+if [ -f /etc/crontabs/root ]; then
+    if ! grep -qF 'netmanager port_sync_v6' /etc/crontabs/root 2>/dev/null; then
+        echo "$CRON_LINE" >> /etc/crontabs/root
+        /etc/init.d/cron restart >/dev/null 2>&1
+        echo "  ✓ 已添加 IPv6 目标同步定时任务（每10分钟）"
+    else
+        echo "  - IPv6 目标同步定时任务已存在"
+    fi
+else
+    mkdir -p /etc/crontabs
+    echo "$CRON_LINE" > /etc/crontabs/root
+    /etc/init.d/cron enable >/dev/null 2>&1
+    /etc/init.d/cron restart >/dev/null 2>&1
+    echo "  ✓ 已创建 crontab 并添加 IPv6 目标同步任务"
+fi
+
+# 【v1.8.9】自动拉黑功能下线，清理 v1.8.8 残留（定时任务/内存表/历史）
+if [ -f /etc/crontabs/root ] && grep -qF 'netmanager autoban' /etc/crontabs/root 2>/dev/null; then
+    grep -vF 'netmanager autoban' /etc/crontabs/root > /tmp/.nm_ab_cron 2>/dev/null
+    cat /tmp/.nm_ab_cron > /etc/crontabs/root
+    rm -f /tmp/.nm_ab_cron
+    /etc/init.d/cron restart >/dev/null 2>&1
+    echo "  ✓ 已移除自动拉黑定时扫描"
+fi
+rm -f /tmp/netmanager/autoban.list 2>/dev/null
+nft delete table inet netmanager_autoban 2>/dev/null
 
 echo "[7/7] 重启LuCI..."
 rm -rf /tmp/luci-indexcache /tmp/luci-modulecache 2>/dev/null
@@ -5667,13 +9699,15 @@ echo "  IPv4: 223.5.5.5 / 119.29.29.29"
 echo "  IPv6: 2400:3200::1 / 2402:4e00::"
 echo ""
 echo "============================================"
+
+
 ```
 
-### 5.21 .github/workflows/build.yml
+### 5.22 .github/workflows/build.yml
 
-- **用途**：GitHub Actions 工作流：tag 推送时打包 tar.gz 资产并创建 Release
-- **规模**：156 行
-- **维护要点**：tag 推送触发；产物命名 luci-app-netmanager-install_<ver>.tar.gz；Release body 由 extract_changelog.awk 自动填充
+- **用途**：CI：push main 时从 README 提版本 → 语法门禁 → 打 tar.gz → 打 tag → 发 Release（body 取自更新日志）
+- **规模**：225 行
+- **维护要点**：tag 已存在则整条跳过；重发同版本用 workflow_dispatch 勾 force
 
 ````yaml
 name: Build Install Package
@@ -5724,6 +9758,50 @@ jobs:
             echo "Tag ${TAG} 不存在，开始打包发布"
           fi
 
+      # 【v1.4.6 CI 门禁】语法检查：任何 shell 脚本或 Lua 文件语法错误即终止流水线
+      - name: Shell & Lua syntax check (gate)
+        if: steps.check.outputs.exists == 'false' || inputs.force == true
+        run: |
+          FAIL=0
+          echo "===== Shell 语法检查 (sh -n) ====="
+          for f in files/usr/sbin/netmanager \
+                   files/usr/sbin/dnssettings-apply.sh \
+                   files/usr/sbin/dnssettings-backup.sh \
+                   install.sh \
+                   files/etc/init.d/netmanager-china \
+                   files/etc/hotplug.d/iface/95-netmanager-china; do
+            if [ -f "$f" ]; then
+              if sh -n "$f"; then
+                echo "PASS: $f"
+              else
+                echo "FAIL: $f"
+                FAIL=1
+              fi
+            else
+              echo "WARN: $f 不存在（跳过）"
+            fi
+          done
+          echo "===== Lua 语法检查 (luac -p) ====="
+          sudo apt-get update -qq && sudo apt-get install -y -qq lua5.1 >/dev/null
+          FOUND_LUA=0
+          while IFS= read -r f; do
+            FOUND_LUA=1
+            if luac5.1 -p "$f" 2>&1; then
+              echo "PASS: $f"
+            else
+              echo "FAIL: $f"
+              FAIL=1
+            fi
+          done < <(find files/usr/lib/lua -name '*.lua' 2>/dev/null)
+          if [ "$FOUND_LUA" = "0" ]; then
+            echo "WARN: 未找到任何 .lua 文件"
+          fi
+          if [ "$FAIL" = "1" ]; then
+            echo "::error::语法检查未通过，流水线终止（修复后再发布）"
+            exit 1
+          fi
+          echo "===== 全部语法检查通过 ====="
+
       - name: Build tar.gz install package
         if: steps.check.outputs.exists == 'false' || inputs.force == true
         run: |
@@ -5732,6 +9810,14 @@ jobs:
           # 使用 GNU tar --owner=0 --group=0 保证在路由器上属主正确；--mode 保证脚本可执行
           tar --owner=0 --group=0 --mode='u=rwX,go=rX' -czvf luci-app-netmanager-install_${{ steps.version.outputs.tag }}.tar.gz install.sh files/
           ls -lh luci-app-netmanager-install_*.tar.gz
+          # 【v1.4.6】产物校验：打包后 tar tzf 预检成员完整可读 + 生成 sha256（供 update_apply 校验）
+          echo "===== 产物 tar 完整性预检 ====="
+          tar tzf luci-app-netmanager-install_*.tar.gz >/dev/null && echo "tar 预检通过"
+          echo "===== 生成 sha256 校验文件 ====="
+          for f in luci-app-netmanager-install_*.tar.gz; do
+            sha256sum "$f" > "${f}.sha256"
+            cat "${f}.sha256"
+          done
 
       - name: Create and push tag
         if: steps.check.outputs.exists == 'false' || inputs.force == true
@@ -5763,7 +9849,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
-          files: luci-app-netmanager-install_*.tar.gz
+          files: |
+            luci-app-netmanager-install_*.tar.gz
+            luci-app-netmanager-install_*.tar.gz.sha256
           generate_release_notes: true
           body: |
             ## 网络管理插件 ${{ steps.version.outputs.tag }}
@@ -5788,6 +9876,8 @@ jobs:
             - **静态IPv6分配（v1.4.0 新增）**：基于MAC绑定 hostid/ip6/DUID，自动合并重复条目与 hostid 冲突检测
             - 设置（默认目标IP/安全建议/系统工具/配置备份/插件在线更新/运行日志排错）
             - **中国IPv4访问限制（继承自 v1.3.33）**：仅允许中国大陆 IPv4 访问已开放端口（DNAT+路由器本地开放端口），境外 IPv4 新建连接丢弃；默认订阅 `https://metowolf.github.io/iplist/data/special/china.txt`，支持自定义订阅链接与自定义 cron 更新计划；开机 init + WAN hotplug 自愈；**旧版 nft 自动降级兼容**（modern `flags interval, auto-merge` 分片加载 / compat `flags interval` 单次原子加载 + 逐行回退）
+            - **中国IPv6访问限制（v1.7.0 新增）**：与 IPv4 对称，独立 nft 表 `inet netmanager6`，仅允许中国大陆 IPv6 访问已开放端口；默认订阅 `https://ispip.clang.cn/all_cn_ipv6.txt`，订阅与 cron 可自定义；开机/WAN hotplug 自愈
+            - **手动黑名单（v1.7.0 新增）**：IPv4/IPv6 单 IP 与 CIDR 网段拉黑，独立 nft 表 `inet netmanager_ban`，条目持久化并自动恢复
 
             ### 安装方法（iStoreOS 推荐脚本安装）
             1. 下载 `luci-app-netmanager-install_*.tar.gz` 上传到路由器 `/tmp`
@@ -5826,19 +9916,152 @@ jobs:
             netmanager china_filter set_url <url>          # 自定义订阅链接
             netmanager china_filter set_cron "0 4 * * *"   # 自定义更新计划cron
 
+            # 中国IPv6访问限制（v1.7.0+）
+            netmanager china6_filter status                # 查看状态
+            netmanager china6_filter enable                # 开启
+            netmanager china6_filter disable               # 关闭
+            netmanager china6_filter update                # 更新IPv6 IP库
+
+            # 手动黑名单（v1.7.0+，支持单IP与CIDR）
+            netmanager blacklist list
+            netmanager blacklist add 10.0.0.0/8
+            netmanager blacklist add 2001:db8::/32
+            netmanager blacklist del 10.0.0.0/8
+            netmanager blacklist clear v4|v6|all
+
             # 卸载插件
             netmanager uninstall                # 全删（含 DNS 配置与脚本）
             netmanager uninstall keep           # 保留 /etc/config/netmanager、/etc/netmanager/ 与 /etc/config/dnssettings，其余全删
             ```
 
             > 也可在「设置」页面点击「一键卸载插件」按钮卸载（支持保留配置勾选）。卸载不影响用户在 /etc/config/firewall 中的端口转发与防火墙规则。
+
+
 ````
 
-### 5.22 .github/workflows/extract_changelog.awk
+### 5.23 .github/workflows/publish-istore.yml
 
-- **用途**：Release body 提取脚本：从 README.md 更新日志提取指定版本段落
-- **规模**：16 行
-- **维护要点**：注释中的版本号是有意保留的历史记录，发版时勿动
+- **用途**：CI：Release 发布后构建 ipk/apk、上传 Release 资产、自动向 istoreos/istore-repo（pending）与 openwrt-app-meta（main）提 PR
+- **规模**：107 行
+- **维护要点**：依赖 ISTORE_TOKEN；未配置只构建不提 PR；支持 dry_run/version/release 三个手动入参
+
+```yaml
+name: Publish to iStore
+
+# 触发：GitHub Release 发布后自动跑；也可手动指定版本
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号，如 1.8.15（不带 v）'
+        required: true
+      release:
+        description: '包修订号（同版本重发时递增）'
+        required: false
+        default: '1'
+      dry_run:
+        description: '只构建、不提 PR'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      ISTORE_TOKEN: ${{ secrets.ISTORE_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 计算版本号
+        id: ver
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            V="${{ inputs.version }}"
+          else
+            V="${GITHUB_REF_NAME#v}"
+          fi
+          R="${{ inputs.release }}"; [ -n "$R" ] || R=1
+          echo "version=$V" >> $GITHUB_OUTPUT
+          echo "release=$R" >> $GITHUB_OUTPUT
+          echo "版本: $V  修订: $R"
+
+      - name: 校验 PLUGIN_VERSION 与发布版本一致
+        run: |
+          PV=$(grep -m1 '^PLUGIN_VERSION=' files/usr/sbin/netmanager | cut -d'"' -f2)
+          echo "PLUGIN_VERSION=$PV  发布版本=${{ steps.ver.outputs.version }}"
+          if [ "$PV" != "${{ steps.ver.outputs.version }}" ]; then
+            echo "::error::files/usr/sbin/netmanager 里的 PLUGIN_VERSION=$PV 与发布版本不一致，请先改一致再发版"
+            exit 1
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: 构建 ipk（opkg / 24.10 及更早）
+        run: |
+          python3 tools/build_ipk.py \
+            --version "${{ steps.ver.outputs.version }}" \
+            --release "${{ steps.ver.outputs.release }}" \
+            --files files --out dist
+
+      - name: 构建 apk（25.12）
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}" \
+          RELEASE="${{ steps.ver.outputs.release }}" \
+          OUT=dist bash tools/build_apk.sh
+
+      - name: 产物清单
+        run: ls -lh dist
+
+      - name: 追加到 Release 资产
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.event.release.tag_name }}" dist/* --clobber
+
+      - name: 检查是否配置了 ISTORE_TOKEN
+        id: token
+        env:
+          TOKEN: ${{ secrets.ISTORE_TOKEN }}
+        run: |
+          if [ -n "$TOKEN" ]; then
+            echo "ok=1" >> $GITHUB_OUTPUT
+          else
+            echo "ok=0" >> $GITHUB_OUTPUT
+            echo "::notice::未配置 ISTORE_TOKEN，将跳过自动提 PR"
+          fi
+
+      - name: 提交 PR 到 iStore（istore-repo + openwrt-app-meta）
+        if: steps.token.outputs.ok == '1' && inputs.dry_run != true
+        env:
+          GH_TOKEN: ${{ secrets.ISTORE_TOKEN }}
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}" \
+          RELEASE="${{ steps.ver.outputs.release }}" \
+          DIST=dist \
+          bash tools/publish_istore.sh
+
+      - name: 未配置 ISTORE_TOKEN 时的提示
+        if: steps.token.outputs.ok == '0'
+        run: |
+          echo "::notice::没有配置 ISTORE_TOKEN，已跳过自动提 PR。产物在 dist/ 与 Release 里，可手动提交。"
+          echo "配置方法见 docs/istore-publish.md"
+
+
+```
+
+### 5.24 .github/workflows/extract_changelog.awk
+
+- **用途**：Release body 提取脚本：从 README 更新日志取出指定版本段落
+- **规模**：17 行
+- **维护要点**：注释里的版本号是历史记录，勿改
 
 ```awk
 # extract_changelog.awk - 从 README.md 提取指定版本的更新日志段
@@ -5858,13 +10081,809 @@ found {
 	started = 1
 	print
 }
+
+
 ```
 
-### 5.23 .gitattributes
+### 5.25 tools/build_ipk.py
 
-- **用途**：git 属性：强制 LF 行尾（.gitattributes，CRLF 警告可忽略）
-- **规模**：14 行
-- **维护要点**：13 行，强制 * text=auto eol=lf
+- **用途**：打 ipk 工具：固定 mtime、目录 755/文件 644、脚本可执行位，产出 tar.gz 外壳的 _all.ipk
+- **规模**：152 行
+- **维护要点**：iStore CI 只认 tar.gz 外壳（ar 格式判 invalid）；支持 --version/--release/--files/--out
+
+```python
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""把 files/ 目录打成 iStore 仓库可接受的 ipk（tar.gz 外壳，内含 ./control.tar.gz 与 ./data.tar.gz）。
+
+用法:
+  python3 tools/build_ipk.py --version 1.8.14-r1 --files files --out dist
+"""
+import argparse
+import io
+import os
+import tarfile
+
+NAME = "luci-app-netmanager"
+MTIME = 1795000000  # 固定时间戳，产出可复现
+
+EXEC = {
+    "usr/sbin/netmanager",
+    "usr/sbin/dnssettings-apply.sh",
+    "usr/sbin/dnssettings-backup.sh",
+    "etc/init.d/netmanager-china",
+    "etc/hotplug.d/iface/95-netmanager-china",
+    "etc/hotplug.d/iface/96-netmanager-v6sync",
+}
+
+CONFFILES = "/etc/config/netmanager\n/etc/config/dnssettings\n"
+
+POSTINST = r"""#!/bin/sh
+[ -n "${IPKG_INSTROOT}" ] && exit 0
+rm -rf /tmp/luci-indexcache /tmp/luci-modulecache
+/etc/init.d/netmanager-china enable >/dev/null 2>&1
+/etc/init.d/netmanager-china restart >/dev/null 2>&1
+/etc/init.d/uhttpd reload >/dev/null 2>&1
+exit 0
+"""
+
+PRERM = r"""#!/bin/sh
+[ -n "${IPKG_INSTROOT}" ] && exit 0
+/etc/init.d/netmanager-china stop >/dev/null 2>&1
+/etc/init.d/netmanager-china disable >/dev/null 2>&1
+which nft >/dev/null 2>&1 && {
+	nft delete table inet netmanager 2>/dev/null
+	nft delete table inet netmanager6 2>/dev/null
+	nft delete table inet netmanager_ban 2>/dev/null
+}
+exit 0
+"""
+
+
+def collect(root):
+    rows = []
+    for dirpath, _, filenames in os.walk(root):
+        for fn in filenames:
+            full = os.path.join(dirpath, fn)
+            rel = os.path.relpath(full, root).replace("\\", "/")
+            rows.append((rel, full))
+    rows.sort()
+    return rows
+
+
+def add_entry(tf, name, data, mode):
+    ti = tarfile.TarInfo(name)
+    ti.mtime = MTIME
+    ti.mode = mode
+    ti.uid = ti.gid = 0
+    ti.uname = ti.gname = "root"
+    ti.size = len(data)
+    tf.addfile(ti, io.BytesIO(data))
+
+
+def build(version, src, out_dir, release):
+    files = collect(src)
+    if not files:
+        raise SystemExit("files 目录为空: %s" % src)
+
+    data_buf = io.BytesIO()
+    total = 0
+    seen = set()
+    with tarfile.open(fileobj=data_buf, mode="w:gz", compresslevel=9) as tf:
+        for rel, full in files:
+            parts = rel.split("/")[:-1]
+            for i in range(1, len(parts) + 1):
+                d = "./" + "/".join(parts[:i])
+                if d not in seen:
+                    seen.add(d)
+                    ti = tarfile.TarInfo(d)
+                    ti.mtime = MTIME
+                    ti.mode = 0o755
+                    ti.uid = ti.gid = 0
+                    ti.uname = ti.gname = "root"
+                    ti.type = tarfile.DIRTYPE
+                    tf.addfile(ti)
+            with open(full, "rb") as fh:
+                blob = fh.read()
+            total += len(blob)
+            mode = 0o755 if rel in EXEC else 0o644
+            ti = tarfile.TarInfo("./" + rel)
+            ti.mtime = MTIME
+            ti.mode = mode
+            ti.uid = ti.gid = 0
+            ti.uname = ti.gname = "root"
+            ti.size = len(blob)
+            tf.addfile(ti, io.BytesIO(blob))
+
+    control = (
+        "Package: %s\n"
+        "Version: %s-r%s\n"
+        "Depends: libc, luci-base, luci-compat, nftables-json, curl, ca-bundle, jsonfilter\n"
+        "Section: luci\n"
+        "Priority: optional\n"
+        "Architecture: all\n"
+        "Installed-Size: %d\n"
+        "Maintainer: District1655\n"
+        "Source: %s\n"
+        "SourceName: %s\n"
+        "License: MIT\n"
+        "URL: https://github.com/District1655/luci-app-netmanager\n"
+        "Description: Network manager for LuCI: port forward, firewall rules, SSH and access logs,\n"
+        " China-only IPv4/IPv6 access control, manual blacklist, WAN/LAN settings and static IP binding.\n"
+    ) % (NAME, version, release, total, NAME, NAME)
+
+    ctrl_buf = io.BytesIO()
+    with tarfile.open(fileobj=ctrl_buf, mode="w:gz", compresslevel=9) as tf:
+        add_entry(tf, "./control", control.encode(), 0o644)
+        add_entry(tf, "./conffiles", CONFFILES.encode(), 0o644)
+        add_entry(tf, "./postinst", POSTINST.encode(), 0o755)
+        add_entry(tf, "./prerm", PRERM.encode(), 0o755)
+
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, "%s_%s-r%s_all.ipk" % (NAME, version, release))
+    with tarfile.open(path, "w:gz", compresslevel=9) as outer:
+        for nm, blob in (
+            ("./debian-binary", b"2.0\n"),
+            ("./data.tar.gz", data_buf.getvalue()),
+            ("./control.tar.gz", ctrl_buf.getvalue()),
+        ):
+            add_entry(outer, nm, blob, 0o644)
+    return path, total, len(files)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--version", required=True, help="如 1.8.14")
+    ap.add_argument("--release", default="1", help="包修订号，默认 1")
+    ap.add_argument("--files", default="files")
+    ap.add_argument("--out", default="dist")
+    a = ap.parse_args()
+    path, total, count = build(a.version, a.files, a.out, a.release)
+    print("ipk: %s (%d bytes, %d files, payload %d bytes)" % (path, os.path.getsize(path), count, total))
+
+
+if __name__ == "__main__":
+    main()
+
+
+```
+
+### 5.26 tools/build_apk.sh
+
+- **用途**：打 apk 工具：缓存 openwrt-sdk-mini，chmod 规范化后调 apk mkpkg，再用 adbdump 自检
+- **规模**：77 行
+- **维护要点**：字段名是 name/version（不是 pkgname/pkgver）；多个 depends 写在同一个 -I 值里空格分隔
+
+```bash
+#!/usr/bin/env bash
+# 用官方 openwrt-sdk-mini 的 apk mkpkg 打 25.12(apk) 包
+# 用法: VERSION=1.8.14 RELEASE=1 ./tools/build_apk.sh
+set -euo pipefail
+
+VERSION=${VERSION:?需要 VERSION，例如 1.8.14}
+RELEASE=${RELEASE:-1}
+FILES=${FILES:-files}
+OUT=${OUT:-dist}
+PKG=luci-app-netmanager
+SDK_URL="https://github.com/linkease/istore-repo/releases/download/tools/openwrt-sdk-mini-25.12.2.tar.xz"
+SDK_TGZ=${SDK_TGZ:-/tmp/openwrt-sdk-mini.tar.xz}
+SDK_DIR=${SDK_DIR:-/tmp/openwrt-sdk-mini}
+
+mkdir -p "$OUT"
+
+if [ ! -x "$SDK_DIR/staging_dir/host/bin/apk" ]; then
+    echo "==> 下载 SDK mini"
+    curl -fL --retry 3 -o "$SDK_TGZ" "$SDK_URL"
+    rm -rf "$SDK_DIR"
+    mkdir -p "$SDK_DIR"
+    tar -xJf "$SDK_TGZ" -C "$SDK_DIR" --strip-components=1
+fi
+APK="$SDK_DIR/staging_dir/host/bin/apk"
+"$APK" --version | head -1
+
+# 规范权限：目录 755、普通文件 644、脚本 755
+find "$FILES" -type d -exec chmod 755 {} +
+find "$FILES" -type f -exec chmod 644 {} +
+for f in usr/sbin/netmanager usr/sbin/dnssettings-apply.sh usr/sbin/dnssettings-backup.sh \
+         etc/init.d/netmanager-china etc/hotplug.d/iface/95-netmanager-china \
+         etc/hotplug.d/iface/96-netmanager-v6sync; do
+    [ -f "$FILES/$f" ] && chmod 755 "$FILES/$f"
+done
+
+cat > /tmp/nm-post-install.sh <<'EOS'
+#!/bin/sh
+rm -rf /tmp/luci-indexcache /tmp/luci-modulecache
+/etc/init.d/netmanager-china enable >/dev/null 2>&1
+/etc/init.d/netmanager-china restart >/dev/null 2>&1
+/etc/init.d/uhttpd reload >/dev/null 2>&1
+exit 0
+EOS
+
+cat > /tmp/nm-pre-deinstall.sh <<'EOS'
+#!/bin/sh
+/etc/init.d/netmanager-china stop >/dev/null 2>&1
+/etc/init.d/netmanager-china disable >/dev/null 2>&1
+command -v nft >/dev/null 2>&1 && {
+  nft delete table inet netmanager 2>/dev/null
+  nft delete table inet netmanager6 2>/dev/null
+  nft delete table inet netmanager_ban 2>/dev/null
+}
+exit 0
+EOS
+chmod +x /tmp/nm-post-install.sh /tmp/nm-pre-deinstall.sh
+
+OUTFILE="$OUT/$PKG-$VERSION-r$RELEASE.apk"
+rm -f "$OUTFILE"
+"$APK" mkpkg -F "$FILES" \
+    -I name:$PKG \
+    -I version:$VERSION-r$RELEASE \
+    -I description:"Network manager for LuCI" \
+    -I arch:noarch \
+    -I license:MIT \
+    -I origin:$PKG \
+    -I maintainer:District1655 \
+    -I url:https://github.com/District1655/luci-app-netmanager \
+    -I "depends:libc luci-base luci-compat nftables-json curl ca-bundle jsonfilter" \
+    -I provides:$PKG-any \
+    -s post-install:/tmp/nm-post-install.sh \
+    -s pre-deinstall:/tmp/nm-pre-deinstall.sh \
+    -o "$OUTFILE"
+
+echo "==> 自检"
+"$APK" adbdump "$OUTFILE" | sed -n '1,16p'
+ls -lh "$OUTFILE"
+
+
+```
+
+### 5.27 tools/publish_istore.sh
+
+- **用途**：上架 PR 工具：blob→tree(base_tree 取上游 pending/main)→commit→ref→PR，幂等（同 head 有 open PR 则跳过）
+- **规模**：160 行
+- **维护要点**：GH_TOKEN 走 ISTORE_TOKEN；DRY_RUN=1 干跑；请求体走 stdin，避免 argv 过长
+
+```bash
+#!/usr/bin/env bash
+# 自动把 luci-app-netmanager 的新版本提到 iStore 的两个官方仓库（PR 到 istore-repo:pending 与 openwrt-app-meta:main）
+# 依赖：curl、jq、base64；环境变量 GH_TOKEN（PAT，repo 权限）必填
+# 用法: GH_TOKEN=xxx VERSION=1.8.15 ./tools/publish_istore.sh
+set -euo pipefail
+
+OWNER=${OWNER:-District1655}
+VERSION=${VERSION:?需要 VERSION}
+RELEASE=${RELEASE:-1}
+DIST=${DIST:-dist}
+DRY_RUN=${DRY_RUN:-0}
+PKG=luci-app-netmanager
+UP_REPO=istoreos/istore-repo
+UP_META=istoreos/openwrt-app-meta
+BRANCH="auto/$PKG-$VERSION-r$RELEASE"
+META_BRANCH="auto/app-meta-$PKG-$VERSION"
+API=https://api.github.com
+
+[ "$DRY_RUN" = "1" ] || : "${GH_TOKEN:?需要 GH_TOKEN（PAT）}"
+
+say() { printf '%s\n' "$*" >&2; }
+
+api() { # method path [body]
+    local m=$1 p=$2 b=${3:-}
+    if [ "$DRY_RUN" = "1" ]; then
+        say "DRY: $m $p"
+        echo '{}'
+        return 0
+    fi
+    if [ -n "$b" ]; then
+        printf '%s' "$b" | curl -fsS -X "$m" -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" "$API$p" --data-binary @-
+    else
+        curl -fsS -X "$m" -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" "$API$p"
+    fi
+}
+
+jqv() { jq -r "$1"; }
+
+blob_sha() { # repo file
+    local repo=$1 f=$2 body
+    base64 -w0 "$f" > /tmp/.istore_b64 || return 1
+    body=$(jq -n --rawfile c /tmp/.istore_b64 '{content:$c,encoding:"base64"}')
+    api POST "/repos/$repo/git/blobs" "$body" | jqv .sha
+}
+
+upstream_base() { # repo branch -> "<commit_sha> <tree_sha>"
+    local repo=$1 br=$2 c
+    if [ "$DRY_RUN" = "1" ]; then printf '%s %s' "dryrun0sha" "dryrun0tree"; return 0; fi
+    c=$(api GET "/repos/$repo/git/ref/heads/$br" | jqv .object.sha)
+    [ "$c" = "null" ] && { say "拿不到 $repo:$br 的最新提交"; return 1; }
+    printf '%s %s' "$c" "$(api GET "/repos/$repo/git/commits/$c" | jqv .tree.sha)"
+}
+
+ensure_ref() { # repo branch sha
+    local repo=$1 br=$2 sha=$3
+    if [ "$DRY_RUN" = "1" ]; then say "DRY: ref $br -> $sha"; return 0; fi
+    api DELETE "/repos/$repo/git/refs/heads/$br" >/dev/null 2>&1 || true
+    api POST "/repos/$repo/git/refs" \
+        "$(jq -n --arg r "refs/heads/$br" --arg s "$sha" '{ref:$r,sha:$s}')" >/dev/null
+    say "==> 推送分支 $br"
+}
+
+pr_open() { # repo head base title body
+    local repo=$1 head=$2 base=$3 title=$4 body=$5 existing
+    if [ "$DRY_RUN" = "1" ]; then say "DRY: PR $repo $head -> $base"; echo "https://github.com/$repo/pulls"; return 0; fi
+    existing=$(api GET "/repos/$repo/pulls?state=open&head=$OWNER:$head" | jq 'length')
+    if [ "$existing" != "0" ]; then
+        say "==> $repo 已有同分支的 PR，跳过"
+        api GET "/repos/$repo/pulls?state=open&head=$OWNER:$head" | jqv '.[0].html_url'
+        return 0
+    fi
+    api POST "/repos/$repo/pulls" \
+        "$(jq -n --arg t "$title" --arg h "$OWNER:$head" --arg b "$base" --arg d "$body" \
+            '{title:$t,head:$h,base:$b,body:$d}')" | jqv .html_url
+}
+
+# ---------- 1. istore-repo：ipk + apk ----------
+IPK=$(ls "$DIST"/*_all.ipk 2>/dev/null | head -1 || true)
+APK=$(ls "$DIST"/*.apk 2>/dev/null | head -1 || true)
+[ -n "$IPK" ] || { say "dist 里找不到 ipk，先跑 tools/build_ipk.py"; exit 1; }
+
+read -r UP_PENDING PEND_TREE <<EOF
+$(upstream_base "$UP_REPO" pending)
+EOF
+say "==> istore-repo pending 基线: $UP_PENDING"
+
+ENTRIES=$(jq -n '[]')
+IPK_BLOB=$(blob_sha "$OWNER/istore-repo" "$IPK")
+ENTRIES=$(echo "$ENTRIES" | jq --arg p "bin/packages/all/nas_luci/$(basename "$IPK")" --arg s "$IPK_BLOB" '. + [{path:$p,mode:"100644",type:"blob",sha:$s}]')
+if [ -n "$APK" ]; then
+    APK_BLOB=$(blob_sha "$OWNER/istore-repo" "$APK")
+    ENTRIES=$(echo "$ENTRIES" | jq --arg p "bin/apks/all/nas_luci/$(basename "$APK")" --arg s "$APK_BLOB" '. + [{path:$p,mode:"100644",type:"blob",sha:$s}]')
+fi
+
+TREE=$(api POST "/repos/$OWNER/istore-repo/git/trees" \
+    "$(jq -n --arg bt "$PEND_TREE" --argjson t "$ENTRIES" '{base_tree:$bt,tree:$t}')" | jqv .sha)
+COMMIT=$(api POST "/repos/$OWNER/istore-repo/git/commits" \
+    "$(jq -n --arg m "add $PKG $VERSION-r$RELEASE" --arg tr "$TREE" --arg p "$UP_PENDING" \
+        '{message:$m,tree:$tr,parents:[$p]}')" | jqv .sha)
+ensure_ref "$OWNER/istore-repo" "$BRANCH" "$COMMIT"
+
+IPK_PR=$(pr_open "$UP_REPO" "$BRANCH" "pending" \
+    "add $PKG $VERSION-r$RELEASE" \
+    "$(cat <<EOM
+自动提交：$PKG $VERSION-r$RELEASE
+
+* [x] 文件已经上传（ipk + apk）
+* [x] 目标分支为 pending
+* [x] 元数据仓库 PR 见 openwrt-app-meta 同名分支
+
+| 项 | 值 |
+| --- | --- |
+| ipk | bin/packages/all/nas_luci/$(basename "$IPK") |
+| apk | bin/apks/all/nas_luci/$(basename "${APK:-无}") |
+| 依赖 | libc, luci-base, luci-compat, nftables-json, curl, ca-bundle, jsonfilter |
+
+由 https://github.com/District1655/luci-app-netmanager 的 Release 自动生成。
+EOM
+)")
+
+# ---------- 2. openwrt-app-meta：卡片元数据 ----------
+read -r UP_META_SHA META_TREE <<EOF
+$(upstream_base "$UP_META" main)
+EOF
+
+TMP_MK=$(mktemp)
+sed -e "s/^PKG_VERSION:=.*/PKG_VERSION:=$VERSION/" \
+    -e "s/^PKG_RELEASE:=.*/PKG_RELEASE:=$RELEASE/" \
+    istore/app-meta/Makefile > "$TMP_MK"
+
+MK_BLOB=$(blob_sha "$OWNER/openwrt-app-meta" "$TMP_MK")
+PNG_BLOB=$(blob_sha "$OWNER/openwrt-app-meta" istore/app-meta/logo.png)
+META_ENTRIES=$(jq -n --arg mk "$MK_BLOB" --arg png "$PNG_BLOB" '[
+  {path:"applications/app-meta-'"$PKG"'/Makefile",mode:"100644",type:"blob",sha:$mk},
+  {path:"applications/app-meta-'"$PKG"'/logo.png",mode:"100644",type:"blob",sha:$png}]')
+rm -f "$TMP_MK"
+
+META_TREE_NEW=$(api POST "/repos/$OWNER/openwrt-app-meta/git/trees" \
+    "$(jq -n --arg bt "$META_TREE" --argjson t "$META_ENTRIES" '{base_tree:$bt,tree:$t}')" | jqv .sha)
+META_COMMIT=$(api POST "/repos/$OWNER/openwrt-app-meta/git/commits" \
+    "$(jq -n --arg m "app-meta-$PKG: bump to $VERSION" --arg tr "$META_TREE_NEW" --arg p "$UP_META_SHA" \
+        '{message:$m,tree:$tr,parents:[$p]}')" | jqv .sha)
+ensure_ref "$OWNER/openwrt-app-meta" "$META_BRANCH" "$META_COMMIT"
+
+META_PR=$(pr_open "$UP_META" "$META_BRANCH" "main" \
+    "app-meta-$PKG: $VERSION" \
+    "自动更新 $PKG 的软件中心元数据到 $VERSION（PKG_RELEASE=$RELEASE）。\n\n配套运行包 PR：$IPK_PR")
+
+say ""
+say "istore-repo PR:     $IPK_PR"
+say "openwrt-app-meta:   $META_PR"
+if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    {
+        echo "## iStore 自动提交结果"
+        echo "- istore-repo: $IPK_PR"
+        echo "- openwrt-app-meta: $META_PR"
+    } >> "$GITHUB_STEP_SUMMARY"
+fi
+
+
+```
+
+### 5.28 istore/app-meta/Makefile
+
+- **用途**：软件中心卡片元数据模板：META_TITLE/DESCRIPTION/AUTHOR/DEPENDS/TAGS/LUCI_ENTRY/WEBSITE + PKG_VERSION/PKG_RELEASE
+- **规模**：17 行
+- **维护要点**：PKG_VERSION/PKG_RELEASE 由 publish 脚本 sed 注入，勿写死；末尾 include ../../meta.mk
+
+```make
+include $(TOPDIR)/rules.mk
+
+PKG_VERSION:=1.8.14
+PKG_RELEASE:=1
+
+META_TITLE:=网络管理
+META_TITLE.en:=NetManager
+META_DESCRIPTION:=一站式网络管理：端口转发（IPv4/IPv6）、防火墙规则、SSH 与端口访问日志、仅中国大陆 IP 访问限制、手动黑名单、WAN/LAN 上网方式与双栈 DNS、静态 IP 分配
+META_DESCRIPTION.en:=All-in-one network manager: IPv4/IPv6 port forwarding, firewall rules, SSH and port access logs, China-mainland-only access control, manual blacklist, WAN/LAN settings with dual-stack DNS, and static IP binding.
+META_AUTHOR:=District1655
+META_DEPENDS:=+luci-app-netmanager
+META_TAGS:=networking firewall
+META_LUCI_ENTRY:=/cgi-bin/luci/admin/netmanager
+META_WEBSITE:=https://github.com/District1655/luci-app-netmanager
+META_TUTORIAL:=https://github.com/District1655/luci-app-netmanager#readme
+
+include ../../meta.mk
+
+
+```
+
+### 5.29 docs/gen_source_part.py
+
+- **用途**：本文档生成器：重写第 5 章源码全录与第 9 章行号索引
+- **规模**：271 行
+- **维护要点**：新增受控文件时在 FILES 列表补一条；第 9 章行号自动抓取，无需手改
+
+````python
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+gen_source_part.py - 重新生成 PROJECT.md 的「第 5 章 源码全录」与「第 9 章 快速索引」
+
+用法（仓库根目录或任意目录）:
+    python3 docs/gen_source_part.py              # 生成并直接改写 PROJECT.md
+    python3 docs/gen_source_part.py --part out.md  # 只输出第 5 章片段到文件
+
+设计说明:
+- 取代原 docs/gen_source_part.sh（Windows 开发机没有 bash，无法执行）。
+- 新增/删除受控文件时，只需在 FILES 列表里增删一条（path/lang/desc/note 四元组）。
+- 第 5 章：按 FILES 顺序嵌入全文；内容含 ``` 的文件自动升级为 4 反引号围栏。
+- 第 9 章：自动从源码里抓函数入口行号生成定位表，不再手工维护（旧表停在 v1.4.5）。
+"""
+import argparse
+import os
+import re
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PROJECT = os.path.join(ROOT, "PROJECT.md")
+
+# ---------------------------------------------------------------- 受控文件清单
+# (路径, 语言, 用途, 维护要点)
+FILES = [
+    ("files/usr/sbin/netmanager", "bash",
+     "后端核心脚本：全部 CLI 子命令（概览/端口转发/规则/日志/备份/上传/在线更新/中国 IPv4·IPv6 过滤/黑名单/卸载）",
+     "单文件约 4200 行，v1.5+ 模块化拆分对象。PLUGIN_VERSION 在 L15（唯一权威源）；命令入口行号见 9.1"),
+    ("files/usr/sbin/dnssettings-apply.sh", "bash",
+     "上网设置应用脚本：把 /etc/config/dnssettings 写入 network/dhcp/dnsmasq 并 reload 服务",
+     "空值断网防护（peerdns=0 且 DNS 全空 → 拒写）是核心红线，勿删；应用前自动备份保留 5 份"),
+    ("files/usr/sbin/dnssettings-backup.sh", "bash",
+     "上网设置备份脚本：独立备份 network/dhcp/dnssettings 到 /root/backup/",
+     "逻辑简单，注意与 apply 脚本的保留策略一致"),
+    ("files/usr/lib/lua/luci/controller/netmanager.lua", "lua",
+     "LuCI 控制器：注册全部页面路由 + API 分发（action 到后端命令桥接）+ multipart 上传处理",
+     "api_handler 强制 POST；所有拼命令参数必经 shell_escape；csrf_check 403；插件页加 no-store 头防旧 JS"),
+    ("files/usr/lib/lua/luci/model/cbi/netmanager/dns_settings.lua", "lua",
+     "上网设置 CBI 模型：Map 绑定 /etc/config/dnssettings（wan/lan/dnsmasq 三节 + 应用/备份按钮）",
+     "forward_v4/forward_v6 为 DynamicList；按钮经 api 触发 POST 动作，不再走 GET 路由"),
+    ("files/usr/lib/lua/luci/model/cbi/netmanager/dns_staticv6.lua", "lua",
+     "静态 IP 分配 CBI 模型：绑定 dhcp.host + 在线客户端速览（四数据源交叉）+ 冲突检测",
+     "get_online_devices 四源（dnsmasq 租约/ARP/odhcpd/NDP）；first_opt() 替代 ucode 桥无 get_first；merge 只在 on_before_commit 执行"),
+    ("files/usr/lib/lua/luci/view/netmanager/common_head.htm", "html",
+     "全部视图公共头：CSS 样式 + 公共 JS（escapeHtml / nmFetch / CSRF token / withBusy）",
+     "nmFetch 支持 FormData/string/URLSearchParams 三种体，新增调用勿绕开它"),
+    ("files/usr/lib/lua/luci/view/netmanager/nav.htm", "html",
+     "页内导航条：防火墙 6 页 + 上网设置 / 静态 IP 两个 CBI 入口",
+     "与 controller 菜单双维护，新增页面两处同步"),
+    ("files/usr/lib/lua/luci/view/netmanager/cbi_nav.htm", "html",
+     "CBI 页面专用导航条：自带内联样式，由两个 CBI 模型以 Template 节点注入",
+     "CBI 页不加载 common_head，样式必须内联；active 判断带 nil 防护"),
+    ("files/usr/lib/lua/luci/view/netmanager/overview.htm", "html",
+     "系统概览页：防火墙状态 / 端口统计 / 网络信息 / 快捷操作",
+     "footer 含版本号（登记处 4）"),
+    ("files/usr/lib/lua/luci/view/netmanager/port_forward.htm", "html",
+     "端口转发管理页：IPv4/IPv6 DNAT 列表 + 「IPv6 端口放行（直连）」区 + 添加/编辑/删除/跟踪",
+     "放行区来源标注（自动配套/自定义）；删除/编辑一律数组下标传参，不传自由文本"),
+    ("files/usr/lib/lua/luci/view/netmanager/firewall_rules.htm", "html",
+     "防火墙规则管理页：自定义规则增删改 + 常用模板一键应用 + 源IP/目的IP 列",
+     "IPv6 放行规则不在此页渲染（v1.8.13 移至端口转发页），保留迁移提示"),
+    ("files/usr/lib/lua/luci/view/netmanager/ssh_log.htm", "html",
+     "SSH 登录日志页：成功/失败记录 + 失败 IP Top10 + 自动刷新",
+     "所有字段写 DOM 前转义（v1.4.4 修存储型 XSS）"),
+    ("files/usr/lib/lua/luci/view/netmanager/access_log.htm", "html",
+     "端口访问日志页：活跃连接 / 入站出站计数 / 拦截统计",
+     "统一走 nmFetch；footer 版本号（登记处 5）"),
+    ("files/usr/lib/lua/luci/view/netmanager/settings.htm", "html",
+     "设置页（最复杂视图，1100 行）：默认目标 / 备份恢复 / 插件更新 / 在线更新 / 中国 IPv4·IPv6 过滤 / 黑名单 / 运行日志 / 卸载",
+     "三个版本号登记处（L186/L305/L338）；备份列表与过滤状态均需 escapeHtml + 数组下标传参"),
+    ("files/etc/config/netmanager", "uci",
+     "防火墙模块 UCI 配置：默认目标 IP / 日志开关 / 中国 IPv4·IPv6 过滤参数 / 更新镜像",
+     "china_filter_url/cron 与 china6_filter_url/cron 默认值即官方订阅源"),
+    ("files/etc/config/dnssettings", "uci",
+     "上网设置模块 UCI 配置：wan / lan / dnsmasq / actions 四节",
+     "wan/lan/dnsmasq 三节由 dns_settings.lua 绑定；actions 为按钮占位"),
+    ("files/etc/init.d/netmanager-china", "bash",
+     "开机自启脚本：重建中国 IPv4/IPv6 过滤与黑名单 nft 规则",
+     "START/STOP 顺序须晚于防火墙，确保 fw4 就绪"),
+    ("files/etc/hotplug.d/iface/95-netmanager-china", "bash",
+     "WAN 上线热插拔：接口 up 时重应用过滤与黑名单（自愈）",
+     "编号 95 保证在 fw4 默认 hotplug 之后执行"),
+    ("files/etc/hotplug.d/iface/96-netmanager-v6sync", "bash",
+     "WAN 上线热插拔：同步 IPv6 转发目标（前缀变化跟随）",
+     "与 */10 cron 兜底互补，两者都要保留"),
+    ("install.sh", "bash",
+     "一键安装脚本：7 步安装（复制文件/权限/符号链接/init/cron），支持 SKIP_UHTTPD_RESTART",
+     "版本号登记处 2、3；新增安装产物须三处同步（install.sh / uninstall / files/）"),
+    (".github/workflows/build.yml", "yaml",
+     "CI：push main 时从 README 提版本 → 语法门禁 → 打 tar.gz → 打 tag → 发 Release（body 取自更新日志）",
+     "tag 已存在则整条跳过；重发同版本用 workflow_dispatch 勾 force"),
+    (".github/workflows/publish-istore.yml", "yaml",
+     "CI：Release 发布后构建 ipk/apk、上传 Release 资产、自动向 istoreos/istore-repo（pending）与 openwrt-app-meta（main）提 PR",
+     "依赖 ISTORE_TOKEN；未配置只构建不提 PR；支持 dry_run/version/release 三个手动入参"),
+    (".github/workflows/extract_changelog.awk", "awk",
+     "Release body 提取脚本：从 README 更新日志取出指定版本段落",
+     "注释里的版本号是历史记录，勿改"),
+    ("tools/build_ipk.py", "python",
+     "打 ipk 工具：固定 mtime、目录 755/文件 644、脚本可执行位，产出 tar.gz 外壳的 _all.ipk",
+     "iStore CI 只认 tar.gz 外壳（ar 格式判 invalid）；支持 --version/--release/--files/--out"),
+    ("tools/build_apk.sh", "bash",
+     "打 apk 工具：缓存 openwrt-sdk-mini，chmod 规范化后调 apk mkpkg，再用 adbdump 自检",
+     "字段名是 name/version（不是 pkgname/pkgver）；多个 depends 写在同一个 -I 值里空格分隔"),
+    ("tools/publish_istore.sh", "bash",
+     "上架 PR 工具：blob→tree(base_tree 取上游 pending/main)→commit→ref→PR，幂等（同 head 有 open PR 则跳过）",
+     "GH_TOKEN 走 ISTORE_TOKEN；DRY_RUN=1 干跑；请求体走 stdin，避免 argv 过长"),
+    ("istore/app-meta/Makefile", "make",
+     "软件中心卡片元数据模板：META_TITLE/DESCRIPTION/AUTHOR/DEPENDS/TAGS/LUCI_ENTRY/WEBSITE + PKG_VERSION/PKG_RELEASE",
+     "PKG_VERSION/PKG_RELEASE 由 publish 脚本 sed 注入，勿写死；末尾 include ../../meta.mk"),
+    ("docs/gen_source_part.py", "python",
+     "本文档生成器：重写第 5 章源码全录与第 9 章行号索引",
+     "新增受控文件时在 FILES 列表补一条；第 9 章行号自动抓取，无需手改"),
+    ("docs/istore-publish.md", "markdown",
+     "iStore 上架与自动发版说明：一次性 Secret 配置、日常发版流程、本地出包、常见问题",
+     "与 README「构建与发版」章节互补，改动流水线时两边同步"),
+    (".gitattributes", "text",
+     "git 属性：强制文本文件 LF（路由器 BusyBox ash 不能吃 CRLF）",
+     "二进制文件单独标注；CRLF 警告可忽略"),
+    (".gitignore", "text",
+     "忽略构建产物（dist/、ipk/apk、临时 tar.gz、docs/source_part.md 等）",
+     "新增构建输出目录时同步补一条"),
+    ("README.md", "markdown",
+     "用户文档：功能 / 安装（apk·ipk·脚本三路）/ CLI / 配置说明 / 构建与发版 / 更新日志",
+     "L3 版本号是 build.yml 的 tag 提取源（登记处 12）；每版必须新增更新日志小节"),
+]
+
+CH5_BEGIN = "## 第 5 章 源码全录"
+CH5_END_MARK = "## 第 6 章 更新维护记录"
+CH9_BEGIN = "## 第 9 章 快速索引（行号定位表）"
+CH9_END_MARK = "## 附录 A：项目信息卡"
+
+
+def read_text(path):
+    with open(path, "r", encoding="utf-8", newline="") as f:
+        return f.read().replace("\r\n", "\n")
+
+
+# ---------------------------------------------------------------- 第 5 章
+def build_ch5():
+    out = []
+    out.append(CH5_BEGIN)
+    out.append("")
+    out.append("> 本章由 `docs/gen_source_part.py` 自动生成（v1.8.14 / main），收录除本文档与 LICENSE 外的全部受控文件。")
+    out.append("> **源码是唯一事实来源**：前文描述与源码不一致时，以源码为准。")
+    out.append("")
+    for n, (rel, lang, desc, note) in enumerate(FILES, start=1):
+        full = os.path.join(ROOT, rel.replace("/", os.sep))
+        if not os.path.isfile(full):
+            sys.exit("!! 文件缺失: %s" % rel)
+        body = read_text(full)
+        lines = body.count("\n") + (0 if body.endswith("\n") else 1)
+        fence = "````" if "```" in body else "```"
+        out.append("### 5.%d %s" % (n, rel))
+        out.append("")
+        out.append("- **用途**：%s" % desc)
+        out.append("- **规模**：%d 行" % lines)
+        out.append("- **维护要点**：%s" % note)
+        out.append("")
+        out.append(fence + lang)
+        out.append(body if body.endswith("\n") else body + "\n")
+        out.append("")
+        out.append(fence)
+        out.append("")
+    out.append("> 第 5 章结束。以下为第 6 章起的手写章节。")
+    return "\n".join(out)
+
+
+# ---------------------------------------------------------------- 第 9 章
+def grep_lines(rel, pattern, flags=0):
+    path = os.path.join(ROOT, rel.replace("/", os.sep))
+    rx = re.compile(pattern, flags)
+    res = []
+    for i, line in enumerate(read_text(path).split("\n"), start=1):
+        if rx.search(line):
+            res.append((i, line.strip()))
+    return res
+
+
+def build_ch9():
+    nm = "files/usr/sbin/netmanager"
+    ctrl = "files/usr/lib/lua/luci/controller/netmanager.lua"
+    settings = "files/usr/lib/lua/luci/view/netmanager/settings.htm"
+
+    nm_total = read_text(os.path.join(ROOT, nm.replace("/", os.sep))).count("\n")
+    ctrl_total = read_text(os.path.join(ROOT, ctrl.replace("/", os.sep))).count("\n")
+    st_total = read_text(os.path.join(ROOT, settings.replace("/", os.sep))).count("\n")
+
+    out = [CH9_BEGIN, "",
+           "> 行号由 `docs/gen_source_part.py` 从当前源码自动抓取（v1.8.14 / main），改动后重跑本脚本即可刷新。",
+           "",
+           "### 9.1 后端 netmanager（%d 行）—— 命令入口" % nm_total, "",
+           "| 行 | 命令 | 行 | 命令 |", "|----|------|----|------|"]
+
+    cmds = grep_lines(nm, r"^cmd_[a-z0-9_]+\(\)")
+    for i in range(0, len(cmds), 2):
+        left = cmds[i]
+        right = cmds[i + 1] if i + 1 < len(cmds) else (0, "")
+        if right[0]:
+            out.append("| L%s | `%s` | L%s | `%s` |" % (left[0], left[1].split("(")[0], right[0], right[1].split("(")[0]))
+        else:
+            out.append("| L%s | `%s` | | |" % (left[0], left[1].split("(")[0]))
+
+    out += ["", "### 9.2 controller/netmanager.lua（%d 行）" % ctrl_total, "",
+            "| 行 | 函数/职责 |", "|----|-----------|"]
+    for ln, text in grep_lines(ctrl, r"^(local |)function "):
+        name = re.sub(r"^local function |^function ", "", text)
+        name = name.split("(")[0]
+        out.append("| L%d | `%s()` |" % (ln, name))
+
+    out += ["", "### 9.3 视图 settings.htm（%d 行）—— 前端函数" % st_total, "",
+            "| 行 | 函数 |", "|----|------|"]
+    for ln, text in grep_lines(settings, r"function [a-zA-Z_]+"):
+        m = re.search(r"function ([a-zA-Z_]+)", text)
+        if m:
+            out.append("| L%d | `%s()` |" % (ln, m.group(1)))
+
+    out += ["", "### 9.4 其余文件快速定位", "",
+            "| 文件 | 定位方式 |", "|------|----------|",
+            "| dnssettings-apply.sh | 抓 `WARN`/`detect_wan_iface`/`ADDED_DNS` 三个关键字 |",
+            "| dns_staticv6.lua | 抓 `get_online_devices` / `merge_duplicate_hosts` / `first_opt` / `on_before_commit` |",
+            "| dns_settings.lua | 抓 `cbi_nav`（注入导航）与 `dns_apply`/`dns_backup` |",
+            "| common_head.htm | 抓 `escapeHtml` / `nmFetch` / `withBusy` |",
+            "| install.sh | 版本号 L3/L8；符号链接 `/bin/netmanager` |",
+            "| build.yml | 版本提取、tag 判重、tar.gz 打包、Release 四段 |",
+            "| publish-istore.yml | 版本校验 → 构建 ipk → 构建 apk → Release 上传 → token 探测 → 提 PR 六段 |",
+            "| tools/build_apk.sh | 抓 `apk mkpkg`（字段与 depends 写法是坑点） |",
+            "| tools/publish_istore.sh | 抓 `base_tree` / `pulls`（PR 幂等与干跑逻辑） |",
+            "", "---", ""]
+    return "\n".join(out)
+
+
+def splice(doc, begin_mark, end_mark, new_block):
+    """把 doc 中 [begin_mark, end_mark) 换成 new_block。
+
+    两个标记都要求出现在行首（前面是换行），避免误命中源码片段里作为字符串字面量出现
+    的同名标题（第 5 章会嵌入生成脚本自己的源码）。
+    """
+    i = doc.find("\n" + begin_mark)
+    if i < 0:
+        sys.exit("!! 找不到起始标记: %s" % begin_mark)
+    i += 1
+    j = doc.find("\n" + end_mark, i)
+    if j < 0:
+        sys.exit("!! 找不到结束标记: %s" % end_mark)
+    j += 1
+    return doc[:i] + new_block + "\n\n---\n\n" + doc[j:]
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--part", help="只输出第 5 章片段到指定文件")
+    args = ap.parse_args()
+
+    ch5 = build_ch5()
+    if args.part:
+        with open(args.part, "w", encoding="utf-8", newline="\n") as f:
+            f.write(ch5 + "\n")
+        print("OK 已生成: %s" % args.part)
+        return
+
+    doc = read_text(PROJECT)
+    doc = splice(doc, CH5_BEGIN, CH5_END_MARK, ch5)
+    doc = splice(doc, CH9_BEGIN, CH9_END_MARK, build_ch9())
+    with open(PROJECT, "w", encoding="utf-8", newline="\n") as f:
+        f.write(doc)
+    print("OK 已更新: %s（第 5 章 %d 个文件，总 %d 行）" % (PROJECT, len(FILES), doc.count("\n")))
+
+
+if __name__ == "__main__":
+    main()
+
+
+````
+
+### 5.30 docs/istore-publish.md
+
+- **用途**：iStore 上架与自动发版说明：一次性 Secret 配置、日常发版流程、本地出包、常见问题
+- **规模**：51 行
+- **维护要点**：与 README「构建与发版」章节互补，改动流水线时两边同步
+
+````markdown
+# 自动发版：Release → 构建 ipk/apk → 自动提 PR 到 iStore
+
+## 它做了什么
+
+`push main`（改 README 里的版本号）→ 原有 `Build Install Package` 打 tag、发 Release（tar.gz 安装包）
+→ `Publish to iStore`（本流程）被 Release 触发，会：
+
+1. 校验 `files/usr/sbin/netmanager` 里的 `PLUGIN_VERSION` 与发布版本一致，不一致直接失败（避免发出去的包版本对不上）
+2. `tools/build_ipk.py` 打出 `luci-app-netmanager_<ver>-r<rel>_all.ipk`（opkg / 24.10 及更早）
+3. `tools/build_apk.sh` 用官方 `openwrt-sdk-mini-25.12.2` 的 `apk mkpkg` 打出 `luci-app-netmanager-<ver>-r<rel>.apk`（25.12）
+4. 两个包自动上传到对应的 Release 资产
+5. `tools/publish_istore.sh` 向官方仓库提两个 PR：
+   - `istoreos/istore-repo`，base `pending`，包放到 `bin/packages/all/nas_luci/` 与 `bin/apks/all/nas_luci/`
+   - `istoreos/openwrt-app-meta`，base `main`，更新 `applications/app-meta-netmanager/`（版本号取自 `istore/app-meta/Makefile` 模板）
+
+合并进 `pending` 后，官方 CI 会自动销旧包、重建索引并同步到 `repo.istoreos.com`，用户侧几分钟后即可在软件中心看到。
+
+## 一次性配置
+
+1. 建一个 PAT（Classic token，勾 `repo` 权限；或 Fine-grained 勾两个 fork 的 `Contents: Read and write` + `Pull requests: Read and write`）
+2. 仓库 `Settings → Secrets and variables → Actions → New repository secret`
+   - 名称：`ISTORE_TOKEN`
+   - 值：上面那个 PAT
+3. 没配 token 也能跑：只构建并挂到 Release，跳过提 PR（日志里会有提示）
+
+## 日常发版
+
+1. 改代码
+2. 改两处版本号，保持一致：
+   - `README.md` 头部的 `版本：vX.Y.Z`
+   - `files/usr/sbin/netmanager` 里的 `PLUGIN_VERSION="X.Y.Z"`
+3. push 到 `main`
+
+流水线跑完，Release 里就有 tar.gz + ipk + apk，iStore 两个 PR 也已自动开好。
+
+## 同版本重发
+
+改了包内容但版本号不变时，手动跑 `Publish to iStore`，`release` 填 `2`、`3`…（apk 版本会变成 `X.Y.Z-r2`）。
+
+## 只在本地出包
+
+```bash
+python3 tools/build_ipk.py --version 1.8.14 --release 1 --files files --out dist
+VERSION=1.8.14 RELEASE=1 OUT=dist bash tools/build_apk.sh
+```
+
+## 常见问题
+
+- **PR 打回**：官方只收 x86_64 / aarch64 架构；纯脚本包 `Architecture: all`（apk 是 `noarch`）没问题，带二进制要按架构分别出包
+- **官方说包名冲突**：`luci-app-netmanager` 若与 OpenWrt 官方仓库重名，需改包名（如 `luci-app-nmgr`），同步改 `tools/build_*` 与 `istore/app-meta/Makefile`
+- **apk 装不上**：本地验证用 `apk add --allow-untrusted xxx.apk`；进了官方 feed 后由签名索引兜底，用户侧不用加参数
+
+
+````
+
+### 5.31 .gitattributes
+
+- **用途**：git 属性：强制文本文件 LF（路由器 BusyBox ash 不能吃 CRLF）
+- **规模**：15 行
+- **维护要点**：二进制文件单独标注；CRLF 警告可忽略
 
 ```text
 # 强制所有文本文件使用 LF 换行
@@ -5882,24 +10901,56 @@ found {
 *.ico binary
 *.tar.gz binary
 *.ipk binary
+
+
 ```
 
-### 5.24 README.md
+### 5.32 .gitignore
 
-- **用途**：项目主文档：功能 / 安装 / CLI / 配置说明 / 更新日志 / 许可证
-- **规模**：301 行
-- **维护要点**：L3 版本号（登记处，CI 从此提取最新 tag）；L227-302 更新日志段（Release body 来源，发版必须新增对应小节）
+- **用途**：忽略构建产物（dist/、ipk/apk、临时 tar.gz、docs/source_part.md 等）
+- **规模**：7 行
+- **维护要点**：新增构建输出目录时同步补一条
+
+```text
+# PROJECT.md 第 5/9 章生成产物（由 docs/gen_source_part.py 生成后合并入 PROJECT.md）
+docs/source_part.md
+# 构建产物由 CI 发布，本地不入库
+*.tar.gz
+*.ipk
+*.apk
+dist/
+
+
+```
+
+### 5.33 README.md
+
+- **用途**：用户文档：功能 / 安装（apk·ipk·脚本三路）/ CLI / 配置说明 / 构建与发版 / 更新日志
+- **规模**：762 行
+- **维护要点**：L3 版本号是 build.yml 的 tag 提取源（登记处 12）；每版必须新增更新日志小节
 
 ````markdown
 # 网络管理插件 (luci-app-netmanager)
 
-> 版本：v1.4.5
+> 版本：v1.8.14
 >
-> 适配：iStoreOS / OpenWrt (fw4/nftables, Lua LuCI)
+> 适配：iStoreOS 25.12+（apk）/ iStoreOS 24.10 及 OpenWrt 23.05+（opkg / ipk），fw4 + nftables，Lua LuCI
 >
-> 由 **luci-app-fwmanager**（防火墙管理）与 **luci-app-dnssettings**（DNS设置）合并而成的网络管理一体化 LuCI 插件。
+> 交付：**apk / ipk 双格式** + iStoreOS 软件中心上架 + `tar.gz` 一键脚本兜底
+>
+> 由 **luci-app-fwmanager**（防火墙管理）与 **luci-app-dnssettings**（上网设置）合并而成的网络管理一体化 LuCI 插件。
 
-一站式管理路由器网络：端口转发、防火墙规则、SSH/访问日志、中国 IPv4 访问限制、WAN/LAN 双栈 DNS 统一管理、静态 IPv6 分配、配置备份恢复、插件在线更新、一键卸载。
+一站式管理路由器网络：端口转发、防火墙规则、SSH/访问日志、中国 IPv4/IPv6 访问限制、手动黑名单、WAN/LAN 口上网方式与双栈 DNS 统一管理、静态 IP 分配（IPv4/IPv6）、配置备份恢复、插件在线更新、一键卸载。
+
+## 安装方式速览
+
+| 系统 | 包格式 | 安装方式 |
+|------|--------|----------|
+| iStoreOS 25.12+（apk-tools，无 opkg） | `.apk` | 软件中心搜「网络管理」安装，或 `apk add --allow-untrusted luci-app-netmanager-<ver>-r<rel>.apk` |
+| iStoreOS 24.10 / OpenWrt 23.05–24.10（opkg） | `.ipk` | `opkg install luci-app-netmanager_<ver>-r<rel>_all.ipk` |
+| 任意（含未适配架构 / 开发机） | `.tar.gz` | 解压后 `sh install.sh` 脚本安装 |
+
+三种方式装完效果一致（菜单「网络管理」，入口 `/cgi-bin/luci/admin/netmanager`）。包均随 Release 发布，文件名带版本与 release 号。
 
 ---
 
@@ -5908,22 +10959,27 @@ found {
 ### 防火墙管理（原 luci-app-fwmanager）
 
 1. **系统概览**：防火墙状态 / 端口统计 / 网络信息 / 快捷操作
-2. **端口转发管理**：IPv4 DNAT + IPv6 放行统一管理，支持 TCP/UDP/双协议、单端口与端口范围
-3. **防火墙规则管理**：自定义通信规则增删改 + 常用模板一键应用
+2. **端口转发管理**：IPv4 / IPv6 DNAT 端口映射统一管理，支持 TCP/UDP/双协议、单端口与端口范围；「IPv6 端口放行（直连）」区独立展示直连放行规则（转发是转发，放行是放行），自动配套规则随映射增删与前缀跟随，支持启用/禁用
+3. **防火墙规则管理**：自定义通信规则增删改 + 常用模板一键应用 + 源IP/目的IP 粒度列；IPv6 端口放行规则不在此页（归端口转发页「IPv6 端口放行」区）
 4. **SSH 登录日志**：成功/失败记录 + 失败 IP 排行 Top 10 + 自动刷新
 5. **端口访问日志**：活跃连接 / 入站出站计数 / 拦截统计
 6. **中国 IPv4 访问限制**：仅允许中国大陆 IPv4 访问已开放端口，境外 IPv4 新建连接丢弃；独立 nft 表 `inet netmanager`（fw4 reload 不影响）；订阅链接与 cron 更新计划可自定义；开机 init + WAN hotplug 自愈；旧版 nft 自动降级兼容
-7. **设置**：默认目标 IP / 配置备份 / 插件在线更新 / 运行日志排错 / 一键卸载
+7. **中国 IPv6 访问限制（v1.7.0 新增）**：与 IPv4 版本对称，仅允许中国大陆 IPv6 访问已开放端口；独立 nft 表 `inet netmanager6`（与 IPv4/ fw4 互不影响）；订阅链接与 cron 更新计划可自定义；默认订阅 `https://ispip.clang.cn/all_cn_ipv6.txt`；开机 init + WAN hotplug 自愈
+8. **手动黑名单（v1.7.0 新增）**：支持 IPv4/IPv6 单个 IP 与 CIDR 网段（如 `1.2.3.0/24`、`2001:db8::/32`）手动拉黑，入站与转发流量直接丢弃；独立 nft 表 `inet netmanager_ban`（fw4 reload 不影响），条目持久化并开机/WAN 重连自动恢复
+9. **设置**：默认目标 IP / 整插件配置备份（UCI 配置 + 黑名单/白名单列表，恢复后自动重应用规则与 cron） / 插件在线更新 / 运行日志排错 / 一键卸载
 
-### DNS 设置（原 luci-app-dnssettings，CBI 标准表单）
+### 上网设置（原 luci-app-dnssettings，CBI 标准表单）
 
-8. **DNS 设置**：
+10. **上网设置**：
+   - WAN 口上网方式：PPPoE 拨号 / DHCP 自动获取 / 静态 IP
+   - LAN 口地址：LAN 口 IP 地址与子网掩码
+   - IPv6 获取与分发：WAN 前缀请求长度（PD）+ LAN 分发模式（状态化 / SLAAC / 中继 / 关闭）
    - WAN 口上游 DNS：PPPoE/DHCP 拨号自定义 IPv4/IPv6 DNS，或使用运营商下发（peerdns）
    - LAN 口设备 DNS：通过 DHCP option 6 与 RA 强制下发自定义 DNS，或走路由器缓存
    - dnsmasq 全局转发：统一配置上游解析服务器
    - 配置备份：一键备份当前系统 network/dhcp 配置到 `/root/backup/`
    - 应用配置：一键写入系统并重启 network/dnsmasq/odhcpd
-9. **静态 IPv6 分配**：基于 MAC 绑定 hostid/ip6/DUID，自动合并重复条目、在线状态显示、hostid 冲突检测
+11. **静态 IP 分配（IPv4 + IPv6）**：基于 MAC 绑定 IPv4 地址 / hostid / ip6 / DUID，支持在线客户端一键绑定与解绑、自动合并重复条目、在线状态显示、地址与 hostid 冲突检测；公网 GUA 随运营商前缀变化，静态 IPv6 仅允许绑定 ULA 后缀
 
 ### 默认 DNS
 
@@ -5941,29 +10997,45 @@ luci-app-netmanager/
 ├── files/
 │   ├── usr/sbin/
 │   │   ├── netmanager                        # 后端核心脚本（防火墙管理，含日志/更新/备份/卸载）
-│   │   ├── dnssettings-apply.sh              # DNS 应用配置脚本（独立保留）
-│   │   └── dnssettings-backup.sh             # DNS 备份脚本（独立保留）
+│   │   ├── dnssettings-apply.sh              # 上网设置应用配置脚本（独立保留）
+│   │   └── dnssettings-backup.sh             # 上网设置备份脚本（独立保留）
 │   ├── usr/lib/lua/luci/
-│   │   ├── controller/netmanager.lua         # LuCI 控制器（菜单+API+multipart上传+DNS动作）
+│   │   ├── controller/netmanager.lua         # LuCI 控制器（菜单+API+multipart上传+上网设置动作）
 │   │   ├── model/cbi/netmanager/
-│   │   │   ├── dns_settings.lua              # DNS 设置 CBI 模型（绑定 /etc/config/dnssettings）
-│   │   │   └── dns_staticv6.lua              # 静态 IPv6 分配 CBI 模型（绑定 dhcp.host）
+│   │   │   ├── dns_settings.lua              # 上网设置 CBI 模型（绑定 /etc/config/dnssettings）
+│   │   │   └── dns_staticv6.lua              # 静态 IP 分配 CBI 模型（绑定 dhcp.host）
 │   │   └── view/netmanager/
 │   │       ├── overview.htm                  # 系统概览
-│   │       ├── port_forward.htm              # 端口转发
+│   │       ├── port_forward.htm              # 端口转发（含「IPv6 端口放行」区）
 │   │       ├── firewall_rules.htm            # 规则管理
 │   │       ├── ssh_log.htm                   # SSH 日志
 │   │       ├── access_log.htm                # 访问日志
-│   │       ├── settings.htm                  # 设置（备份/更新/运行日志/中国IPv4过滤/卸载）
+│   │       ├── settings.htm                  # 设置（备份/更新/运行日志/中国IPv4/6过滤/卸载）
 │   │       ├── common_head.htm               # 公共样式
-│   │       └── nav.htm                       # 公共导航（含 DNS 两个入口）
+│   │       ├── cbi_nav.htm                   # CBI 页面公共导航
+│   │       └── nav.htm                       # 公共导航（含上网设置、静态IP分配入口）
 │   ├── etc/config/
 │   │   ├── netmanager                        # 防火墙模块配置
-│   │   └── dnssettings                       # DNS 模块配置（独立保留）
-│   ├── etc/init.d/netmanager-china           # 中国IPv4过滤开机自启
-│   └── etc/hotplug.d/iface/95-netmanager-china # WAN上线重应用
-├── .github/workflows/build.yml               # GitHub Actions 自动打包
+│   │   └── dnssettings                       # 上网设置模块配置（独立保留）
+│   ├── etc/init.d/netmanager-china           # 中国IPv4/IPv6过滤 + 黑名单 开机自启
+│   ├── etc/hotplug.d/iface/95-netmanager-china  # WAN上线重应用过滤/黑名单规则
+│   └── etc/hotplug.d/iface/96-netmanager-v6sync # WAN上线同步 IPv6 转发目标跟踪
+├── tools/
+│   ├── build_ipk.py                          # 打 ipk（opkg 系统，tar.gz 外壳，CI/本地通用）
+│   ├── build_apk.sh                          # 打 apk（iStoreOS 25.12+，用 openwrt-sdk-mini 的 apk mkpkg）
+│   └── publish_istore.sh                     # 向 istoreos/istore-repo、istoreos/openwrt-app-meta 提 PR
+├── istore/app-meta/
+│   ├── Makefile                              # 软件中心卡片元数据模板（PKG_VERSION/PKG_RELEASE 由脚本注入）
+│   └── logo.png                              # 软件中心图标（256×256，<50KB）
+├── .github/workflows/
+│   ├── build.yml                             # 打 tag + 发 Release（tar.gz + changelog 提取）
+│   ├── publish-istore.yml                    # Release 后自动构建 ipk/apk + 提 PR 到 iStore 官方仓库
+│   └── extract_changelog.awk                 # Release body 提取脚本
+├── docs/
+│   ├── istore-publish.md                     # iStore 上架/自动发版配置说明（一次性 Secret + 日常流程）
+│   └── gen_source_part.py                    # 生成 PROJECT.md 第 5 章源码全录 + 第 9 章行号索引
 ├── install.sh                                # 一键安装脚本（支持 SKIP_UHTTPD_RESTART）
+├── PROJECT.md                                # 维护者文档（架构/源码全录/发版流程）
 └── README.md
 ```
 
@@ -5971,26 +11043,87 @@ luci-app-netmanager/
 
 ## 安装方法
 
-### 一键脚本安装（推荐）
+> 早期说法「iStoreOS 的 `/usr/bin` 只读所以装不了 ipk」已作废。实测真因是 **iStoreOS 25.12 起换成 apk-tools（系统里没有 opkg）**：25.12+ 只能装 apk，24.10 及更早装 ipk。两种包都由 CI 自动产出。
 
-iStoreOS 的 `/usr/bin/` 是只读 squashfs 分区，标准 IPK 包无法正常安装，本插件采用 `tar.gz + install.sh` 脚本方式安装。
+### 方式一：iStore 软件中心（iStoreOS 25.12+）
 
-1. 下载 `luci-app-netmanager-install_*.tar.gz`，上传到路由器 `/tmp` 目录
-2. SSH 登录路由器，执行：
+本插件已按 iStore 收录规范打包（纯 `all` 架构，落 `nas_luci` feed），并向上游提交了收录 PR（`istoreos/istore-repo`、`istoreos/openwrt-app-meta`）。官方合并后即可在 **iStore → 软件中心** 搜索「网络管理 / netmanager」一键安装，卡片图标与简介来自 `istore/app-meta/`。
+
+在官方合并前，等价做法是手动安装 apk（见方式二）。
+
+### 方式二：命令行安装包（推荐，可控版本）
+
+在 [Releases](https://github.com/District1655/luci-app-netmanager/releases) 下载对应包，上传到路由器后执行：
+
+```bash
+# iStoreOS 25.12+ / OpenWrt 25.x（apk）
+apk add --allow-untrusted luci-app-netmanager-<版本>-r<rel>.apk
+
+# iStoreOS 24.10 / OpenWrt 23.05–24.10（opkg）
+opkg install luci-app-netmanager_<版本>-r<rel>_all.ipk
+
+# 卸载（配置会保留，加 --purge / --force-remove 才会连配置一起删）
+apk del luci-app-netmanager
+opkg remove luci-app-netmanager
+```
+
+安装/卸载的钩子已内置：装完自动清 LuCI 缓存、启用并启动 `netmanager-china`、reload uhttpd 重建 nft 规则；卸载时清掉 `inet netmanager` / `netmanager6` / `netmanager_ban` 三张表，`/etc/config/netmanager` 与 `/etc/config/dnssettings` 默认保留（升级时系统会生成 `.apk-new`，属 OpenWrt 配置保护行为，确认后可覆盖）。
+
+### 方式三：一键脚本（未适配架构 / 开发态兜底）
 
 ```bash
 cd /tmp
-tar xzvf luci-app-netmanager-install_*.tar.gz
+tar xzvf luci-app-netmanager-install_v<版本>.tar.gz
 chmod +x install.sh
 sh install.sh
 ```
 
-3. 安装完成后，左侧菜单出现「网络管理」
-4. 浏览器按 `Ctrl+Shift+R` 强制刷新页面
+适用于任意 OpenWrt 衍生系统（含 CI 未覆盖的架构），装完左侧菜单出现「网络管理」，浏览器 `Ctrl+Shift+R` 强制刷新。
 
 ### 在线更新
 
-在「设置」页面的「插件更新」区域，上传新的 tar.gz 包进行在线更新（安装成功后延迟 3 秒自动重启 LuCI）。
+「设置」页面的「插件更新 / 在线更新」区块可直接检查并安装最新 Release（`update_check` / `update_apply`，支持镜像加速前缀）；也可上传新的 `tar.gz` 包离线更新，安装成功后延迟 3 秒自动重启 LuCI。
+
+---
+
+## 构建与发版
+
+### 本地出包
+
+```bash
+# ipk（tar.gz 外壳，iStore CI 只认这种；ar 格式会被判 invalid）
+python3 tools/build_ipk.py --version 1.8.14 --release 1 --files files --out dist
+
+# apk（需要 apk-tools；脚本会自己下 openwrt-sdk-mini 取 mkpkg）
+VERSION=1.8.14 RELEASE=1 FILES=files OUT=dist bash tools/build_apk.sh
+```
+
+两个脚本固定 mtime、目录 755 / 文件 644、脚本可执行位，产物可直接进 iStore 官方仓库目录结构（`bin/packages/all/nas_luci/`、`bin/apks/all/nas_luci/`）。
+
+### 发版（push main 一条链路到底）
+
+1. 改两处版本号：`files/usr/sbin/netmanager` 的 `PLUGIN_VERSION`（权威源，L15）与 `README.md` 头部 `> 版本：vX.Y.Z`
+2. 在「更新日志」顶部新增 `### vX.Y.Z (日期)` 小节（Release body 从这里提取）
+3. `git push origin main`
+4. `build.yml`：校验两处版本一致 → `sh -n` / `luac -p` 门禁 → 打 `tar.gz` → 打 tag → 发 Release（tag 已存在则整条跳过，可手动 `workflow_dispatch` 勾 `force`）
+5. `publish-istore.yml`（Release published 事件触发）：构建 `ipk` + `apk` → 上传为 Release 资产 → 自动向 `istoreos/istore-repo`（base `pending`）与 `istoreos/openwrt-app-meta`（base `main`）提 PR
+6. 官方合并 `pending` 后，上游 `ci-pending.yml` 会把包 cherry-pick 到 main、删同名旧包、刷新索引，软件中心即更新
+
+### 一次性配置（已配好）
+
+仓库 `Settings → Secrets and variables → Actions` 里的 `ISTORE_TOKEN` 是一个 classic PAT（`repo` scope），用于把分支和 PR 推到两个 fork。**不配也能跑**：此时只构建并挂 Release 资产，跳过自动提 PR（日志里会有 notice 提示）。
+
+手工重跑 / 干跑：
+
+```bash
+# 只验证构建，不提 PR（会上传 Release 资产，--clobber）
+gh workflow run publish-istore.yml -f version=1.8.14 -f release=1 -f dry_run=true
+
+# 同版本重发，换个 release 号即可（1.8.14-r2）
+gh workflow run publish-istore.yml -f version=1.8.14 -f release=2
+```
+
+细节与常见问题见 [`docs/istore-publish.md`](docs/istore-publish.md)。
 
 ---
 
@@ -6001,26 +11134,38 @@ sh install.sh
 ```bash
 # 系统概览
 netmanager overview
+netmanager version              # 查看插件版本
 
 # 端口转发
 netmanager port_list
 netmanager port_add <外部端口> <tcp|udp|both> <目标IP> <ipv4|ipv6|both> [内部端口]
-netmanager port_del <外部端口> <协议>
+netmanager port_del <外部端口> <协议> [ipv4|ipv6|both]
 netmanager port_edit <旧端口> <旧协议> <新端口> <新协议> <目标IP> <类型> [新内部端口]
+
+# IPv6 转发目标跟踪（v1.8.0+，前缀变化自动跟随）
+netmanager port_track_v6 <端口> <tcp|udp> <锚点|off>   # 设置/清除 IPv6 跟踪锚点（MAC/主机名/IPv4）
+netmanager port_sync_v6 [--quiet]                       # 立即按锚点重算并同步 IPv6 目标地址
+
+# IPv6 网关自愈（v1.8.7+）
+netmanager v6gw [--quiet]        # 补 PPPoE 缺失的 IPv6 默认路由，并强制 ra_default=1 宣告网关
 
 # 防火墙规则
 netmanager rule_list
 netmanager rule_add <名称> <源> <目标> <协议> <端口> <动作> <ipv4|ipv6|any>
 netmanager rule_del <索引>
 netmanager rule_edit <索引> <名称> <源> <目标> <协议> <端口> <动作> <类型>
+netmanager rule_toggle <索引> <1|0>        # 启用/禁用规则（v1.8.13+，端口放行区开关）
 
 # 日志
 netmanager ssh_log [条数]
 netmanager access_log [筛选端口] [条数]
+netmanager block_detail <端口|v4|v6>   # 查看被拦截源 IP 明细（源/协议/端口/次数/最近时间）
 
 # 运行日志
 netmanager log_set 1|0          # 开启/关闭运行日志（持久化到UCI）
 netmanager log_get [行数]       # 查看最后 N 行运行日志
+netmanager log_query [级别] [关键词] [行数]  # 按级别（INFO/WARN/ERROR/DEBUG）与关键词过滤查询
+netmanager log_export           # 导出完整运行日志（输出 base64，供前端下载）
 netmanager log_clear            # 清空运行日志
 
 # 设置
@@ -6032,10 +11177,12 @@ netmanager restart    # 重启防火墙
 netmanager reload     # 重载防火墙
 
 # 备份管理
-netmanager backup                    # 立即备份当前配置
+netmanager backup                    # 立即备份整插件配置（5 个 UCI 配置 + /etc/netmanager 黑名单/白名单列表）
 netmanager backup_list               # 查看所有备份
 netmanager backup_restore <文件名>   # 从备份恢复
 netmanager backup_delete <文件名>    # 删除备份
+netmanager backup_import <文件名>     # 将已上传的备份包导入备份目录（校验 tar.gz 与配置内容）
+netmanager backup_prune [保留数]     # 清理旧备份，默认保留最近 20 份
 
 # 插件管理
 netmanager upload_file <文件名>      # 上传文件（通过stdin）
@@ -6056,7 +11203,26 @@ netmanager china_filter update                 # 更新IP库并重应用规则
 netmanager china_filter set_url <url>          # 自定义订阅链接
 netmanager china_filter set_cron "0 4 * * *"   # 自定义更新计划cron
 
-# DNS 设置（命令行方式应用，等价于页面「应用配置」按钮）
+# 中国IPv6访问限制（v1.7.0+）
+netmanager china6_filter status                # 查看状态
+netmanager china6_filter enable                # 开启（应用规则 + 装cron + 自启）
+netmanager china6_filter disable               # 关闭（清规则 + 移cron，保留列表与设置）
+netmanager china6_filter update                # 更新IPv6 IP库并重应用规则
+netmanager china6_filter set_url <url>         # 自定义IPv6订阅链接
+netmanager china6_filter set_cron "0 4 * * *"  # 自定义IPv6更新计划cron
+
+# 手动黑名单（v1.7.0+，支持单IP与CIDR网段）
+netmanager blacklist list                      # 查看黑名单条目与规则状态
+netmanager blacklist add <IP|CIDR>             # 添加拉黑，如 1.2.3.4 / 10.0.0.0/8 / 2001:db8::/32
+netmanager blacklist del <IP|CIDR>             # 移除条目
+netmanager blacklist clear [v4|v6|all]         # 清空黑名单
+netmanager blacklist apply                     # 重建黑名单 nft 规则
+
+# 静态 IP 绑定（等价于页面在线客户端「一键绑定 / 解绑」）
+netmanager static_bind <MAC> [IPv4] [主机名] [DUID]   # 按 MAC 创建 dhcp host 静态绑定
+netmanager static_unbind <MAC>                        # 按 MAC 删除全部静态绑定条目
+
+# 上网设置（命令行应用脚本，等价于页面「应用配置」按钮）
 /usr/sbin/dnssettings-apply.sh                 # 应用 /etc/config/dnssettings 到系统
 /usr/sbin/dnssettings-backup.sh                # 备份 network/dhcp 配置到 /root/backup/
 
@@ -6075,17 +11241,23 @@ netmanager uninstall keep           # 保留 /etc/config/netmanager、/etc/netma
 config netmanager 'settings'
     option default_target '192.168.31.196'   # 默认转发目标IP
     option log_days '7'                       # 日志保留天数（预留）
-    option auto_ban '0'                       # 是否自动封禁 SSH 爆破
-    option auto_ban_threshold '5'             # 自动封禁失败次数阈值
     option log_enable '0'                     # 运行日志开关：0关闭 / 1开启
     option china_filter_enable '0'            # 中国IPv4过滤开关：0关闭 / 1开启
     option china_filter_url 'https://metowolf.github.io/iplist/data/special/china.txt'  # IP库订阅链接
     option china_filter_cron '0 3 * * 0'      # 更新计划cron表达式：默认每周日3点
     option china_filter_last_update ''        # 上次成功下载时间
     option china_filter_count '0'             # 当前列表CIDR条数
+    option china6_filter_enable '0'           # 中国IPv6过滤开关：0关闭 / 1开启
+    option china6_filter_url 'https://ispip.clang.cn/all_cn_ipv6.txt'  # IPv6 IP库订阅链接
+    option china6_filter_cron '0 3 * * 0'     # IPv6 更新计划cron表达式
+    option china6_filter_last_update ''       # IPv6 上次成功下载时间
+    option china6_filter_count '0'            # IPv6 当前列表CIDR条数
+    option update_mirror ''                    # 在线更新镜像/加速前缀（空=直连，需在白名单域名内）
 ```
 
-### DNS 模块：`/etc/config/dnssettings`
+> **手动黑名单存储**：条目持久化在 `/etc/netmanager/blacklist_v4.list` 与 `/etc/netmanager/blacklist_v6.list`（每行一个 IP 或 CIDR），无需 UCI 配置，页面增删即时生效。
+
+### 上网设置模块：`/etc/config/dnssettings`
 
 ```
 config wan 'wan'          # WAN 口上游 DNS（peerdns / dns1_v4 / dns2_v4 / dns1_v6 / dns2_v6）
@@ -6094,9 +11266,31 @@ config dnsmasq 'dnsmasq'  # dnsmasq 全局转发（enable / forward_v4 列表 / 
 config actions 'actions'  # 操作按钮占位
 ```
 
-> **DNS 应用原理**：点击「应用配置」后，`dnssettings-apply.sh` 将上述配置写入 `network.wan/wan6`（peerdns/dns/dns6）、`dhcp.lan`（dhcp_option/dns/ra/dhcpv6）与 `dhcp.@dnsmasq[0].server`，然后重启 network/dnsmasq/odhcpd。局域网设备需断开重连网络才能获取新 DNS。
+> **上网设置应用原理**：点击「应用配置」后，`dnssettings-apply.sh` 将上述配置写入 `network.wan/wan6`（peerdns/dns/dns6）、`dhcp.lan`（dhcp_option/dns/ra/dhcpv6）与 `dhcp.@dnsmasq[0].server`，然后重启 network/dnsmasq/odhcpd。局域网设备需断开重连网络才能获取新 DNS。
 
 > **中国IPv4过滤原理**：独立 nft 表 `inet netmanager`（与 fw4 分离，fw4 reload 不影响）含 `china_v4` CIDR 集合 + input/forward 两条 base chain(priority -50)，规则 `iifname {wan} ct state new {tcp,udp} ip saddr != @china_v4 drop`。CIDR 列表存 `/etc/netmanager/china_v4.list`，开机 init + WAN 上线 hotplug 自动重应用。兼容新旧 nft：modern(`flags interval, auto-merge` 分片加载) / compat(`flags interval` 单次原子加载 + 逐行回退)。
+
+> **中国IPv6过滤原理（v1.7.0）**：与 IPv4 完全对称，独立 nft 表 `inet netmanager6` 含 `china_v6` 集合 + `china6_input`/`china6_forward` 两条 base chain，规则 `iifname {wan} ct state new {tcp,udp} ip6 saddr != @china_v6 drop`。列表存 `/etc/netmanager/china_v6.list`，默认订阅 `https://ispip.clang.cn/all_cn_ipv6.txt`，同样支持 modern/compat 两种 nft 加载模式。
+
+> **手动黑名单原理（v1.7.0）**：独立 nft 表 `inet netmanager_ban`，`ban_v4`/`ban_v6` 两个 interval 集合支持单 IP 与 CIDR 网段，input/forward 两条 base chain 上分别以 `ip saddr @ban_v4 drop`、`ip6 saddr @ban_v6 drop` 丢弃入站与转发流量。条目持久化在 `/etc/netmanager/blacklist_v4.list`、`blacklist_v6.list`，重启与 WAN 重连后由 init/hotplug 自动恢复。
+
+### 中国 IP 订阅参考源
+
+IPv6（每行一个 CIDR）：
+
+| 源 | 地址 | 说明 |
+|----|------|------|
+| ispip.clang.cn（默认） | `https://ispip.clang.cn/all_cn_ipv6.txt` | 中国大陆全部 IPv6 地址段，国内直连 |
+| china-operator-ip | `https://raw.githubusercontent.com/gaoyifan/china-operator-ip/ip-lists/china6.txt` | 按国内运营商 ASN 自动生成，更新频繁（GitHub raw 直连受限时需镜像） |
+| APNIC 原始数据 | `https://ftp.apnic.net/apnic/stats/apnic/delegated-apnic-latest` | 官方分配数据，需自行转换为 CIDR |
+
+IPv4（每行一个 CIDR）：
+
+| 源 | 地址 | 说明 |
+|----|------|------|
+| metowolf/iplist（默认） | `https://metowolf.github.io/iplist/data/special/china.txt` | 社区维护，格式与插件一致 |
+| ispip.clang.cn | `https://ispip.clang.cn/all_cn.txt` | 中国大陆全部 IPv4 地址段，国内直连 |
+| china-operator-ip | `https://raw.githubusercontent.com/gaoyifan/china-operator-ip/ip-lists/china.txt` | 按国内运营商 ASN 自动生成 |
 
 ---
 
@@ -6105,7 +11299,7 @@ config actions 'actions'  # 操作按钮占位
 - Web 界面：「设置」页面 →「卸载插件」区块（支持「保留配置」勾选）
 - 命令行：`netmanager uninstall [full|keep]`
 
-卸载会完整清理：后端脚本、LuCI 控制器/CBI 模型/视图、init/hotplug、DNS 应用与备份脚本、nft 规则、cron 任务、配置文件。用户在 `/etc/config/firewall` 中的端口转发与防火墙规则不受影响。
+卸载会完整清理：后端脚本、LuCI 控制器/CBI 模型/视图、init/hotplug、上网设置应用与备份脚本、nft 规则、cron 任务、配置文件。用户在 `/etc/config/firewall` 中的端口转发与防火墙规则不受影响。
 
 ---
 
@@ -6113,11 +11307,316 @@ config actions 'actions'  # 操作按钮占位
 
 1. DNS「应用配置」会重启网络服务，期间会短暂断网
 2. 设备端 DNS 有缓存，重连网络后才会拿到新 DNS
-3. 如果 WAN 接口名不是 `wan` 或 `wan6`，请在 `dnssettings-apply.sh` 中修改对应接口名
+3. v1.4.6+ WAN 接口自动探测（默认路由反查），自定义接口名可在 `dnssettings` 配置 `wan_iface`/`wan6_iface` 显式指定
 4. DNS 备份文件保存在 `/root/backup/`，防火墙配置备份保存在 `/root/`
-5. 更新前建议先备份配置；只支持 `.tar.gz` 或 `.tgz` 格式
+5. 插件在线更新只接受 `.tar.gz` / `.tgz` 安装包（`.ipk`/`.apk` 请走软件中心或 apk/opkg 命令）
+6. apk 体系升级时，`/etc/config/netmanager`、`/etc/config/dnssettings` 可能落地成 `*.apk-new`（配置保护），确认新版本无误后再覆盖
+7. 卸载默认保留两份 UCI 配置；要彻底清干净用 `netmanager uninstall`（full）
 
 ## 更新日志
+
+> **2026-11-26 工程更新（版本号不变，交付形态与 CI 变更）**：新增 ipk/apk 双格式打包（`tools/`）、iStore 软件中心上架元数据（`istore/app-meta/`）、Release 后自动构建并提 PR 到 `istoreos/istore-repo` 与 `istoreos/openwrt-app-meta` 的流水线（`.github/workflows/publish-istore.yml`）；README 安装章节按 apk/opkg 双体系重写。
+
+### v1.8.14 (2026-11-24)
+- **备份/恢复覆盖整个插件**：备份包在原有 5 个 UCI 配置（firewall/network/dhcp/dnssettings/netmanager，含 v6track 跟踪锚点）之外，新增 `/etc/netmanager/` 状态文件——手动黑名单 `blacklist_v4/v6.list` 与中国 IPv4/IPv6 白名单 `china_v4/v6.list`（tar 内 `state/` 子目录，MANIFEST 增加 `STATE_COUNT`/`STATE_FILES`）。跨机恢复或离线恢复后白名单/黑名单无需重新下载订阅即可生效。
+- **恢复后自动重应用与重建 cron**：恢复列表文件后按恢复出的配置重应用黑名单（`ban_apply_all`）与已启用的中国 IPv4/IPv6 白名单规则，并重建对应更新 cron；新增 `v6sync_cron_ensure` 在恢复与开机路径补建 `*/10` 前缀同步兜底 cron（此前仅 install.sh 安装时写入，跨机恢复/卸载重装后会缺失）。
+- **恢复安全加固**：解压前对 tar 成员做路径预检，拒绝 `../` 与绝对路径成员，防止恶意备份包写穿临时工作目录（与 v1.4.4 更新包预检同口径）。
+- **设置页备份列表**：「配置数」列改为「配置/列表」双计数，备份说明注明覆盖范围；旧格式备份（无 STATE_COUNT）列表数记 0，恢复旧备份时保留当前列表文件不动。
+
+### v1.8.13 (2026-11-24)
+- **转发与放行分页展示**：自动配套的 `Allow-IPv6-*` 直连放行规则不再显示在「防火墙规则管理」页，移至「端口转发」页新增的「IPv6 端口放行（直连）」区（复用 `port_list` 的 IPV6 段，口径不变：family=ipv6 且 dest=lan 带端口）。该区标注「自动配套 / 自定义」来源，自动配套规则提供启用/禁用开关（新增 `netmanager rule_toggle <索引> <1|0>`，禁用只断直连路径不影响转发，且有确认提示），自定义放行规则可删除；规则页对移出的规则显示条数迁移提示。
+- **规则管理页新增「源IP / 目的IP」两列**：`rule_list` 输出末尾追加 `src_ip`/`dest_ip` 两字段（旧版前端按前 9 字段解析，向后兼容），表格空值显示「任意」。此前表格只画区域/协议/端口，dest_ip 锁定目标 GUA 的单机粒度规则看起来像整段 wan→lan 放行，易误读误删；现在粒度一眼可见。编辑表单行为不变（`rule_edit` 只改既有字段，不触碰 src_ip/dest_ip）。
+- **插件页响应加 no-cache 头**：`Cache-Control: no-store` + `Pragma: no-cache`，避免版本更新后旧标签页滞留旧版前端 JS、用旧解析逻辑读新后端输出造成编辑表单/列表错乱；更新后普通刷新即可拿到新页面。
+
+### v1.8.12 (2026-11-24)
+- **修复翻译端口映射把内部端口暴露公网直连**：v1.8.11 为所有 IPv6 DNAT 映射配套生成 `Allow-IPv6-<外部端口>-<协议>` 放行规则（dest_port=内部端口）。对**有翻译端口**的映射（如 853→38853），fw4 的 DNAT 真实生效打 `ct status dnat` 标记，内建 `ct status dnat accept` 已放行全部转发路径（含直连目标 GUA:外部端口被 dstnat_wan 翻译的路径），配套 ACCEPT 规则纯属冗余，反而让外部**直连目标 GUA:内部端口（38853）也被放行**，绕过了端口翻译。现改为：翻译端口映射不生成配套放行规则，仅**无翻译端口**（外部=内部，DNAT 空操作不打 ct 标记）保留 v1.8.11 机制。
+- **存量自愈**：`port_sync_v6` 扫描全部 IPv6 映射（不限于跟踪锚点），发现内部端口≠外部端口且存在历史 `Allow-IPv6` 残留时自动删除并重载防火墙；升级后随每 10 分钟 cron / WAN hotplug 同步自动清理，无需手动干预。`port_add`/`port_edit` 对翻译端口同步清理旧残留，`port_del` 清理逻辑不变。
+
+### v1.8.11 (2026-11-23)
+- **IPv6 转发自动配套直连放行规则**：fw4 的 DNAT 无目的地址门槛，直连目标主机 GUA 的入站包同样会被翻译端口（外部→内部），故 forward 链看到的是内部端口。此前 v1.8.10 只建 DNAT，对「无翻译端口」（如 51116→51116，DNAT 空操作不打 ct 标记）直连路径会被默认丢弃（典型表现：RustDesk 等服务的 IPv6 直连不通）。现 port_add 创建 IPv6 DNAT 映射时同步生成 `Allow-IPv6-<外部端口>-<协议>` 放行规则，**dest_port 用内部端口**（匹配 DNAT 翻译后的包）、dest_ip 限定目标 GUA，并纳入 v6track 前缀跟踪；port_edit/port_del 按族联动更新/清理。有翻译端口由 DNAT+ct 放行、本规则兜底，无翻译端口由本规则放行。
+- 放行规则按名称前缀（外部端口）精确匹配清理与同步，不误伤用户自定义规则；port_sync_v6 改按名称匹配改写 dest_ip，兼容翻译端口（内部端口≠外部端口）。
+
+### v1.8.10 (2026-11-23)
+- **端口转发页支持真正的 IPv6 端口映射**：添加转发选 IPv6/both 时创建 `redirect family=ipv6` 的 DNAT 映射（ipv6:port），与 IPv4 对称；不再默认生成「IPv6 端口放行」ACCEPT 规则。目标填 IPv4 时自动解析该主机当前公网 IPv6 并登记跟踪锚点；解析不到明确报错（DNAT 必须有目标地址）。
+- **IPv6 端口放行移出端口转发页**：放行（ACCEPT）规则统一由「规则管理」页维护；端口转发页只保留 IPv4 DNAT 与 IPv6 DNAT 两张表，IPv6 映射表补齐 编辑/删除/跟踪 操作。
+- **修复规则管理页「添加规则」无反应**：根因是 `nmFetch` 只给 FormData/string 形态补 CSRF token，`URLSearchParams` 形态漏补 → 403 静默失败。nmFetch 增加 URLSearchParams 分支，并为各操作补 catch 错误回显。
+- **编辑/删除按族隔离**：port_edit/port_del 增加族参数，v4/v6 同端口条目互不误伤；删除 v6 映射时同步清理跟踪锚点。
+
+### v1.8.9 (2026-11-21)
+- **移除自动拉黑功能**（v1.8.8 引入）：经评估在 china 白名单模型下冗余——白名单外的境外流量默认已丢弃，自动拉黑只是把已丢弃的包再记一遍，无安全增量；SSH 为局域网绑定+仅密钥登录、无爆破面，改 SSH 防爆破同样空转。故整体下线（后端 autoban、cron、设置页面板/查看弹窗、概览计数卡片），安装时自动清理 v1.8.8 残留（定时任务/内存表/历史）。
+- **保留**概览页 IPv6 状态（WAN PD 前缀/LAN GUA/默认网关）与 DNS 状态（模式/上游）展示，以及手动黑名单。
+
+### v1.8.8 (2026-11-21)
+
+**新增：自动拉黑（端口扫描防护）+ 系统概览补 IPv6 / DNS 状态**
+
+- 自动拉黑：窗口期内同一境外源 IP 被拦截（NM_DROP4/6 日志）累计 ≥ 阈值次数（默认 5 次 / 10 分钟）自动拉黑。数据源与拦截明细相同，仅作用于已被境外过滤丢包的扫描源
+- **纯内存存储**：拉黑列表 / 历史 / 日志全部位于 `/tmp/netmanager`（tmpfs），重启清零、不写闪存；独立 nft 表 `inet netmanager_autoban`，与手动黑名单（闪存持久化）互不影响
+- 可配置：启用开关、拦截次数、窗口(分)、**条数上限**（默认 1000，保留最新防内存膨胀）、**TTL 自动过期**（默认 24h，0=不过期，误伤自愈）、**IPv6 按 /64 聚合**（默认开，防扫描源同段换地址）、**白名单**（IP / IPv4 CIDR，护住自家监控/VPS/探针）
+- 保护名单：私网 / LAN / 环回 / 链路本地 / ULA / CGNAT / 组播永不拉黑
+- 设置页新增自动拉黑面板：只显示数量 + 「查看 / 搜索 / 解封」按钮，弹窗列表支持搜索与一键解封，条目区分「自动 / 手动」标签，自包含高对比配色（亮暗主题均清晰）；境外过滤关闭时给出空转提示
+- 每 5 分钟 cron 自动扫描；`netmanager autoban run|status|apply|clear|enable|disable|config` 命令行齐全；卸载自动清理 cron 与内存表
+- 系统概览：新增 IPv6 状态（出口 / WAN IPv6 / PD 前缀 / LAN 分发 / 默认路由）、DNS（模式 / 上游服务器）与自动拉黑计数卡片
+
+### v1.8.7 (2026-11-21)
+
+**新增：IPv6 默认网关自愈（v6gw），修复 pppoe 关闭 wan.ipv6 后客户端拿到 SLAAC 地址却没有默认网关、上不了网**
+
+- 新增 `netmanager v6gw [--quiet]` 网关自愈命令，处理两类实测故障：① pppoe 场景为抑制 netifd 自动 `wan_6` 与手动 `wan6` 双 IPv6 WAN 接口冲突（手动 wan6 持续 `Invalid argument` 抖动、频繁重载防火墙搅乱 RA）而关闭 `network.wan.ipv6` 后，pppoe 自带的 IPv6 默认路由随之消失，手动 wan6 只做 PD 委派不装默认路由 → 路由器无 IPv6 默认路由；② odhcpd 默认 `ra_default=0` 仅在路由器有默认路由时才宣告网关 → RA 的 Router lifetime=0，LAN 客户端拿到 SLAAC 地址却没有默认网关。`v6gw` 在 pppoe 且默认路由缺失/指向失效设备时补 `default dev <wan-l3> metric 512`，并在 LAN `ra=server` 时强制 `ra_default=1` 确保始终宣告网关
+- 自愈触发：WAN `ifup`/重拨 hotplug 延迟 12s 先跑 `v6gw` 再同步端口目标；`port_sync_v6` 末尾顺带调用 `v6gw`（复用现有每 10 分钟 cron 兜底，前缀续租静默变化也能自愈）；上网设置应用脚本在 SLAAC / RA+DHCPv6 两个 server 分支同步写入 `ra_default=1`
+- 说明：`planb` 为 iStoreOS 应急兜底接口（br-lan 上 DHCP 客户端，默认 `auto=0` 不开机启动），正常上网无需启用，与网关故障无关
+
+### v1.8.6 (2026-11-21)
+
+**修复：重启后 LAN 公网 IPv6 分发中断（wan6 dns_search 残留 + peerdns 引号）；静态IP禁止绑定公网 GUA；拦截明细文字看不清；调整：上网设置 IPv6 段移到 WAN 下方**
+
+- 修复重启/重拨后应用 DNS 配置导致 LAN 公网 IPv6 分发中断：**根因**是 `network.wan6` 残留运营商下发的 `dns_search` 选项，本平台（iStoreOS 25.12）netifd 的 dhcpv6 proto 不接受该选项 → `wan_6` setup 报 `ubus error: Invalid argument` 无限重试、PD 续租失败、odhcpd 租约清空、LAN 设备拿不到公网 IPv6。应用脚本现在配置 wan6 后主动清除 `dns_search`（pppoe 的 wan 接受该选项，不受影响）；同时修复写 `peerdns` 时把单引号包进值里（存成带引号的 `'0'`）的隐患，去掉内层引号
+- 静态IP分配「完整IPv6地址」字段强制仅允许 ULA（fd/fc 开头）：公网 GUA（2000::/3，如 2408）随运营商前缀重拨变化、SLAAC 后缀随机，设为静态必失效，校验直接拒绝并引导改用 hostid 后缀；在线客户端 IPv6 列新增「动态公网 / ULA」性质标注，避免把动态公网误认为静态绑定
+- 上网设置页面顺序调整为 **WAN上网方式 → IPv6获取分发 → LAN口地址 → WAN-DNS → LAN-DNS → dnsmasq → 操作**（CBI 每 Map 绑定单一配置，拆成 4 个 Map 按序渲染，应用按钮逐一提交各 cursor）；关闭各 Map 默认「保存/保存并应用」按钮（`pageaction=false`），全页仅保留一个「应用配置」，消除重复提交入口
+- 修复拦截明细面板文字看不清：明细容器误用深色日志样式（`netmanager-log` 浅灰字）导致表头浅底浅字，改为白底深色字表格
+
+### v1.8.5 (2026-11-20)
+
+**新增：拦截明细查看与一键拉黑、静态IP解绑；修复：离线目标 IPv6 放行未正确添加；调整：DNS 自动备份保留 3 份**
+
+- 端口访问日志「防火墙拦截统计(按端口)」支持点击任意行查看被拦截源 IP 明细（源IP/协议/命中端口/次数/最近时间），并可一键拉黑。china_input/china6_input 新增限速日志（`NM_DROP4/NM_DROP6` 前缀，10 条/分钟 burst 20，不影响丢包裁决），后端 `block_detail` 解析 logread 按源 IP 聚合，前端明细面板复用 `blacklist_add` 拉黑
+- 静态IP分配在线客户端速览：已绑定设备新增「解绑」按钮（后端 `static_unbind` 按 MAC 降序下标删除 dhcp host，避免多条移位误删，删除后重载 dnsmasq）
+- 修复端口转发选 IPv4+IPv6 且目标主机离线/无 IPv6 时「IPv6 没正确添加」：旧版仅在 IPv6 解析成功时登记跟踪锚点，解析失败时放行规则永久「未限定目标」且 `port_sync_v6` 无法自动修正。改为无论解析成功与否都登记 v6track 锚点，主机上线后定时同步自动改写 dest_ip 到正确主机
+- DNS 应用前自动备份由保留最近 5 份改为 3 份（`dnssettings-auto-*`，按修改时间排序清理）
+- 核实拦截计数无重复累加：解析总和等于各独立 nft 规则计数器之和（china_input 与 china_forward 不叠加，fw4 与 netmanager 表不同优先级丢不同包），白名单 5569 条 CIDR 正常加载；计数增长为公网 IP 被境外扫描的真实累计流量
+
+### v1.8.4 (2026-11-20)
+
+**新增：IPv6 获取与分发模式管理；修复：拦截计数误报、CBI 页面布局；完善：静态IP一键绑定**
+
+- 上网设置新增「IPv6 获取与分发」：WAN 前缀请求长度（PD，auto/60/56/64/不请求）+ LAN 分发模式（服务器状态化 / SLAAC 无状态 / 中继 / 关闭）。写入 iStoreOS 原生网络管理同一套 `dhcp.lan` / `network.wan6` 配置，两边互通；应用脚本不再硬写 `ra/dhcpv6=server`，改为按所选模式生效，中继模式自动配置 wan6 master，前缀长度变化自动重新协商 wan6
+- 修复「端口访问日志」累计拦截计数明显错误：旧版 awk 用 `prev_pkts/prev_dport/prev_proto` 跨行借用上下文，把前面 accept 规则（如 Allow-DHCP-Renew 的 udp dport 68）的端口/协议/计数错误套到无端口的 drop 规则（china/ban IP 段拦截）上，出现「端口68拦截几万」的误报。重写为逐行独立解析，计数器/端口/协议只取本行，无端口规则按用途标注（境外IP拦截/黑名单/WAN口丢弃），多协议 `{tcp,udp}` 正确识别
+- 修复「上网设置」「静态IP分配」两个 CBI 页面布局与其他菜单不一致：注入标题栏 + 导航 + 单一白卡内容区，页标题/描述移到导航下方，主题头与自绘页面一致；整体移动 cbi-map（保留 form）不破坏表单提交
+- 完善静态IP设置：在线客户端速览新增「一键绑定」（创建 dhcp host，含 MAC 校验/去重/IPv4 网段与路由IP 校验）；IPv4 静态地址增加 LAN 网段校验；菜单「静态IPv6分配」更名「静态IP分配」（页面实际管理 IPv4+IPv6）
+
+### v1.8.3 (2026-11-20)
+
+**修正：IPv6 跟踪目标应选 SLAAC 地址，而非 hostid 静态锚点**
+
+- 问题：v6_resolve_target 原先最优先返回「前缀 + hostid」拼出的静态地址（如 `...::3`），但目标主机对外通信实际用的是 SLAAC /64 地址（如 Debian 的 mngtmpaddr `...:17aa:e56e:f552:cdbd`），部分服务只监听/回应该地址
+- 解析优先级改为：邻居表中该主机 MAC 在当前前缀下的 SLAAC 地址（排除 hostid 静态地址与 FAILED/INCOMPLETE 死条目，REACHABLE 优先，近似目标机 `grep -v deprecated` 的选址）→ hostid 静态地址兜底 → DHCPv6 租约 → 邻居表任意全局地址
+- 修正 hostid 冒号形式拼接：`::3` 与 `/64` 前缀拼接不再产生三冒号非法地址
+- SLAAC 临时地址轮换由既有 hotplug / 每 10 分钟 cron 同步自动跟随
+
+### v1.8.2 (2026-11-20)
+
+**新增：收敛客户端 IPv6 地址堆积（路由端根因治理）**
+
+- 问题：odhcpd 按 RFC9096 把历史前缀记在 piofolder，并在每次 RA 中以 `lifetime=0` 持续广播（实测旧前缀失效两小时后仍在播）。客户端按 RFC4862 必须保留这些 deprecated 地址直到记忆过期，表现为"一台设备堆一堆旧前缀 IP"
+- 新增 `v6_cleanup_piofolder`：同步时剔除 piofolder 中既非当前前缀、也非 ULA 的条目，重启 odhcpd 后 RA 只含当前前缀 + ULA
+- 挂入 `port_sync_v6`（hotplug / 每 10 分钟 cron / DNS 应用三条触发路径自动生效）；DNS 应用脚本改为无条件同步，未登记跟踪也清理
+- 建议配合缩短租期：`dhcp.lan.ra_lifetime='1800'`、`max_valid_lifetime='30m'`、`max_preferred_lifetime='15m'`（选项名以 odhcpd 源码 config.c 为准；`ra_valid`/`ra_preferred` 不存在，写了会被忽略），前缀变更后客户端收敛更快；ULA 是否保留由用户按需决定（关闭后 LAN IPv6 DNS 需改用稳定后缀的公网地址）
+
+### v1.8.1 (2026-11-20)
+
+**修复：SSH 自愈判据错误，导致每次 lan ifup 都无谓重启 dropbear**
+
+- v1.8.0 用本机 TCP 自连（`nc 127.0.0.1 <port>`）判断 dropbear 监听是否失效。但 dropbear 设了 `DirectInterface` 后以 `SO_BINDTODEVICE` 绑在该接口上，而本机连自身地址走回环路由，**无论用回环还是 LAN IP 都连不通**——探测恒失败，于是每次 lan ifup 都会重启 dropbear 并踢掉在线会话
+- 改为比对绑定网卡的 `ifindex` 是否变化（`/sys/class/net/<dev>/ifindex`），这才是套接字失效的真实判据；首次观测只记录基线、不重启
+- DNS 应用路径移除该探测：应用走 `network reload` 不重建 br-lan，本就无需重启 dropbear
+
+**修复：改了 LAN IPv6 DNS 后 RA 仍播旧值**
+
+- 应用脚本在 odhcpd 只有单实例时仅调 `/etc/init.d/odhcpd start`，而服务已在运行时 procd 的 start 是空操作、**不会重读配置**。实测 `dhcp.lan.dns` 已更新，抓包看到的 RDNSS 却仍是旧地址
+- 改为无条件 stop + killall + start，强制重读；抓包复验 RDNSS 与配置一致
+
+### v1.8.0 (2026-11-19)
+
+**新增：IPv6 转发目标动态跟踪**
+
+- 问题：运营商 PD 前缀会变化（实测一天内变更多次），IPv6 放行规则里写死的 `dest_ip` 前缀一变即失效；且旧逻辑在「仅 IPv6」模式下会把 IPv4 默认目标（如 `192.168.31.3`）直接写进 `family=ipv6` 的规则，属非法地址，导致整条规则不生效——实测 5 条 IPv6 放行规则全部没有 `dest_ip`，等于对整个内网开放端口
+- 新增锚点跟踪机制：为规则登记目标主机的内网 IPv4 / MAC / 主机名作为锚点，由 `v6_resolve_target` 实时解析其当前公网 IPv6。解析优先级为 **DHCP 静态 hostid（前缀+固定后缀，最稳）→ DHCPv6 租约（按 DUID）→ 邻居表（按 MAC）**
+- 新增命令 `port_track_v6 <端口> <tcp|udp> <锚点|off>` 与 `port_sync_v6 [--quiet]`
+- 「仅 IPv6」添加规则时自动把 IPv4 目标解析为 IPv6 并登记跟踪；解析不到则不写 `dest_ip` 并明确告警，不再写入非法地址
+- 端口转发页 IPv6 表格新增「目标地址」「跟踪锚点」两列，未限定目标的规则标红提示；提供「跟踪」与「立即同步」按钮
+- 新增 hotplug `96-netmanager-v6sync`：WAN 上线后自动同步；同步时顺带清理旧前缀残留的源路由与 unreachable 条目
+
+**修复：DNS 页面配置与实际生效不一致**
+
+- `dnssettings.wan` 节存在但 DNS 选项缺失时，页面显示默认值而 `network.wan` 实际无 `dns`、`peerdns` 未设置（走运营商 DNS），二者不符。现在应用前自动回填缺失项（优先沿用 `network` 现值），CBI 初始化也补齐单个缺失选项而非仅判断节是否存在
+- 新增 `noresolv` 开关：dnsmasq 默认除转发列表外还并用系统 resolv 上游（运营商下发、wan6 自动获取、LAN 接口 DNS），使「全局转发」名不副实。开启后严格只用转发列表
+- DNS 设置页新增「当前实际生效的 DNS」只读面板，直接展示运行时 dnsmasq 转发列表、系统 resolv 上游（首页数据来源）与下发给内网设备的 DNS，并标注 noresolv 状态，便于与首页对照
+
+**修复：应用 DNS 配置导致管理 SSH 中断**
+
+- dropbear 若以 `DirectInterface` 绑定 br-lan，`network restart` 重建 br-lan 后监听套接字绑定的 ifindex 失效，表现为端口仍 LISTEN 但连接被 refused。DNS 应用改用 `network reload`，并在应用后自检 SSH 监听、异常时自动重启 dropbear
+- 新增 hotplug 在 lan ifup 时做同样的 SSH 监听自检自愈
+
+**修复：odhcpd 重复实例**
+
+- 实测存在 `odhcpd -v` 与 `/usr/sbin/odhcpd` 两个实例并存，同时写 RFC9096 piofile 造成前缀记忆互相覆盖、RA 广播不一致。应用脚本改为先收敛实例再统一拉起，并回显实例数
+
+**修复：WAN DNS 输入框在页面上根本不渲染**
+
+- 问题：WAN 四个 DNS 选项使用 `o:depends("peerdns", "0")`，而 iStoreOS 24.10 的 CBI 对 Flag「等于 0」的依赖判定不成立，服务端直接省略这些选项——页面上看不到也无法配置 WAN DNS，只能沿用默认值，与实际生效的运营商 DNS 长期不一致（LAN 侧用的是 `="1"`，因此正常）
+- 改为始终显示这四项，并在说明中标注「仅在未勾选『使用运营商下发的 DNS』时生效」
+- `pcdata` 优先走 `luci.xml`，避免旧路径打印弃用告警污染页面输出
+
+**修复：端口转发表混入不该出现的条目**
+
+- IPv6 表此前会把系统自带规则（`Allow-DHCPv6`、`Allow-MLD`、`Allow-ICMPv6-*`）一并列出，标红「未限定目标」并提供删除按钮，误删会直接断 IPv6。现在只列出 `dest=lan` 的放行规则，系统规则天然被过滤
+- `family=ipv6` 的端口映射此前混在 IPv4 表里，目标地址显示为 IPv6，且与同端口的 IPv4 条目共用按「端口+协议」匹配的编辑/删除，存在误删对方的风险。现在独立成「IPv6 端口映射 (DNAT)」表
+
+**新增：IPv6 端口映射同样跟随前缀**
+
+- 跟踪引擎此前只覆盖 `firewall rule`（放行），`family=ipv6` 的 `redirect`（DNAT）不在其列，前缀一变即失效。现在同步时按 `src_dport` 匹配并改写其 `dest_ip`，内部端口保持不变
+- 实测修复了两条指向旧前缀临时地址、已失效的 IPv6 DNS 映射
+
+### v1.7.3 (2026-11-19)
+
+**修复：IPv6 白名单 forward 链缺少控制面放行，NDP/DHCPv6 relay 场景仍会误杀**
+
+- 问题：v1.7.2 只在 `china6_input` 链补了放行（`fe80::/10`、`ff00::/8`、DHCPv6 546/547），`china6_forward` 链**一条放行规则都没有**，只有 `ip6 saddr != @china_v6 drop`。开启 NDP relay（`dhcp.wan.ndp='relay'`）或 DHCPv6 relay（`dhcp.wan.dhcpv6='relay'`）时，从 WAN 侧返回的邻居发现包与中继应答源地址同样是链路本地 `fe80::`，会被判成境外地址丢弃，导致 LAN 设备地址解析失败、DHCPv6 中继拿不到地址
+- IPv6 修复：`china6_forward` 在 drop 之前补齐三条放行——`ip6 saddr fe80::/10`、`ip6 saddr ff00::/8`、`udp sport 547 udp dport 546`
+- IPv4 同步加固：`china_forward` 补齐 `udp sport 67 udp dport 68` 与 `ip saddr 169.254.0.0/16`，覆盖 DHCP relay（LAN 设备经路由器向运营商续租）场景
+- 已启用用户升级后会自动重应用规则，无需重新下载 IP 库
+
+**修复：PPPoE 场景下 wan6 绑定物理网口导致 PD 前缀拿不到**
+
+- 问题：`network.wan6.device` 与 `network.wan` 绑在同一物理网口时，DHCPv6 客户端在该口上没有可用的 IPv6 出口地址，`SOLICIT`/`RS` 发不出去（syslog 报 `Failed to send SOLICIT message to ff02::1:2 (Address not available)`），PD 前缀续租失败 → 前缀到期撤销 → 局域网设备全部丢失公网 IPv6。此时 `ifstatus wan6` 的 `ipv6-prefix` 为空，而 LAN 仍靠旧租约（`valid_lft` 倒计时）残着，到期即彻底断网
+- 修复：「应用配置」时增加一致性校验——`wan.proto=pppoe` 且 `wan6.device == wan.device` 时自动改为 `@wan`（指向 PPPoE 逻辑接口），随后自动 `ifup wan6` 重新协商，并在日志中回显 PD 获取结果
+- 排查提示：怀疑 IPv6 断流时按顺序核查 `ifstatus wan6` 的 `ipv6-prefix` 是否为空、`ip -6 addr show <LAN 设备>` 的 `valid_lft` 是否在倒计时、`logread | grep odhcp6c` 是否出现 `Address not available`
+
+### v1.7.2 (2026-11-19)
+
+**修复：开启中国 IPv6 白名单后 LAN 设备丢失公网 IPv6**
+
+- 原因：白名单 drop 规则覆盖全部 TCP/UDP，DHCPv6-PD 应答源地址为链路本地 `fe80::`，不在 `china_v6` 公网集合中，被误判为境外地址丢弃；PD 续租失败后前缀到期撤销，LAN 设备拿不到/续不上公网 IPv6
+- IPv6 修复：在 drop 规则之前新增放行规则
+  - `ip6 saddr fe80::/10`（链路本地）
+  - `ip6 saddr ff00::/8`（多播）
+  - `udp sport 547 udp dport 546`（DHCPv6 服务端应答）
+- IPv4 同步加固：在 drop 之前放行 `udp sport 67 udp dport 68`（DHCPv4 应答）与 `169.254.0.0/16`（链路本地）
+- 已启用用户升级后会自动重应用规则，无需重新下载 IP 库
+
+### v1.7.1 (2026-11-19)
+
+**修复：手动黑名单添加 IPv6 地址被误判为 IPv4**
+
+- `blacklist add/del` 入参清洗由 `tr -d '[:space:]'` 改为 `tr -d ' \t\r\n'`。部分 BusyBox 的 tr 不识别 POSIX 字符类，会把 `[:space:]` 按字面字符解析，连冒号与 `s/p/a/c/e` 等字母一起删除，导致 `2001:550:9005:e000::13` 被吞成 `2001550900500013` 后误报「非法 IPv4 地址」
+- 该问题仅影响 iStoreOS/BusyBox 环境下的手动黑名单增删命令，IPv6 白名单订阅不受影响
+
+### v1.7.0 (2026-11-19)
+
+**新增：中国 IPv6 白名单订阅 + IPv4/IPv6 手动黑名单（支持网段）**
+
+**① 中国 IPv6 访问限制（参考 IPv4 白名单实现）**
+- 独立 nft 表 `inet netmanager6`：`china_v6` interval 集合 + `china6_input`/`china6_forward` 两条 base chain(priority -50)
+- 规则 `iifname {wan} ct state new {tcp,udp} ip6 saddr != @china_v6 counter drop`，仅拦截境外 IPv6 新建 TCP/UDP 连接
+- 默认订阅 `https://ispip.clang.cn/all_cn_ipv6.txt`（中国大陆全部 IPv6 地址段，国内可直连），支持自定义订阅链接与 cron 更新计划
+- 下载后严格过滤为合法 IPv6 CIDR（BOM/CR/注释/空行自动清理），条数过少拒绝保存，防止空列表误杀
+- 与 IPv4 版本相同的 nft 兼容策略：modern(`flags interval, auto-merge` 分片加载) / compat(`flags interval` 单次原子加载 + 逐行回退)
+- 开机 init + WAN hotplug 自愈；`netmanager china6_filter status|enable|disable|update|set_url|set_cron`
+- 设置页新增「中国IPv6访问限制」区块，与 IPv4 区块并列独立开关
+
+**② 手动黑名单（IPv4 / IPv6，支持单 IP 与 CIDR 网段）**
+- 独立 nft 表 `inet netmanager_ban`，`ban_v4`/`ban_v6` 两个 interval 集合，支持 `1.2.3.4`、`1.2.3.0/24`、`2001:db8::1`、`2001:db8::/32`
+- input/forward 两条 base chain 分别以 `ip saddr @ban_v4 drop`、`ip6 saddr @ban_v6 drop` 丢弃入站与转发流量
+- 条目持久化到 `/etc/netmanager/blacklist_v4.list`、`/etc/netmanager/blacklist_v6.list`，重启/WAN 重连自动恢复
+- 格式校验：IPv4 校验每段 0-255 且拒绝前导零，IPv6 校验分组数量/位数/前缀长度（0-32 / 0-128）
+- 设置页新增「手动黑名单」区块：输入框一键添加、条目徽标逐个删除、IPv4/IPv6 分别清空
+- 命令行 `netmanager blacklist list|add <ip/cidr>|del <ip/cidr>|clear [v4|v6|all]|apply`
+
+**③ 其他**
+- WAN 设备探测同时参考 IPv4/IPv6 默认路由，纯 IPv6 上联场景也能正确安装规则
+- 卸载流程清理 `inet netmanager6`、`inet netmanager_ban` 与两类 cron 任务
+- 热插拔脚本改为「任一过滤启用或存在黑名单条目」即恢复规则
+
+### v1.6.1 (2026-09-05)
+
+**功能重构：DNS设置模块升级为「上网设置」，新增WAN口上网方式 + LAN口地址设置，备份功能统一管理**
+
+**① 模块改名与扩展**
+- 原「DNS设置」模块改名为**「上网设置」**（菜单/导航/页面标题同步更新）
+- 页面从单一 DNS 配置扩展为三大区块：WAN 口上网方式 + LAN 口地址 + DNS 设置
+- 参考小米路由器上网设置交互，统一在一个页面管理路由器上网相关配置
+
+**② 新增 WAN 口上网方式设置**
+- 支持三种上网方式：**PPPoE 拨号** / **DHCP 自动获取** / **静态 IP**
+- PPPoE 模式：账号、密码输入框（密码字段隐藏显示）
+- 静态 IP 模式：IP 地址、子网掩码、网关、WAN 口 DNS（支持多个，DynamicList）
+- 上网方式切换时自动显示/隐藏对应字段（depends 联动）
+- 绑定 `/etc/config/network` 的 wan 接口
+
+**③ 新增 LAN 口地址设置**
+- LAN 口 IP 地址、子网掩码配置
+- 绑定 `/etc/config/network` 的 lan 接口
+- 修改后需用新地址重新登录管理页面（页面有提示）
+
+**④ DNS 设置保留并优化**
+- WAN 口上游 DNS（运营商下发 / 自定义 IPv4+IPv6）
+- LAN 口设备 DNS（强制下发 / 路由器缓存）
+- dnsmasq 全局转发（DynamicList 支持多个 DNS）
+- 自动初始化：配置文件为空时自动创建默认配置，确保表单正常渲染
+
+**⑤ 备份功能统一管理**
+- 移除「上网设置」页面的「备份当前系统配置」按钮
+- 所有备份功能统一由「设置 → 备份管理」模块管理（全配置备份/恢复/删除/导入/清理）
+- 应用配置时仍自动备份到 `/root/backup/`（防误操作回滚）
+
+**⑥ 应用配置统一生效**
+- 「应用配置」按钮同时保存 network（WAN/LAN口）和 dnssettings（DNS）配置
+- 执行 `dnssettings-apply.sh` 应用 DNS 配置
+- 重启 network 服务使 WAN/LAN 口设置生效
+- 成功/失败结果显示在页面顶部消息栏
+
+### v1.4.9 (2026-09-05)
+
+**紧急修复：v1.4.8 两处回归导致插件完全不可用**
+
+- **修复全部页面 API 调用失败 `r.text is not a function`**：v1.4.6 引入的 `nmFetch` 兼容层内部已 `.then(res => res.text())` 返回**字符串**，但全部 30+ 处调用方仍按原生 fetch 习惯写 `.then(r => r.text())`，对字符串调用 `.text()` 报 `is not a function`，导致系统概览/端口转发/规则/日志/设置/在线更新/中国IP过滤**所有页面数据加载全部失败**。现 `nmFetch` 改为返回 Response 对象（与原生 fetch 一致），调用方零改动即可正常工作
+- **修复 DNS设置 / 静态IPv6 页面 Runtime error 崩溃**：v1.4.8 修复 `cbi_nav.htm` 注释语法时，注释内容中包含了 `%>` 字符（用于说明正确/错误语法），LuCI 模板解析器在注释块内扫描到 `%>` 即**提前结束注释**，后续内容被当 Lua 代码解析报 `unexpected symbol near '-'`；现注释内容改写为不含 `%>` 组合的描述，两个 CBI 页面恢复正常
+
+### v1.4.8 (2026-09-05)
+
+**紧急修复：v1.4.7 两处线上崩溃回归**
+
+- **修复 DNS 设置 / 静态 IPv6 页面 Runtime error 崩溃**：`cbi_nav.htm` 文件头部误用 JSP 风格注释 `<%-- --%>`，LuCI 模板解析器不支持该语法（`<%` 后遇单个 `-` 报 `unexpected symbol near '-'`），导致两个 CBI 页面加载即崩溃；现改为 LuCI 标准注释 `<%# %>`
+- **修复 CSRF Token 在 ucode 版 LuCI 上仍可能全部 403**：v1.4.7 视图端改用框架模板变量 `<%=token%>`，但部分 ucode LuCI 版本的 include 子模板（common_head.htm）上下文中 `token` 变量未传递，导致 `CSRF_TOKEN` 恒为空字符串；现改为在 common_head.htm 内联 Lua 代码直接从 `luci.dispatcher.context.authtoken` 取值（与控制器 `csrf_token()` 完全同源），不再依赖模板变量传递链
+
+### v1.4.7 (2026-09-04)
+
+**紧急修复：v1.4.6 CSRF 机制在 ucode 版 LuCI 上全部 API 403 的回归**
+
+- **修复 CSRF Token 全量失效**：v1.4.6 的 token 由 `luci.dispatcher.context.session.id` 派生——**ucode 版 LuCI（iStoreOS 24.10）的 context 没有 `session` 字段**（会话 ID 实际存于 `context.authsession`，框架内建 CSRF token 存于 `context.authtoken`），导致 token 恒为空、`csrf_check` fail-closed 将**所有 API 请求拒绝 403**（页面可打开但全部数据加载失败）。现改为直接使用 **LuCI 内建 `authtoken`**（与 CBI 表单 token 同源，由分发器为每个已认证会话生成），视图端同步改用框架模板变量 `<%=token%>`，不再 require 控制器模块
+- **修复旧版 DNS 页签 404**：v1.4.5 书签/浏览器缓存指向的 `dns_apply`/`dns_backup` GET 路由已被删除；现恢复为**安全重定向**（仅跳转到 DNS 设置页，不执行脚本，不复活"刷新即重复执行"问题）
+- **CBI 操作按钮防御加固**：「应用配置」「备份配置」与静态 IPv6「保存并应用」的脚本执行/条目合并环节以 `pcall` 包裹，异常不再中断整个请求，错误文本透传到页面消息（便于精确反馈问题）
+
+### v1.4.6 (2026-09-04)
+
+**安全加固（阶段一 P0 全量落地）**
+
+- **新增 CSRF Token 校验**：API 此前仅强制 POST，跨站恶意页面仍可构造自动提交的 `<form method=POST>` 携带登录 cookie 触发卸载/关闭过滤等危险操作；现每个请求必须携带由会话派生的 token（`csrf_token`，视图渲染时注入 `common_head.htm`，`apiFetch`/`nmFetch` 自动附带），跨站页面无法获得 → 返回 403；无 token 的 curl 直接调用被拒绝
+- **在线更新 sha256 供应链校验**：CI 为 Release 生成 `.tar.gz.sha256` 校验资产，`update_apply` 下载后自动校验 sha256（GitHub 账号被入侵/镜像劫持注入恶意包时拦截并放弃更新）；旧版本 Release 无校验资产时 warn 跳过（向后兼容）
+- **镜像域名白名单**：`set_update_mirror` 与已保存镜像均须通过域名白名单校验（拒绝裸 IP/localhost/非白名单域名），防镜像前缀被注入指向攻击者服务器
+- **上传文件权限收紧**：上传的插件包/配置文件统一 `chmod 600`（其他本地用户不可读）
+- **卸载保留登录会话**：卸载不再删除 `/tmp/luci-sessions`（此前会踢掉所有登录用户导致看不到卸载结果页），仅清 LuCI 页面缓存
+- **XSS 补漏 3 处**：中国IP过滤状态单元格（上次更新时间/CIDR条数/WAN设备名）、备份列表文件名（并改数组下标传参杜绝 onclick 注入）、修复 `restoreBackup`/`deleteBackup` 的自由文本入 onclick
+- **multipart 上传加固**：50MB 大小上限（超限即丢弃，防 /tmp tmpfs OOM）；临时文件名加时间戳+随机数（防同秒并发上传互相覆盖）
+- **logger 控制字符过滤**：DNS 应用脚本写入 syslog 前剔除控制字符（防日志注入转义序列）
+
+**功能与逻辑修复**
+
+- **DNS 应用按钮 POST 化**：`dns_apply`/`dns_backup` 由独立 GET 路由并入 `api_handler` 的 POST action（此前浏览器刷新页面即重复执行应用/备份）；CBI「应用配置」按钮直接执行脚本并显示成功/失败结果（alert 消息，含退出码）
+- **DNS 应用脚本 WAN 接口自动探测**：不再硬编码 `network.wan`/`network.wan6`，按「用户显式配置（`wan_iface`/`wan6_iface`）→ 默认路由反查 → 兜底 wan/wan6」三级探测；`pppoe-wan` 等自定义接口名可正确写入
+- **PPPoE 双栈 fallback 去重**：IPv6 DNS 并入 `wan.dns` 前先 delete 全量重写（修复重复应用配置时 `add_list` 逐次累积导致 DNS 列表无限增长）
+- **`dhcp_option` list 化**：改为 `delete + add_list` 正确写法（UCI 中是 list 类型，旧 `uci set` 单值写法在多实例残留时行为未定义）
+- **静态 IPv6 分配页**：
+  - 重复 MAC 条目合并改为「页面只检测提示、点保存才真正合并」（此前每次打开页面 GET 刷新即静默 commit 修改 `/etc/config/dhcp`）
+  - DUID 自动捕获排除「MAC 原文型」与「01+MAC 硬件型」伪 DUID（此前会被误存为 DUID 导致绑定错乱）
+  - 在线设备 WAN 侧过滤覆盖 `pppoe-wan`/`pppoe-wan6` 等 PPPoE 接口命名（此前仅匹配 `wan` 前缀，PPPoE 拨号对端会被误列为 LAN 设备）
+  - `odhcpd` 改为按需重启（仅本次有实际改动才 restart，无改动保存不再重置 IPv6 租约）；CBI 页面注入页内导航（修复从自绘页面进入后页签消失）
+- **控制器健壮性**：`arg()` 空参数包装函数提取为模块级（原 4 处重复定义）；DNS 动作单次调用同时捕获输出与退出码（`__RC__` 标记法，脚本失败不再静默当成功）
+
+**工程化**
+
+- **CI 语法门禁**：打包前强制 `sh -n`（6 个 shell 脚本）+ `luac -p`（全部 Lua 文件）语法检查，失败即终止流水线；打包后 `tar tzf` 产物预检
+- **仓库补齐 LICENSE 文件**（README 早已声明 MIT）
 
 ### v1.4.5 (2026-09-04)
 
@@ -6193,6 +11692,8 @@ config actions 'actions'  # 操作按钮占位
 ## 许可证
 
 MIT License
+
+
 ````
 
 > 第 5 章结束。以下为第 6 章起的手写章节。
@@ -6201,23 +11702,17 @@ MIT License
 
 ## 第 6 章 更新维护记录
 
-### 6.1 提交历史（基线 90b2bf9，全 13 commit）
+### 6.1 提交历史
+
+> 本工作副本为浅克隆，仅保留最近提交；完整历史见 GitHub `District1655/luci-app-netmanager/commits/main`。
 
 | commit | 日期 | 版本 | 摘要 |
 |--------|------|------|------|
-| 743c1e8 | 2026-09-02 | v1.4.0 | 合并 fwmanager + dnssettings 为 netmanager |
-| fa21ed8 | 2026-09-03 | v1.4.1 | 在线更新功能（检查/安装/镜像加速） |
-| b9dfaa6 | 2026-09-04 | v1.4.2 | 端口转发内外端口映射 |
-| 05eff5b | 2026-09-04 | v1.4.3 | 静态 IPv6 模块：IPv6 在线识别+幽灵条目+冲突检测 |
-| 65ee03f | 2026-09-04 | — | settings footer 版本号补齐 v1.4.3（审查遗漏修复） |
-| fde25ca | 2026-09-04 | v1.4.4 | 紧急安全与逻辑修复包（15 处） |
-| aad4460 | 2026-09-04 | — | 补 v1.4.4 更新日志段落 |
-| dcfeecd | 2026-09-04 | — | CI Release body 自动提取 README 更新日志 |
-| d3bfcc4 | 2026-09-04 | v1.4.5 | DNS 应用脚本重写（空值断网防护） |
-| 686582f | 2026-09-04 | — | CI 修复：Release 提取 v 前缀不匹配 |
-| fc62f27 | 2026-09-04 | — | docs: 项目全景文档 PROJECT.md + 源码嵌入生成脚本 |
-| 90b2bf9 | 2026-09-04 | — | fix: ucode LuCI 两处线上问题（静态IPv6页崩溃 + CBI页缺页内导航） |
-| （后续） | — | — | 待提交：PROJECT.md 同步更新 + 生成脚本 24 文件化 |
+| `ac90559` | 2026-11-26 | — | ci: 发版自动构建 ipk/apk 并提 PR 到 iStore（PR #2，7 文件） |
+| `bf9d65c` | 2026-11-24 | v1.8.14 | 备份恢复覆盖整插件、恢复后重应用规则与 cron、tar 成员路径预检、修复 MANIFEST `./` 前缀读取 |
+| （更早） | 2026-11-19 → 09-02 | v1.4.0–v1.8.13 | fwmanager/dnssettings 合并、在线更新、静态 IPv6、安全修复包、中国 IPv4/IPv6 过滤、手动黑名单、IPv6 端口转发与跟踪 |
+
+**v1.4.6 之前的 13 个基线提交**（`90b2bf9` 时代记录，仅存档）：v1.4.0 合并、v1.4.1 在线更新、v1.4.2 端口映射、v1.4.3 静态 IPv6、v1.4.4 安全修复包（15 处）、v1.4.5 DNS 应用重写、CI Release body 提取、ucode 两处线上问题修复。
 
 ### 6.2 各版本要点
 
@@ -6266,42 +11761,70 @@ MIT License
 - 空值断网核心防护（peerdns=0 且 DNS 全空 → 拒写保持现状，四场景全覆盖）
 - 应用前自动备份（保留 5 份）；list 字段正确写法（delete+add_list）；关闭时清除残留；无效 dns6 字段并入 dns list；network restart→reload；输出可观测（WARN 回传页面）
 
-### 6.3 发版流程（标准操作）
+**v1.8.14 上架验证（2026-11-26，真机 iStoreOS 25.12.6 / x86_64）**
+
+- 真机是 apk 体系（apk-tools 3.0.5，无 opkg），ipk 完全装不上 → 用官方 `openwrt-sdk-mini-25.12.2` 的 `apk mkpkg` 打出 `luci-app-netmanager-1.8.14-r1.apk`（108,363 字节）
+- 安装：`apk add --allow-untrusted --force-overwrite` 依赖全满足；post-install 清 LuCI 缓存、启用并启动 `netmanager-china`、reload uhttpd，`inet netmanager`/`netmanager6`/`netmanager_ban` 三张表重建；控制器与 CBI 模型 `loadfile` 全通过
+- 卸载：`apk del` 文件全删、pre-deinstall 清三张表、`/etc/config/netmanager` 与 `dnssettings` 原样保留（uci 条目数未变）、无 `.apk-new` 残留
+- 上游 PR：`istoreos/istore-repo#852`（base `pending`，ipk+apk 双包）、`istoreos/openwrt-app-meta#743`（base `main`，Makefile+logo），两者 `PR Validate` 均 pass
+- 自动化：`publish-istore.yml` 已用 `dry_run=true` 冒烟通过（版本校验、ipk 构建、apk 构建、Secret 探测全绿，提 PR 步骤按预期跳过）
+
+### 6.3 发版流程（标准操作，全程自动化）
 
 ```
-1. 修复/开发完成，工作区干净
-2. 升 13 处版本号（位置见 6.4）
-3. README 更新日志段新增对应小节（CI 从此提取 Release body）
-4. git add -A && git commit -m "fix: v1.4.6 xxx"
-5. git push（SSH）
-6. CI（build.yml）：从 README 头部 > 版本：vX.Y.Z 提取 tag → 打 tag →
-   打包 luci-app-netmanager-install_<ver>.tar.gz → 创建 Release（body 自动提取）
-7. 路由器设置页 update_check 验证升级链路
+1. 改版本：files/usr/sbin/netmanager L15 PLUGIN_VERSION（权威源）+ README.md L3 `> 版本：vX.Y.Z`（CI 提取源）
+   —— 两处必须一致，publish-istore.yml 第 4 步会校验，不一致直接失败
+2. README「更新日志」顶部新增 `### vX.Y.Z (日期)` 小节（Release body 来源，漏写 body 为空）
+3. git add -A && git commit -m "vX.Y.Z: xxx" && git push origin main
+4. build.yml：从 README 提 tag → sh -n / luac -p 门禁 → 打 tar.gz → 打 tag → 发 Release
+   （tag 已存在则整条跳过；需要重发同版本时手动 workflow_dispatch 勾 force）
+5. publish-istore.yml（release[published] 自动触发）：
+   校验版本一致 → build_ipk.py → build_apk.sh → ls dist → gh release upload --clobber
+   → 探测 ISTORE_TOKEN → publish_istore.sh（两个官方仓库各开一个 PR）
+6. 官方合并 pending 后：上游 ci-pending.yml cherry-pick 到 main、删同名旧包、ci.yml 刷索引
+7. 验证：GitHub Release 资产（含 ipk/apk）、两个 PR 的 PR Validate、软件中心能否搜到
 ```
 
-### 6.4 版本号登记处（13 处，发版必改）
+**一次性配置（已就位）**
+
+| 项 | 值/位置 |
+|----|---------|
+| Secret | 仓库 `Settings → Secrets and variables → Actions → ISTORE_TOKEN`（classic PAT，勾 `repo`；不需要 `workflow`，发布只推分支/开 PR，不改 `.github/`） |
+| 未配 Secret 时 | 流水线照常构建并挂 Release，只跳过提 PR，日志有 `::notice::` 提示 |
+| 干跑 | `gh workflow run publish-istore.yml -f version=1.8.14 -f release=1 -f dry_run=true` |
+| 同版本重发 | 换 release 号：`-f release=2` → 文件名变 `-r2`，PR 分支名同步变化 |
+| 分支命名 | `auto/luci-app-netmanager-<ver>-r<rel>`、`auto/app-meta-luci-app-netmanager-<ver>`；同 head 已有 open PR 则跳过（幂等） |
+
+> 注意：官方 PR 未合并前不要急着升版本发 Release，否则会多开一个「新增新版本包」的重复 PR。等 `istoreos/istore-repo#852` / `istoreos/openwrt-app-meta#743` 落地后再走日常节奏。
+
+### 6.4 版本号登记处（12 处，发版必改）
 
 | # | 文件 | 位置 |
 |---|------|------|
-| 1 | files/usr/sbin/netmanager | L15 PLUGIN_VERSION（唯一权威源） |
-| 2 | install.sh | L3 注释 |
-| 3 | install.sh | L8 VERSION 变量 |
-| 4-9 | 6 个视图 footer | overview/port_forward/firewall_rules/ssh_log/access_log/settings 各页脚 |
-| 10 | settings.htm | L101 |
-| 11 | settings.htm | L202 |
-| 12 | common_head.htm | L75 附近注释 |
-| 13 | README.md | L3 `> 版本：vX.Y.Z`（CI 提取源） |
+| 1 | files/usr/sbin/netmanager | L15 `PLUGIN_VERSION`（唯一权威源） |
+| 2 | install.sh | L3 头注释 |
+| 3 | install.sh | L8 横幅 |
+| 4 | view/netmanager/overview.htm | L73 footer |
+| 5 | view/netmanager/port_forward.htm | L94 footer |
+| 6 | view/netmanager/firewall_rules.htm | L119 footer |
+| 7 | view/netmanager/ssh_log.htm | L47 footer |
+| 8 | view/netmanager/access_log.htm | L55 footer |
+| 9 | view/netmanager/settings.htm | L186 `online_cur_version` |
+| 10 | view/netmanager/settings.htm | L305 `plugin_version` |
+| 11 | view/netmanager/settings.htm | L338 footer |
+| 12 | README.md | L3 `> 版本：vX.Y.Z`（build.yml 提取 tag 的源；publish-istore 也会校验与 PLUGIN_VERSION 一致） |
 
-**不要动的版本号**（有意保留的历史记录）：
+**不要动的版本号**（有意保留的历史记录，注释里的 `v1.8.x` 是变更标记）：
 
-- files/usr/sbin/dns_staticv6.lua L1 头注释版本
-- .github/workflows/extract_changelog.awk 注释中的版本
+- 各文件里形如 `v1.8.10：`、`v1.8.12：` 的注释
+- `.github/workflows/extract_changelog.awk` 注释中的版本
 
 ### 6.5 维护节奏约定
 
 - 修复轮发版：收集一轮问题 → 批量修复 → 一次 commit + tag（如 v1.4.4 15 处一包）
 - 更新日志：每个版本必须写 README 小节（漏写会导致 Release body 为空，v1.4.4 曾发生，aad4460 补救）
-- 发版后验证：GitHub Release 页面 + 路由器在线更新两处检查
+- 发版后验证三处：GitHub Release 资产（tar.gz + ipk + apk）、`publish-istore.yml` 跑出的两个 PR 的 `PR Validate`、路由器在线更新链路
+- 上架节奏：官方 PR 在审期间只做修复不加版本；官方合并后每版等上游 pending→main 同步（通常几分钟）再发下一个版本
 
 ---
 
@@ -6453,74 +11976,131 @@ MIT License
 ### 8.6 与 iStoreOS/OpenWrt 兼容性
 
 - 适配 fw4/nftables（OpenWrt 22.03+）；旧 iptables 不支持（fw3 时代不可用）
+- **包管理器分水岭**：iStoreOS 25.12 / OpenWrt 25.x 起是 apk-tools（无 opkg）→ 出 `.apk`；iStoreOS 24.10 及更早、OpenWrt 23.05–24.10 是 opkg → 出 `.ipk`。两者不可互换，别拿 ipk 去 25.12 上试
+- 包内 `Depends` 统一声明：`libc luci-base luci-compat nftables-json curl ca-bundle jsonfilter`；25.12 真机实测全满足
 - BusyBox ash 兼容：脚本无 bashism，wget/uclient-fetch/curl 三工具兜底下载
 - jsonfilter 依赖（update_check API 解析），系统默认自带
-- LuCI Lua 版（23.05 Lua controller 架构）；OpenWrt 主分支 JS 化迁移评估在 v1.5+ 路线
+- LuCI Lua 版（23.05 Lua controller + luci-compat）；OpenWrt 主分支 JS 化迁移评估在 v1.5+ 路线
+- 配置保护：apk 升级会把改过的 `/etc/config/*` 落成 `.apk-new`，属正常行为；重装/卸载不会删 UCI 配置
 
 ---
 
 ## 第 9 章 快速索引（行号定位表）
 
-> 行号基于 v1.4.5 + 线上修复基线（commit 90b2bf9）。大改动后需同步更新本表。
+> 行号由 `docs/gen_source_part.py` 从当前源码自动抓取（v1.8.14 / main），改动后重跑本脚本即可刷新。
 
-### 9.1 后端 netmanager（2197 行）
+### 9.1 后端 netmanager（4226 行）—— 命令入口
 
-| 功能区 | 行号 |
-|--------|------|
-| PLUGIN_VERSION / 头部配置 | L1-36 |
-| proto_match / tar_list_check | L37-86 |
-| load_config / overview | L87-362 |
-| port_list / port_add/edit/del | L363-772 |
-| rule_list / rule_add/edit/del | L573-772 |
-| ssh_log | L773-829 |
-| access_log | L831-1001 |
-| restart / reload / backup 系 | L1003-1080 |
-| upload_file / plugin_update / plugin_version / cleanup_uploads | L1082-1323 |
-| update_check / update_apply / set_update_mirror | L1325-1573 |
-| log_set / log_get / log_clear | L1575-1612 |
-| settings / version | L1575-1612 |
-| china 全系（get_wan_devs / create_set / load_set / apply_rules / clear / download / cron / status / set_url / set_cron / enable / disable / update / boot） | L1614-2052 |
-| cmd_uninstall | L2059-2143 |
-| usage / 主入口 case | L2145-2197 |
+| 行 | 命令 | 行 | 命令 |
+|----|------|----|------|
+| L129 | `cmd_overview` | L266 | `cmd_port_list` |
+| L553 | `cmd_port_add` | L691 | `cmd_port_edit` |
+| L819 | `cmd_port_del` | L1040 | `cmd_port_track_v6` |
+| L1092 | `cmd_port_sync_v6` | L1229 | `cmd_v6gw` |
+| L1347 | `cmd_rule_list` | L1383 | `cmd_rule_add` |
+| L1421 | `cmd_rule_edit` | L1451 | `cmd_rule_toggle` |
+| L1469 | `cmd_rule_del` | L1486 | `cmd_ssh_log` |
+| L1543 | `cmd_access_log` | L1674 | `cmd_block_detail` |
+| L1725 | `cmd_static_bind` | L1791 | `cmd_static_unbind` |
+| L1823 | `cmd_restart` | L1828 | `cmd_reload` |
+| L1833 | `cmd_backup` | L1900 | `cmd_backup_list` |
+| L1941 | `cmd_backup_restore` | L2047 | `cmd_backup_delete` |
+| L2074 | `cmd_backup_import` | L2111 | `cmd_backup_prune` |
+| L2134 | `cmd_upload_file` | L2197 | `cmd_plugin_update` |
+| L2326 | `cmd_plugin_version` | L2384 | `cmd_cleanup_uploads` |
+| L2436 | `cmd_update_check` | L2512 | `cmd_update_apply` |
+| L2623 | `cmd_set_update_mirror` | L2645 | `cmd_set_default_target` |
+| L2655 | `cmd_log_set` | L2674 | `cmd_log_get` |
+| L2694 | `cmd_log_clear` | L2709 | `cmd_log_query` |
+| L2778 | `cmd_log_export` | L2796 | `cmd_settings` |
+| L2818 | `cmd_version` | L3191 | `cmd_china_status` |
+| L3219 | `cmd_china_set_url` | L3233 | `cmd_china_set_cron` |
+| L3248 | `cmd_china_enable` | L3267 | `cmd_china_disable` |
+| L3277 | `cmd_china_update` | L3303 | `cmd_china_boot` |
+| L3333 | `cmd_china_filter` | L3652 | `cmd_china6_status` |
+| L3680 | `cmd_china6_set_url` | L3694 | `cmd_china6_set_cron` |
+| L3709 | `cmd_china6_enable` | L3728 | `cmd_china6_disable` |
+| L3738 | `cmd_china6_update` | L3752 | `cmd_china6_boot` |
+| L3760 | `cmd_china6_filter` | L3946 | `cmd_ban_list` |
+| L3970 | `cmd_ban_add` | L4004 | `cmd_ban_del` |
+| L4024 | `cmd_ban_clear` | L4037 | `cmd_blacklist` |
+| L4056 | `cmd_uninstall` | | |
 
-### 9.2 controller/netmanager.lua（353 行）
+### 9.2 controller/netmanager.lua（537 行）
 
-| 功能区 | 行号 |
-|--------|------|
-| entry() 菜单/路由注册 | L1-35 |
-| action_dns_apply / action_dns_backup | L29-53 |
-| shell_escape | L56-64 |
-| setup_upload_handler（multipart 解析） | L82-110 |
-| api_handler（强制 POST L115） | L112-365 |
-| arg() 4 处重复定义 | L139/L164/L183/L202 |
-| upload_file 分支（.b64_<秒>） | L284-303 |
+| 行 | 函数/职责 |
+|----|-----------|
+| L7 | `index()` |
+| L31 | `dns_legacy_redirect()` |
+| L43 | `csrf_token()` |
+| L48 | `csrf_check()` |
+| L58 | `shell_escape()` |
+| L69 | `form_str()` |
+| L79 | `arg()` |
+| L93 | `setup_upload_handler()` |
+| L154 | `api_handler()` |
 
-### 9.3 视图 settings.htm（620 行）
+### 9.3 视图 settings.htm（1107 行）—— 前端函数
 
-| 功能区 | 行号 |
-|--------|------|
-| footer 版本号 | L101/L202 |
-| API_URL + loadSettings | L236-260 |
-| listBackups（b[0] 直拼待修） | L396-435 |
-| restoreBackup / deleteBackup | L443-467 |
-| loadChinaStatus（未转义待修） | L512-555 |
-| saveChinaUrl / saveChinaCron | L564-586 |
-| enable/disable/updateChinaFilter | L595-622 |
-| uninstallPlugin | L624-655 |
+| 行 | 函数 |
+|----|------|
+| L343 | `loadSettings()` |
+| L362 | `checkUpdate()` |
+| L402 | `applyUpdate()` |
+| L421 | `saveUpdateMirror()` |
+| L430 | `saveLogSetting()` |
+| L439 | `loadRunLog()` |
+| L517 | `clearRunLog()` |
+| L527 | `exportLog()` |
+| L565 | `saveDefaultTarget()` |
+| L575 | `runAction()` |
+| L584 | `doBackup()` |
+| L593 | `listBackups()` |
+| L647 | `importBackup()` |
+| L674 | `pruneBackups()` |
+| L688 | `formatSize()` |
+| L694 | `restoreBackup()` |
+| L710 | `deleteBackup()` |
+| L726 | `uploadPlugin()` |
+| L768 | `loadChinaStatus()` |
+| L814 | `onCronPresetChangeFor()` |
+| L821 | `onCronPresetChange()` |
+| L825 | `saveChinaUrl()` |
+| L835 | `saveChinaCron()` |
+| L849 | `setChinaBtns()` |
+| L856 | `enableChinaFilter()` |
+| L866 | `disableChinaFilter()` |
+| L876 | `updateChinaFilter()` |
+| L886 | `loadChina()` |
+| L929 | `saveChina()` |
+| L939 | `saveChina()` |
+| L953 | `setChina()` |
+| L960 | `enableChina()` |
+| L970 | `disableChina()` |
+| L980 | `updateChina()` |
+| L992 | `renderBanList()` |
+| L1007 | `loadBlacklist()` |
+| L1036 | `addBlacklistEntry()` |
+| L1047 | `deleteBlacklistEntry()` |
+| L1059 | `clearBlacklist()` |
+| L1069 | `uninstallPlugin()` |
 
-### 9.4 其余文件关键行号
+### 9.4 其余文件快速定位
 
-| 文件 | 功能区:行号 |
-|------|------------|
-| dnssettings-apply.sh | 空值防护: 全文贯穿；dhcp_option 待修: L145；WAN 硬编码待修: L68/L97；PPPoE fallback 待去重: L120-132 |
-| dns_staticv6.lua | get_online_devices: L32-166（v1.4.6 已修 get_first→first_opt: L45-54）；merge_duplicate_hosts: L171-216；页面加载即执行待修: L221；cbi_nav 注入: L290；on_before_commit: L293；on_after_commit: L308；DUID 校验: L469-481 |
-| cbi_nav.htm | CBI 专用导航（v1.4.6 新增）：L9-12 requestpath nil 防护；L13-18 内联样式 |
-| dns_settings.lua | cbi_nav 注入: L14-16；按钮 redirect: L111-124 |
-| port_forward.htm | delPort onclick 待修: L104/L110；editPort 已修: L143-157 |
-| common_head.htm | escapeHtml/apiFetch/withBusy: L74-155 |
-| install.sh | 符号链接 /bin/netmanager: L32；版本: L3/L8 |
-| build.yml | tag 提取 README 头部: 全局；产物命名: 全局 |
-| README.md | 版本行: L3；更新日志: L227-302 |
+| 文件 | 定位方式 |
+|------|----------|
+| dnssettings-apply.sh | 抓 `WARN`/`detect_wan_iface`/`ADDED_DNS` 三个关键字 |
+| dns_staticv6.lua | 抓 `get_online_devices` / `merge_duplicate_hosts` / `first_opt` / `on_before_commit` |
+| dns_settings.lua | 抓 `cbi_nav`（注入导航）与 `dns_apply`/`dns_backup` |
+| common_head.htm | 抓 `escapeHtml` / `nmFetch` / `withBusy` |
+| install.sh | 版本号 L3/L8；符号链接 `/bin/netmanager` |
+| build.yml | 版本提取、tag 判重、tar.gz 打包、Release 四段 |
+| publish-istore.yml | 版本校验 → 构建 ipk → 构建 apk → Release 上传 → token 探测 → 提 PR 六段 |
+| tools/build_apk.sh | 抓 `apk mkpkg`（字段与 depends 写法是坑点） |
+| tools/publish_istore.sh | 抓 `base_tree` / `pulls`（PR 幂等与干跑逻辑） |
+
+---
+
 
 ---
 
@@ -6530,17 +12110,20 @@ MIT License
 |----|----|
 | 仓库 | District1655/luci-app-netmanager |
 | 分支 | main |
-| 基线 commit | 90b2bf9（代码）/ 本文档随后提交 |
-| 版本 | v1.4.5 + 线上修复（2026-09-04） |
-| 受控文件 | 24 个 |
-| 代码量 | 约 6,000 行（含文档） |
-| CI | GitHub Actions（tag 触发打包+Release） |
+| 基线 commit | `ac90559`（v1.8.14 + iStore 发版 CI） |
+| 版本 | v1.8.14（2026-11-24） |
+| 受控文件 | 36 个（第 5 章收录 33 个文本文件） |
+| 代码量 | 约 12,000 行（含本文档） |
+| 交付 | apk（25.12+）/ ipk（opkg）/ tar.gz 脚本 / iStore 软件中心 |
+| CI | `build.yml`（Release）+ `publish-istore.yml`（ipk/apk + 自动提 PR） |
 | 推送方式 | SSH |
-| 文档生成 | 本文档由脚本自动嵌入源码 + 手写章节（生成时间见头部） |
+| 文档生成 | 第 5 章、第 9 章由 `python3 docs/gen_source_part.py` 自动生成；其余章节手写 |
 
 ## 附录 B：文档维护约定
 
-1. **发版时**：第 6 章新增版本小节 + 6.1 表格加行 + 6.4 版本号登记表核对
-2. **大改动时**：第 9 章行号表同步更新；涉及源码全录需重新嵌入时，运行生成脚本 `docs/gen_source_part.sh`（详见脚本头部注释）
-3. **修复待办时**：第 7 章清单状态更新（修完移到第 6 章对应版本小节）
-4. **本文档随仓库维护**：作为项目单一查阅入口提交至仓库。源码全录（第 5 章）与源码文件天然冗余，但冗余是**有意的**——保证查阅者无需跳转即可在一处看到全部源码 + 维护要点；发版前如源码有改动，请重新嵌入以保持第 5 章与 HEAD 一致
+1. **发版时**：第 6 章新增版本小节（更新日志另需写 README）+ 6.4 版本号登记表核对 + 头部基线块更新
+2. **源码改动后**：跑 `python3 docs/gen_source_part.py` 重生成第 5 章与第 9 章（行号表是自动抓取的，不用手改）
+3. **流水线改动后**：同步 `README.md`「构建与发版」、`docs/istore-publish.md`、3.7、6.3 四处
+4. **新增受控文件**：`docs/gen_source_part.py` 的 `FILES` 列表加一条 + 2.1 目录树补一行（行数写实际值）
+5. **修复待办时**：第 7 章清单状态更新（修完移到第 6 章对应版本小节）
+6. **本文档随仓库维护**：作为项目单一查阅入口提交至仓库。源码全录（第 5 章）与源码文件天然冗余，但冗余是**有意的**——保证查阅者无需跳转即可在一处看到全部源码 + 维护要点；发版前务必重跑生成器，保持第 5 章与 HEAD 一致

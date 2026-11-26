@@ -2,11 +2,23 @@
 
 > 版本：v1.8.14
 >
-> 适配：iStoreOS / OpenWrt (fw4/nftables, Lua LuCI)
+> 适配：iStoreOS 25.12+（apk）/ iStoreOS 24.10 及 OpenWrt 23.05+（opkg / ipk），fw4 + nftables，Lua LuCI
+>
+> 交付：**apk / ipk 双格式** + iStoreOS 软件中心上架 + `tar.gz` 一键脚本兜底
 >
 > 由 **luci-app-fwmanager**（防火墙管理）与 **luci-app-dnssettings**（上网设置）合并而成的网络管理一体化 LuCI 插件。
 
 一站式管理路由器网络：端口转发、防火墙规则、SSH/访问日志、中国 IPv4/IPv6 访问限制、手动黑名单、WAN/LAN 口上网方式与双栈 DNS 统一管理、静态 IP 分配（IPv4/IPv6）、配置备份恢复、插件在线更新、一键卸载。
+
+## 安装方式速览
+
+| 系统 | 包格式 | 安装方式 |
+|------|--------|----------|
+| iStoreOS 25.12+（apk-tools，无 opkg） | `.apk` | 软件中心搜「网络管理」安装，或 `apk add --allow-untrusted luci-app-netmanager-<ver>-r<rel>.apk` |
+| iStoreOS 24.10 / OpenWrt 23.05–24.10（opkg） | `.ipk` | `opkg install luci-app-netmanager_<ver>-r<rel>_all.ipk` |
+| 任意（含未适配架构 / 开发机） | `.tar.gz` | 解压后 `sh install.sh` 脚本安装 |
+
+三种方式装完效果一致（菜单「网络管理」，入口 `/cgi-bin/luci/admin/netmanager`）。包均随 Release 发布，文件名带版本与 release 号。
 
 ---
 
@@ -62,11 +74,11 @@ luci-app-netmanager/
 │   │   │   └── dns_staticv6.lua              # 静态 IP 分配 CBI 模型（绑定 dhcp.host）
 │   │   └── view/netmanager/
 │   │       ├── overview.htm                  # 系统概览
-│   │       ├── port_forward.htm              # 端口转发
+│   │       ├── port_forward.htm              # 端口转发（含「IPv6 端口放行」区）
 │   │       ├── firewall_rules.htm            # 规则管理
 │   │       ├── ssh_log.htm                   # SSH 日志
 │   │       ├── access_log.htm                # 访问日志
-│   │       ├── settings.htm                  # 设置（备份/更新/运行日志/中国IPv4过滤/卸载）
+│   │       ├── settings.htm                  # 设置（备份/更新/运行日志/中国IPv4/6过滤/卸载）
 │   │       ├── common_head.htm               # 公共样式
 │   │       ├── cbi_nav.htm                   # CBI 页面公共导航
 │   │       └── nav.htm                       # 公共导航（含上网设置、静态IP分配入口）
@@ -74,10 +86,24 @@ luci-app-netmanager/
 │   │   ├── netmanager                        # 防火墙模块配置
 │   │   └── dnssettings                       # 上网设置模块配置（独立保留）
 │   ├── etc/init.d/netmanager-china           # 中国IPv4/IPv6过滤 + 黑名单 开机自启
-│   ├── etc/hotplug.d/iface/95-netmanager-china # WAN上线重应用过滤/黑名单规则
+│   ├── etc/hotplug.d/iface/95-netmanager-china  # WAN上线重应用过滤/黑名单规则
 │   └── etc/hotplug.d/iface/96-netmanager-v6sync # WAN上线同步 IPv6 转发目标跟踪
-├── .github/workflows/build.yml               # GitHub Actions 自动打包
+├── tools/
+│   ├── build_ipk.py                          # 打 ipk（opkg 系统，tar.gz 外壳，CI/本地通用）
+│   ├── build_apk.sh                          # 打 apk（iStoreOS 25.12+，用 openwrt-sdk-mini 的 apk mkpkg）
+│   └── publish_istore.sh                     # 向 istoreos/istore-repo、istoreos/openwrt-app-meta 提 PR
+├── istore/app-meta/
+│   ├── Makefile                              # 软件中心卡片元数据模板（PKG_VERSION/PKG_RELEASE 由脚本注入）
+│   └── logo.png                              # 软件中心图标（256×256，<50KB）
+├── .github/workflows/
+│   ├── build.yml                             # 打 tag + 发 Release（tar.gz + changelog 提取）
+│   ├── publish-istore.yml                    # Release 后自动构建 ipk/apk + 提 PR 到 iStore 官方仓库
+│   └── extract_changelog.awk                 # Release body 提取脚本
+├── docs/
+│   ├── istore-publish.md                     # iStore 上架/自动发版配置说明（一次性 Secret + 日常流程）
+│   └── gen_source_part.py                    # 生成 PROJECT.md 第 5 章源码全录 + 第 9 章行号索引
 ├── install.sh                                # 一键安装脚本（支持 SKIP_UHTTPD_RESTART）
+├── PROJECT.md                                # 维护者文档（架构/源码全录/发版流程）
 └── README.md
 ```
 
@@ -85,26 +111,87 @@ luci-app-netmanager/
 
 ## 安装方法
 
-### 一键脚本安装（推荐）
+> 早期说法「iStoreOS 的 `/usr/bin` 只读所以装不了 ipk」已作废。实测真因是 **iStoreOS 25.12 起换成 apk-tools（系统里没有 opkg）**：25.12+ 只能装 apk，24.10 及更早装 ipk。两种包都由 CI 自动产出。
 
-iStoreOS 的 `/usr/bin/` 是只读 squashfs 分区，标准 IPK 包无法正常安装，本插件采用 `tar.gz + install.sh` 脚本方式安装。
+### 方式一：iStore 软件中心（iStoreOS 25.12+）
 
-1. 下载 `luci-app-netmanager-install_*.tar.gz`，上传到路由器 `/tmp` 目录
-2. SSH 登录路由器，执行：
+本插件已按 iStore 收录规范打包（纯 `all` 架构，落 `nas_luci` feed），并向上游提交了收录 PR（`istoreos/istore-repo`、`istoreos/openwrt-app-meta`）。官方合并后即可在 **iStore → 软件中心** 搜索「网络管理 / netmanager」一键安装，卡片图标与简介来自 `istore/app-meta/`。
+
+在官方合并前，等价做法是手动安装 apk（见方式二）。
+
+### 方式二：命令行安装包（推荐，可控版本）
+
+在 [Releases](https://github.com/District1655/luci-app-netmanager/releases) 下载对应包，上传到路由器后执行：
+
+```bash
+# iStoreOS 25.12+ / OpenWrt 25.x（apk）
+apk add --allow-untrusted luci-app-netmanager-<版本>-r<rel>.apk
+
+# iStoreOS 24.10 / OpenWrt 23.05–24.10（opkg）
+opkg install luci-app-netmanager_<版本>-r<rel>_all.ipk
+
+# 卸载（配置会保留，加 --purge / --force-remove 才会连配置一起删）
+apk del luci-app-netmanager
+opkg remove luci-app-netmanager
+```
+
+安装/卸载的钩子已内置：装完自动清 LuCI 缓存、启用并启动 `netmanager-china`、reload uhttpd 重建 nft 规则；卸载时清掉 `inet netmanager` / `netmanager6` / `netmanager_ban` 三张表，`/etc/config/netmanager` 与 `/etc/config/dnssettings` 默认保留（升级时系统会生成 `.apk-new`，属 OpenWrt 配置保护行为，确认后可覆盖）。
+
+### 方式三：一键脚本（未适配架构 / 开发态兜底）
 
 ```bash
 cd /tmp
-tar xzvf luci-app-netmanager-install_*.tar.gz
+tar xzvf luci-app-netmanager-install_v<版本>.tar.gz
 chmod +x install.sh
 sh install.sh
 ```
 
-3. 安装完成后，左侧菜单出现「网络管理」
-4. 浏览器按 `Ctrl+Shift+R` 强制刷新页面
+适用于任意 OpenWrt 衍生系统（含 CI 未覆盖的架构），装完左侧菜单出现「网络管理」，浏览器 `Ctrl+Shift+R` 强制刷新。
 
 ### 在线更新
 
-在「设置」页面的「插件更新」区域，上传新的 tar.gz 包进行在线更新（安装成功后延迟 3 秒自动重启 LuCI）。
+「设置」页面的「插件更新 / 在线更新」区块可直接检查并安装最新 Release（`update_check` / `update_apply`，支持镜像加速前缀）；也可上传新的 `tar.gz` 包离线更新，安装成功后延迟 3 秒自动重启 LuCI。
+
+---
+
+## 构建与发版
+
+### 本地出包
+
+```bash
+# ipk（tar.gz 外壳，iStore CI 只认这种；ar 格式会被判 invalid）
+python3 tools/build_ipk.py --version 1.8.14 --release 1 --files files --out dist
+
+# apk（需要 apk-tools；脚本会自己下 openwrt-sdk-mini 取 mkpkg）
+VERSION=1.8.14 RELEASE=1 FILES=files OUT=dist bash tools/build_apk.sh
+```
+
+两个脚本固定 mtime、目录 755 / 文件 644、脚本可执行位，产物可直接进 iStore 官方仓库目录结构（`bin/packages/all/nas_luci/`、`bin/apks/all/nas_luci/`）。
+
+### 发版（push main 一条链路到底）
+
+1. 改两处版本号：`files/usr/sbin/netmanager` 的 `PLUGIN_VERSION`（权威源，L15）与 `README.md` 头部 `> 版本：vX.Y.Z`
+2. 在「更新日志」顶部新增 `### vX.Y.Z (日期)` 小节（Release body 从这里提取）
+3. `git push origin main`
+4. `build.yml`：校验两处版本一致 → `sh -n` / `luac -p` 门禁 → 打 `tar.gz` → 打 tag → 发 Release（tag 已存在则整条跳过，可手动 `workflow_dispatch` 勾 `force`）
+5. `publish-istore.yml`（Release published 事件触发）：构建 `ipk` + `apk` → 上传为 Release 资产 → 自动向 `istoreos/istore-repo`（base `pending`）与 `istoreos/openwrt-app-meta`（base `main`）提 PR
+6. 官方合并 `pending` 后，上游 `ci-pending.yml` 会把包 cherry-pick 到 main、删同名旧包、刷新索引，软件中心即更新
+
+### 一次性配置（已配好）
+
+仓库 `Settings → Secrets and variables → Actions` 里的 `ISTORE_TOKEN` 是一个 classic PAT（`repo` scope），用于把分支和 PR 推到两个 fork。**不配也能跑**：此时只构建并挂 Release 资产，跳过自动提 PR（日志里会有 notice 提示）。
+
+手工重跑 / 干跑：
+
+```bash
+# 只验证构建，不提 PR（会上传 Release 资产，--clobber）
+gh workflow run publish-istore.yml -f version=1.8.14 -f release=1 -f dry_run=true
+
+# 同版本重发，换个 release 号即可（1.8.14-r2）
+gh workflow run publish-istore.yml -f version=1.8.14 -f release=2
+```
+
+细节与常见问题见 [`docs/istore-publish.md`](docs/istore-publish.md)。
 
 ---
 
@@ -288,11 +375,15 @@ IPv4（每行一个 CIDR）：
 
 1. DNS「应用配置」会重启网络服务，期间会短暂断网
 2. 设备端 DNS 有缓存，重连网络后才会拿到新 DNS
- 3. v1.4.6+ WAN 接口自动探测（默认路由反查），自定义接口名可在 `dnssettings` 配置 `wan_iface`/`wan6_iface` 显式指定
+3. v1.4.6+ WAN 接口自动探测（默认路由反查），自定义接口名可在 `dnssettings` 配置 `wan_iface`/`wan6_iface` 显式指定
 4. DNS 备份文件保存在 `/root/backup/`，防火墙配置备份保存在 `/root/`
-5. 更新前建议先备份配置；只支持 `.tar.gz` 或 `.tgz` 格式
+5. 插件在线更新只接受 `.tar.gz` / `.tgz` 安装包（`.ipk`/`.apk` 请走软件中心或 apk/opkg 命令）
+6. apk 体系升级时，`/etc/config/netmanager`、`/etc/config/dnssettings` 可能落地成 `*.apk-new`（配置保护），确认新版本无误后再覆盖
+7. 卸载默认保留两份 UCI 配置；要彻底清干净用 `netmanager uninstall`（full）
 
 ## 更新日志
+
+> **2026-11-26 工程更新（版本号不变，交付形态与 CI 变更）**：新增 ipk/apk 双格式打包（`tools/`）、iStore 软件中心上架元数据（`istore/app-meta/`）、Release 后自动构建并提 PR 到 `istoreos/istore-repo` 与 `istoreos/openwrt-app-meta` 的流水线（`.github/workflows/publish-istore.yml`）；README 安装章节按 apk/opkg 双体系重写。
 
 ### v1.8.14 (2026-11-24)
 - **备份/恢复覆盖整个插件**：备份包在原有 5 个 UCI 配置（firewall/network/dhcp/dnssettings/netmanager，含 v6track 跟踪锚点）之外，新增 `/etc/netmanager/` 状态文件——手动黑名单 `blacklist_v4/v6.list` 与中国 IPv4/IPv6 白名单 `china_v4/v6.list`（tar 内 `state/` 子目录，MANIFEST 增加 `STATE_COUNT`/`STATE_FILES`）。跨机恢复或离线恢复后白名单/黑名单无需重新下载订阅即可生效。
