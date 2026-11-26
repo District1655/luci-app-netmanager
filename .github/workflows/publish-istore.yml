@@ -1,0 +1,107 @@
+name: Publish to iStore
+
+# 触发：GitHub Release 发布后自动跑；也可手动指定版本
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号，如 1.8.15（不带 v）'
+        required: true
+      release:
+        description: '包修订号（同版本重发时递增）'
+        required: false
+        default: '1'
+      dry_run:
+        description: '只构建、不提 PR'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      ISTORE_TOKEN: ${{ secrets.ISTORE_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 计算版本号
+        id: ver
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            V="${{ inputs.version }}"
+          else
+            V="${GITHUB_REF_NAME#v}"
+          fi
+          R="${{ inputs.release }}"; [ -n "$R" ] || R=1
+          echo "version=$V" >> $GITHUB_OUTPUT
+          echo "release=$R" >> $GITHUB_OUTPUT
+          echo "版本: $V  修订: $R"
+
+      - name: 校验 PLUGIN_VERSION 与发布版本一致
+        run: |
+          PV=$(grep -m1 '^PLUGIN_VERSION=' files/usr/sbin/netmanager | cut -d'"' -f2)
+          echo "PLUGIN_VERSION=$PV  发布版本=${{ steps.ver.outputs.version }}"
+          if [ "$PV" != "${{ steps.ver.outputs.version }}" ]; then
+            echo "::error::files/usr/sbin/netmanager 里的 PLUGIN_VERSION=$PV 与发布版本不一致，请先改一致再发版"
+            exit 1
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: 构建 ipk（opkg / 24.10 及更早）
+        run: |
+          python3 tools/build_ipk.py \
+            --version "${{ steps.ver.outputs.version }}" \
+            --release "${{ steps.ver.outputs.release }}" \
+            --files files --out dist
+
+      - name: 构建 apk（25.12）
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}" \
+          RELEASE="${{ steps.ver.outputs.release }}" \
+          OUT=dist bash tools/build_apk.sh
+
+      - name: 产物清单
+        run: ls -lh dist
+
+      - name: 追加到 Release 资产
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.event.release.tag_name }}" dist/* --clobber
+
+      - name: 检查是否配置了 ISTORE_TOKEN
+        id: token
+        env:
+          TOKEN: ${{ secrets.ISTORE_TOKEN }}
+        run: |
+          if [ -n "$TOKEN" ]; then
+            echo "ok=1" >> $GITHUB_OUTPUT
+          else
+            echo "ok=0" >> $GITHUB_OUTPUT
+            echo "::notice::未配置 ISTORE_TOKEN，将跳过自动提 PR"
+          fi
+
+      - name: 提交 PR 到 iStore（istore-repo + openwrt-app-meta）
+        if: steps.token.outputs.ok == '1' && inputs.dry_run != true
+        env:
+          GH_TOKEN: ${{ secrets.ISTORE_TOKEN }}
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}" \
+          RELEASE="${{ steps.ver.outputs.release }}" \
+          DIST=dist \
+          bash tools/publish_istore.sh
+
+      - name: 未配置 ISTORE_TOKEN 时的提示
+        if: steps.token.outputs.ok == '0'
+        run: |
+          echo "::notice::没有配置 ISTORE_TOKEN，已跳过自动提 PR。产物在 dist/ 与 Release 里，可手动提交。"
+          echo "配置方法见 docs/istore-publish.md"
