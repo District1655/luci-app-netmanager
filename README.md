@@ -173,7 +173,7 @@ VERSION=1.8.14 RELEASE=1 FILES=files OUT=dist bash tools/build_apk.sh
 ### 发版（push main 一条链路到底）
 
 1. 改两处版本号：`files/usr/sbin/netmanager` 的 `PLUGIN_VERSION`（权威源，L15）与 `README.md` 头部 `> 版本：vX.Y.Z`
-2. 在 [`docs/CHANGELOG.md`](docs/CHANGELOG.md) 顶部新增 `### vX.Y.Z (日期)` 小节（Release body 从这里提取）
+2. （可选）在 [`docs/CHANGELOG.md`](docs/CHANGELOG.md) 顶部手写 `### vX.Y.Z (日期)` 小节——**忘写不会阻塞发版**：CI 会按 `git log` 自动补一节（提交即带 `[skip ci]`，不会触发二次发版），Release body 照样有内容；手写的版本优先，CI 不覆盖已有段落
 3. `git push origin main`
 4. `build.yml`：校验两处版本一致 → `sh -n` / `luac -p` 门禁 → 打 `tar.gz` → 打 tag → 发 Release（tag 已存在则整条跳过，可手动 `workflow_dispatch` 勾 `force`）
 5. `publish-istore.yml`（Release published 事件触发）：构建 `ipk` + `apk` → 上传为 Release 资产 → 自动向 `istoreos/istore-repo`（base `pending`）与 `istoreos/openwrt-app-meta`（base `main`）提 PR

@@ -18,6 +18,9 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          # 需要完整提交历史：缺更新日志时按 git log 自动补一节
+          fetch-depth: 0
 
       - name: Read version from README
         id: version
@@ -89,6 +92,29 @@ jobs:
             exit 1
           fi
           echo "===== 全部语法检查通过 ====="
+
+      # 【v1.8.15 CI 兜底】忘写更新日志不再出空 Release：缺段落就按 git log 自动补一节并提交
+      - name: Ensure changelog section (auto-generate if missing)
+        id: changelog
+        if: steps.check.outputs.exists == 'false' || inputs.force == true
+        run: |
+          OUT=$(python3 tools/ensure_changelog.py --version "${{ steps.version.outputs.version }}") || {
+            echo "::warning::ensure_changelog.py 执行失败，跳过自动补日志"
+            exit 0
+          }
+          echo "$OUT"
+          STATUS=$(echo "$OUT" | grep -m1 'status=' | cut -d= -f2)
+          if [ "$STATUS" = "generated" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add docs/CHANGELOG.md
+            git commit -m "docs: v${{ steps.version.outputs.version }} 更新日志（CI 自动生成）[skip ci]"
+            # [skip ci] 防止本提交再触发一次发版流水线；推失败也不阻塞发版（本次用工作区文件）
+            git push origin HEAD:main || echo "::warning::自动补的日志未推送到远端，请在本地 git push"
+            echo "generated=true" >> $GITHUB_OUTPUT
+          else
+            echo "generated=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: Build tar.gz install package
         if: steps.check.outputs.exists == 'false' || inputs.force == true

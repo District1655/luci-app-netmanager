@@ -9357,7 +9357,7 @@ echo "============================================"
 ### 5.22 .github/workflows/build.yml
 
 - **用途**：CI：push main 时从 README 提版本 → 语法门禁 → 打 tar.gz → 打 tag → 发 Release（body 取自更新日志）
-- **规模**：226 行
+- **规模**：252 行
 - **维护要点**：tag 已存在则整条跳过；重发同版本用 workflow_dispatch 勾 force
 
 ````yaml
@@ -9381,6 +9381,9 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          # 需要完整提交历史：缺更新日志时按 git log 自动补一节
+          fetch-depth: 0
 
       - name: Read version from README
         id: version
@@ -9452,6 +9455,29 @@ jobs:
             exit 1
           fi
           echo "===== 全部语法检查通过 ====="
+
+      # 【v1.8.15 CI 兜底】忘写更新日志不再出空 Release：缺段落就按 git log 自动补一节并提交
+      - name: Ensure changelog section (auto-generate if missing)
+        id: changelog
+        if: steps.check.outputs.exists == 'false' || inputs.force == true
+        run: |
+          OUT=$(python3 tools/ensure_changelog.py --version "${{ steps.version.outputs.version }}") || {
+            echo "::warning::ensure_changelog.py 执行失败，跳过自动补日志"
+            exit 0
+          }
+          echo "$OUT"
+          STATUS=$(echo "$OUT" | grep -m1 'status=' | cut -d= -f2)
+          if [ "$STATUS" = "generated" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add docs/CHANGELOG.md
+            git commit -m "docs: v${{ steps.version.outputs.version }} 更新日志（CI 自动生成）[skip ci]"
+            # [skip ci] 防止本提交再触发一次发版流水线；推失败也不阻塞发版（本次用工作区文件）
+            git push origin HEAD:main || echo "::warning::自动补的日志未推送到远端，请在本地 git push"
+            echo "generated=true" >> $GITHUB_OUTPUT
+          else
+            echo "generated=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: Build tar.gz install package
         if: steps.check.outputs.exists == 'false' || inputs.force == true
@@ -10160,7 +10186,164 @@ fi
 
 ```
 
-### 5.28 istore/app-meta/Makefile
+### 5.28 tools/ensure_changelog.py
+
+- **用途**：发布兜底：docs/CHANGELOG.md 缺当前版本段落时，按 git log 自动补一节（已存在则不动）
+- **规模**：146 行
+- **维护要点**：CI 在 syntax gate 后调用；自动补的提交带 `[skip ci]`，避免二次触发发版；纯 docs/ci 提交默认不进 body
+
+```python
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+ensure_changelog.py - 保证 docs/CHANGELOG.md 里有当前版本的段落
+
+背景：
+    Release body 由 build.yml 从 docs/CHANGELOG.md 提取（### vX.Y.Z 段落）。
+    以前靠人记「发版前手动加一节」，忘写就出空 body。现在 CI 先跑本脚本：
+    缺了就从 git 提交记录自动生成一节并写回文件，再照常发版。
+
+用法（仓库根目录）：
+    python3 tools/ensure_changelog.py --version 1.8.15
+    python3 tools/ensure_changelog.py --version 1.8.15 --print      # 只打印，不改文件
+    python3 tools/ensure_changelog.py --version 1.8.15 --date 2026-11-27
+
+输出（供 CI 解析）：
+    status=exists|generated
+    range=<上一 tag>..<HEAD>      # 生成时才有意义
+    file=docs/CHANGELOG.md
+
+设计约束：
+- 已存在同名段落时**绝不改动**（人工润色的内容优先，CI 不覆盖人写的东西）。
+- git 不可用 / 是浅克隆 / 一个提交都取不到时，仍写一条占位 bullets，保证 body 不为空，且退出码 0。
+- 只插到「最后一个文件头 > 引用块」之后、「第一个 ### 版本段」之前，保持倒序（新版本在上）。
+"""
+import argparse
+import datetime
+import os
+import re
+import subprocess
+import sys
+
+DEFAULT_FILE = "docs/CHANGELOG.md"
+MAX_BULLETS = 20
+SKIP_PATTERNS = re.compile(r"^(merge |revert )|\[skip ci\]", re.I)
+# 纯工程类提交（不影响用户可见行为）默认不进 Release body
+NOISE_PATTERN = re.compile(r"^(docs|ci|chore|build|test|style)(\(|:|$)", re.I)
+VERSION_PREFIX = re.compile(r"^v?\d+\.\d+\.\d+[:\s]+")
+
+
+def git(*args):
+    try:
+        return subprocess.check_output(["git"] + list(args), stderr=subprocess.DEVNULL).decode(
+            "utf-8", "replace").strip()
+    except Exception:
+        return ""
+
+
+def last_tag():
+    tag = git("describe", "--tags", "--abbrev=0")
+    if tag:
+        return tag
+    # describe 失败时退一步：列出所有 tag 取最新
+    tags = [t for t in git("tag", "--list", "v*").split("\n") if t.strip()]
+    return tags[-1] if tags else ""
+
+
+def commits_since(tag, limit=MAX_BULLETS):
+    rng = "%s..HEAD" % tag if tag else "HEAD"
+    raw = git("log", "--no-merges", "--pretty=%s", "-n", str(limit * 2), rng)
+    all_subj, useful = [], []
+    for line in raw.split("\n"):
+        s = line.strip()
+        if not s or SKIP_PATTERNS.search(s):
+            continue
+        s = VERSION_PREFIX.sub("", s)
+        if s in all_subj:
+            continue
+        all_subj.append(s)
+        if NOISE_PATTERN.search(s):
+            continue
+        useful.append(s)
+    # 全是 docs/ci 这类工程提交时，别把发布说明留空，退回用全部提交
+    picked = useful or all_subj
+    return rng, picked[:limit]
+
+
+def build_section(version, date, rng, subjects):
+    lines = ["### v%s (%s)" % (version, date), ""]
+    lines.append("> 本节由 CI 依据提交记录自动生成（未人工润色），需要更完整的说明请直接在这段里补写。")
+    lines.append("")
+    if subjects:
+        for s in subjects:
+            lines.append("- %s" % s)
+    else:
+        lines.append("- 版本号提升至 v%s（提交记录不可用，请人工补充说明）" % version)
+    lines.append("")
+    return "\n".join(lines)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--version", required=True, help="版本号，不带 v，如 1.8.15")
+    ap.add_argument("--file", default=DEFAULT_FILE)
+    ap.add_argument("--date", default=None, help="日期，默认今天（YYYY-MM-DD）")
+    ap.add_argument("--max", type=int, default=MAX_BULLETS, help="最多列多少条提交")
+    ap.add_argument("--print", dest="dry", action="store_true", help="只打印，不改文件")
+    args = ap.parse_args()
+
+    path = os.path.join(os.getcwd(), args.file)
+    if not os.path.isfile(path):
+        print("!! 找不到 %s" % args.file)
+        return 2
+
+    with open(path, "r", encoding="utf-8", newline="") as f:
+        doc = f.read().replace("\r\n", "\n")
+
+    ver = args.version.lstrip("v")
+    heading_re = re.compile(r"^### v%s\b" % re.escape(ver), re.M)
+    if heading_re.search(doc):
+        print("status=exists")
+        print("file=%s" % args.file)
+        print("v%s 段落已存在，不做改动" % ver)
+        return 0
+
+    date = args.date or datetime.date.today().isoformat()
+    rng, subjects = commits_since(last_tag(), args.max)
+    section = build_section(ver, date, rng, subjects)
+
+    if args.dry:
+        print("status=generated")
+        print("range=%s" % rng)
+        print("file=%s" % args.file)
+        print("----")
+        print(section)
+        return 0
+
+    # 插到第一个 "### " 版本段之前（保持新版本在上）
+    m = re.search(r"^### ", doc, re.M)
+    if m:
+        new_doc = doc[:m.start()] + section + "\n" + doc[m.start():]
+    else:
+        new_doc = doc.rstrip("\n") + "\n\n" + section
+
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(new_doc)
+
+    print("status=generated")
+    print("range=%s" % rng)
+    print("file=%s" % args.file)
+    print("已写入 %d 条提交摘要" % len(subjects))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+
+
+```
+
+### 5.29 istore/app-meta/Makefile
 
 - **用途**：软件中心卡片元数据模板：META_TITLE/DESCRIPTION/AUTHOR/DEPENDS/TAGS/LUCI_ENTRY/WEBSITE + PKG_VERSION/PKG_RELEASE
 - **规模**：17 行
@@ -10188,10 +10371,10 @@ include ../../meta.mk
 
 ```
 
-### 5.29 docs/gen_source_part.py
+### 5.30 docs/gen_source_part.py
 
 - **用途**：文档生成器：写 docs/source-full.md 源码全录 + PROJECT.md 第 5 章索引与第 9 章行号表
-- **规模**：307 行
+- **规模**：310 行
 - **维护要点**：新增受控文件时在 FILES 列表补一条；第 9 章行号自动抓取，无需手改
 
 ````python
@@ -10302,6 +10485,9 @@ FILES = [
     ("tools/publish_istore.sh", "bash",
      "上架 PR 工具：blob→tree(base_tree 取上游 pending/main)→commit→ref→PR，幂等（同 head 有 open PR 则跳过）",
      "GH_TOKEN 走 ISTORE_TOKEN；DRY_RUN=1 干跑；请求体走 stdin，避免 argv 过长"),
+    ("tools/ensure_changelog.py", "python",
+     "发布兜底：docs/CHANGELOG.md 缺当前版本段落时，按 git log 自动补一节（已存在则不动）",
+     "CI 在 syntax gate 后调用；自动补的提交带 `[skip ci]`，避免二次触发发版；纯 docs/ci 提交默认不进 body"),
     ("istore/app-meta/Makefile", "make",
      "软件中心卡片元数据模板：META_TITLE/DESCRIPTION/AUTHOR/DEPENDS/TAGS/LUCI_ENTRY/WEBSITE + PKG_VERSION/PKG_RELEASE",
      "PKG_VERSION/PKG_RELEASE 由 publish 脚本 sed 注入，勿写死；末尾 include ../../meta.mk"),
@@ -10506,10 +10692,10 @@ if __name__ == "__main__":
 
 ````
 
-### 5.30 docs/CHANGELOG.md
+### 5.31 docs/CHANGELOG.md
 
 - **用途**：全部历史版本记录（v1.8.14 → v1.4.0 → 继承 fwmanager v1.3.33），GitHub Release body 的来源
-- **规模**：379 行
+- **规模**：380 行
 - **维护要点**：段落标题必须保持 `### vX.Y.Z (日期)`（build.yml 的 awk 按此匹配）；每版在顶部新增小节
 
 ```markdown
@@ -10517,6 +10703,7 @@ if __name__ == "__main__":
 
 > 本文件从 `README.md` 迁出（2026-11-26），是**全部历史版本记录的唯一出处**。
 > `build.yml` 从这里提取当前版本段落作为 GitHub Release body，段落标题格式必须保持 `### vX.Y.Z (日期)`。
+> **忘写不影响发版**：CI 会用 `tools/ensure_changelog.py` 按提交记录自动补一节（已存在则不改动，人工写的优先）。
 > `README.md` 只保留「最近一版要点 + 指向本文件的链接」。
 
 > **2026-11-26 工程更新（版本号不变，交付形态与 CI 变更）**：新增 ipk/apk 双格式打包（`tools/`）、iStore 软件中心上架元数据（`istore/app-meta/`）、Release 后自动构建并提 PR 到 `istoreos/istore-repo` 与 `istoreos/openwrt-app-meta` 的流水线（`.github/workflows/publish-istore.yml`）；README 安装章节按 apk/opkg 双体系重写。
@@ -10896,7 +11083,7 @@ if __name__ == "__main__":
 
 ```
 
-### 5.31 docs/istore-publish.md
+### 5.32 docs/istore-publish.md
 
 - **用途**：iStore 上架与自动发版说明：一次性 Secret 配置、日常发版流程、本地出包、常见问题
 - **规模**：51 行
@@ -10958,7 +11145,7 @@ VERSION=1.8.14 RELEASE=1 OUT=dist bash tools/build_apk.sh
 
 ````
 
-### 5.32 .gitattributes
+### 5.33 .gitattributes
 
 - **用途**：git 属性：强制文本文件 LF（路由器 BusyBox ash 不能吃 CRLF）
 - **规模**：15 行
@@ -10984,7 +11171,7 @@ VERSION=1.8.14 RELEASE=1 OUT=dist bash tools/build_apk.sh
 
 ```
 
-### 5.33 .gitignore
+### 5.34 .gitignore
 
 - **用途**：忽略构建产物（dist/、ipk/apk、临时 tar.gz）；docs/source-full.md 需要入库，别加进来
 - **规模**：7 行
@@ -11002,7 +11189,7 @@ dist/
 
 ```
 
-### 5.34 README.md
+### 5.35 README.md
 
 - **用途**：用户文档：功能 / 安装（apk·ipk·脚本三路）/ CLI / 配置说明 / 构建与发版 / 更新日志
 - **规模**：399 行
@@ -11184,7 +11371,7 @@ VERSION=1.8.14 RELEASE=1 FILES=files OUT=dist bash tools/build_apk.sh
 ### 发版（push main 一条链路到底）
 
 1. 改两处版本号：`files/usr/sbin/netmanager` 的 `PLUGIN_VERSION`（权威源，L15）与 `README.md` 头部 `> 版本：vX.Y.Z`
-2. 在 [`docs/CHANGELOG.md`](docs/CHANGELOG.md) 顶部新增 `### vX.Y.Z (日期)` 小节（Release body 从这里提取）
+2. （可选）在 [`docs/CHANGELOG.md`](docs/CHANGELOG.md) 顶部手写 `### vX.Y.Z (日期)` 小节——**忘写不会阻塞发版**：CI 会按 `git log` 自动补一节（提交即带 `[skip ci]`，不会触发二次发版），Release body 照样有内容；手写的版本优先，CI 不覆盖已有段落
 3. `git push origin main`
 4. `build.yml`：校验两处版本一致 → `sh -n` / `luac -p` 门禁 → 打 `tar.gz` → 打 tag → 发 Release（tag 已存在则整条跳过，可手动 `workflow_dispatch` 勾 `force`）
 5. `publish-istore.yml`（Release published 事件触发）：构建 `ipk` + `apk` → 上传为 Release 资产 → 自动向 `istoreos/istore-repo`（base `pending`）与 `istoreos/openwrt-app-meta`（base `main`）提 PR

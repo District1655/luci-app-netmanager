@@ -2,6 +2,7 @@
 
 > 本文件从 `README.md` 迁出（2026-11-26），是**全部历史版本记录的唯一出处**。
 > `build.yml` 从这里提取当前版本段落作为 GitHub Release body，段落标题格式必须保持 `### vX.Y.Z (日期)`。
+> **忘写不影响发版**：CI 会用 `tools/ensure_changelog.py` 按提交记录自动补一节（已存在则不改动，人工写的优先）。
 > `README.md` 只保留「最近一版要点 + 指向本文件的链接」。
 
 > **2026-11-26 工程更新（版本号不变，交付形态与 CI 变更）**：新增 ipk/apk 双格式打包（`tools/`）、iStore 软件中心上架元数据（`istore/app-meta/`）、Release 后自动构建并提 PR 到 `istoreos/istore-repo` 与 `istoreos/openwrt-app-meta` 的流水线（`.github/workflows/publish-istore.yml`）；README 安装章节按 apk/opkg 双体系重写。
