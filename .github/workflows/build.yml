@@ -16,6 +16,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # 用于触发 publish-istore.yml（GITHUB_TOKEN 不能触发 release 事件，但可以调 workflow_dispatch）
+      actions: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -250,3 +252,17 @@ jobs:
             ```
 
             > 也可在「设置」页面点击「一键卸载插件」按钮卸载（支持保留配置勾选）。卸载不影响用户在 /etc/config/firewall 中的端口转发与防火墙规则。
+
+      # 说明：GitHub 规定 GITHUB_TOKEN 产生的 release 事件不会递归触发其它 workflow，
+      #       所以这里显式触发 publish-istore.yml（workflow_dispatch 属于允许的例外），
+      #       否则 Release 里永远只有 tar.gz，没有 ipk/apk，也不会提上架 PR。
+      - name: Trigger istore publish workflow
+        if: steps.check.outputs.exists == 'false' || inputs.force == true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run publish-istore.yml \
+            -f version="${{ steps.version.outputs.version }}" \
+            -f release=1 \
+            --repo "${{ github.repository }}"
+          echo "已触发 Publish to iStore（version=${{ steps.version.outputs.version }} / release=1）"
