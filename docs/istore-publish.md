@@ -2,7 +2,7 @@
 
 ## 它做了什么
 
-`push main`（改 README 里的版本号）→ 原有 `Build Install Package` 打 tag、发 Release（tar.gz 安装包）
+`push main`（改 README 里的版本号）→ 原有 `Build Install Package` 打 tag、发 Release（tar.gz 安装包，body 从 `docs/CHANGELOG.md` 提取）
 → `Publish to iStore`（本流程）被 Release 触发，会：
 
 1. 校验 `files/usr/sbin/netmanager` 里的 `PLUGIN_VERSION` 与发布版本一致，不一致直接失败（避免发出去的包版本对不上）

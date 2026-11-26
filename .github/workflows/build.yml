@@ -115,15 +115,16 @@ jobs:
           git tag -f ${{ steps.version.outputs.tag }}
           git push -f origin ${{ steps.version.outputs.tag }}
 
-      - name: Extract changelog from README
+      - name: Extract changelog from docs/CHANGELOG.md
         id: extract
         if: steps.check.outputs.exists == 'false' || inputs.force == true
         run: |
-          # 从 README 更新日志提取当前版本的段落，作为 Release body 的变更内容
-          # 注意：README 日志标题是 "### vX.Y.Z"（带 v 前缀），必须补 v 再匹配
-          CHANGELOG=$(awk -v ver="v${{ steps.version.outputs.version }}" -f .github/workflows/extract_changelog.awk README.md)
+          # 从 docs/CHANGELOG.md 提取当前版本的段落，作为 Release body 的变更内容
+          # 注意：日志标题是 "### vX.Y.Z (日期)"（带 v 前缀），必须补 v 再匹配
+          # 历史记录已从 README.md 迁到 docs/CHANGELOG.md（README 只留最近一版摘要 + 链接）
+          CHANGELOG=$(awk -v ver="v${{ steps.version.outputs.version }}" -f .github/workflows/extract_changelog.awk docs/CHANGELOG.md)
           if [ -z "$(echo "$CHANGELOG" | tr -d '[:space:]')" ]; then
-            CHANGELOG="（README 中未找到 v${{ steps.version.outputs.version }} 的更新日志段落）"
+            CHANGELOG="（docs/CHANGELOG.md 中未找到 v${{ steps.version.outputs.version }} 的更新日志段落）"
             echo "WARN: 未提取到更新日志，Release 将使用占位文案"
           fi
           # 写入多行 output（heredoc 定界符语法，GitHub Actions 官方推荐，保留换行）

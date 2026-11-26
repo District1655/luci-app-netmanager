@@ -94,7 +94,7 @@ FILES = [
      "CI：Release 发布后构建 ipk/apk、上传 Release 资产、自动向 istoreos/istore-repo（pending）与 openwrt-app-meta（main）提 PR",
      "依赖 ISTORE_TOKEN；未配置只构建不提 PR；支持 dry_run/version/release 三个手动入参"),
     (".github/workflows/extract_changelog.awk", "awk",
-     "Release body 提取脚本：从 README 更新日志取出指定版本段落",
+     "Release body 提取脚本：从 docs/CHANGELOG.md 取出指定版本段落",
      "注释里的版本号是历史记录，勿改"),
     ("tools/build_ipk.py", "python",
      "打 ipk 工具：固定 mtime、目录 755/文件 644、脚本可执行位，产出 tar.gz 外壳的 _all.ipk",
@@ -109,8 +109,11 @@ FILES = [
      "软件中心卡片元数据模板：META_TITLE/DESCRIPTION/AUTHOR/DEPENDS/TAGS/LUCI_ENTRY/WEBSITE + PKG_VERSION/PKG_RELEASE",
      "PKG_VERSION/PKG_RELEASE 由 publish 脚本 sed 注入，勿写死；末尾 include ../../meta.mk"),
     ("docs/gen_source_part.py", "python",
-     "本文档生成器：重写第 5 章源码全录与第 9 章行号索引",
+     "文档生成器：写 docs/source-full.md 源码全录 + PROJECT.md 第 5 章索引与第 9 章行号表",
      "新增受控文件时在 FILES 列表补一条；第 9 章行号自动抓取，无需手改"),
+    ("docs/CHANGELOG.md", "markdown",
+     "全部历史版本记录（v1.8.14 → v1.4.0 → 继承 fwmanager v1.3.33），GitHub Release body 的来源",
+     "段落标题必须保持 `### vX.Y.Z (日期)`（build.yml 的 awk 按此匹配）；每版在顶部新增小节"),
     ("docs/istore-publish.md", "markdown",
      "iStore 上架与自动发版说明：一次性 Secret 配置、日常发版流程、本地出包、常见问题",
      "与 README「构建与发版」章节互补，改动流水线时两边同步"),
@@ -118,17 +121,18 @@ FILES = [
      "git 属性：强制文本文件 LF（路由器 BusyBox ash 不能吃 CRLF）",
      "二进制文件单独标注；CRLF 警告可忽略"),
     (".gitignore", "text",
-     "忽略构建产物（dist/、ipk/apk、临时 tar.gz、docs/source_part.md 等）",
+     "忽略构建产物（dist/、ipk/apk、临时 tar.gz）；docs/source-full.md 需要入库，别加进来",
      "新增构建输出目录时同步补一条"),
     ("README.md", "markdown",
      "用户文档：功能 / 安装（apk·ipk·脚本三路）/ CLI / 配置说明 / 构建与发版 / 更新日志",
-     "L3 版本号是 build.yml 的 tag 提取源（登记处 12）；每版必须新增更新日志小节"),
+     "L3 版本号是 build.yml 的 tag 提取源（登记处 12）；更新日志已迁到 docs/CHANGELOG.md，本文件只留最近一版摘要"),
 ]
 
-CH5_BEGIN = "## 第 5 章 源码全录"
+CH5_BEGIN = "## 第 5 章 源码索引（全录见 docs/source-full.md）"
 CH5_END_MARK = "## 第 6 章 更新维护记录"
 CH9_BEGIN = "## 第 9 章 快速索引（行号定位表）"
 CH9_END_MARK = "## 附录 A：项目信息卡"
+FULL_DOC = os.path.join(ROOT, "docs", "source-full.md")
 
 
 def read_text(path):
@@ -136,13 +140,15 @@ def read_text(path):
         return f.read().replace("\r\n", "\n")
 
 
-# ---------------------------------------------------------------- 第 5 章
-def build_ch5():
+# ---------------------------------------------------------------- 第 5 章（全录，写进 docs/source-full.md）
+def build_ch5_full():
     out = []
-    out.append(CH5_BEGIN)
+    out.append("# 源码全录（docs/source-full.md）")
     out.append("")
-    out.append("> 本章由 `docs/gen_source_part.py` 自动生成（v1.8.14 / main），收录除本文档与 LICENSE 外的全部受控文件。")
-    out.append("> **源码是唯一事实来源**：前文描述与源码不一致时，以源码为准。")
+    out.append("> 本文件由 `docs/gen_source_part.py` 自动生成，请勿手改；改动源码后重跑脚本。")
+    out.append("> 收录除 `PROJECT.md` / `LICENSE` 外的全部受控文件（33 个）。**源码是唯一事实来源**：")
+    out.append("> `PROJECT.md` 里的描述与这里不一致时，以本文件（即实际源码）为准。")
+    out.append("> 章节号 §5.x 与 `PROJECT.md` 第 5 章索引表一一对应。")
     out.append("")
     for n, (rel, lang, desc, note) in enumerate(FILES, start=1):
         full = os.path.join(ROOT, rel.replace("/", os.sep))
@@ -166,7 +172,28 @@ def build_ch5():
     return "\n".join(out)
 
 
-# ---------------------------------------------------------------- 第 9 章
+# ---------------------------------------------------------------- 第 5 章（索引，写进 PROJECT.md）
+def build_ch5_index():
+    out = [CH5_BEGIN, ""]
+    out.append("> 本章只留索引：每个受控文件的用途、规模、维护要点。**完整源码已归档到 "
+               "[`docs/source-full.md`](source-full.md)**（§5.x 与下表一一对应，由 `docs/gen_source_part.py` 自动生成）。")
+    out.append("> 这样 PROJECT.md 保持可快速通读，又不必为查一段代码去翻 1 万多行。")
+    out.append("")
+    out.append("| § | 文件 | 规模 | 用途 | 维护要点 |")
+    out.append("|---|------|------|------|----------|")
+    for n, (rel, lang, desc, note) in enumerate(FILES, start=1):
+        full = os.path.join(ROOT, rel.replace("/", os.sep))
+        if not os.path.isfile(full):
+            sys.exit("!! 文件缺失: %s" % rel)
+        body = read_text(full)
+        lines = body.count("\n") + (0 if body.endswith("\n") else 1)
+        # 表格里不能有裸换行与竖线
+        out.append("| §5.%d | `%s` | %d 行 | %s | %s |"
+                   % (n, rel, lines, desc.replace("|", "\\|"), note.replace("|", "\\|")))
+    out.append("")
+    out.append("> 需要看某个文件的完整内容或某段实现，直接翻 [`docs/source-full.md`](source-full.md) 对应 §5.x 小节；")
+    out.append("> 想知道命令/函数在源码里的行号，见第 9 章（同样是自动抓取）。")
+    return "\n".join(out)
 def grep_lines(rel, pattern, flags=0):
     path = os.path.join(ROOT, rel.replace("/", os.sep))
     rx = re.compile(pattern, flags)
@@ -249,22 +276,31 @@ def splice(doc, begin_mark, end_mark, new_block):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--part", help="只输出第 5 章片段到指定文件")
+    ap.add_argument("--part", help="只把全录写到指定文件（默认 docs/source-full.md）")
     args = ap.parse_args()
 
-    ch5 = build_ch5()
+    full = build_ch5_full()
+
     if args.part:
         with open(args.part, "w", encoding="utf-8", newline="\n") as f:
-            f.write(ch5 + "\n")
+            f.write(full + "\n")
         print("OK 已生成: %s" % args.part)
         return
 
+    # 1) 全录落到 docs/source-full.md
+    with open(FULL_DOC, "w", encoding="utf-8", newline="\n") as f:
+        f.write(full + "\n")
+
+    # 2) PROJECT.md 只保留索引 + 第 9 章行号表
     doc = read_text(PROJECT)
-    doc = splice(doc, CH5_BEGIN, CH5_END_MARK, ch5)
+    doc = splice(doc, CH5_BEGIN, CH5_END_MARK, build_ch5_index())
     doc = splice(doc, CH9_BEGIN, CH9_END_MARK, build_ch9())
     with open(PROJECT, "w", encoding="utf-8", newline="\n") as f:
         f.write(doc)
-    print("OK 已更新: %s（第 5 章 %d 个文件，总 %d 行）" % (PROJECT, len(FILES), doc.count("\n")))
+
+    print("OK 全录 -> %s（%d 个文件，%d 行）" % (
+        os.path.relpath(FULL_DOC, ROOT), len(FILES), full.count("\n")))
+    print("OK 索引 -> %s（总 %d 行）" % (os.path.relpath(PROJECT, ROOT), doc.count("\n")))
 
 
 if __name__ == "__main__":
