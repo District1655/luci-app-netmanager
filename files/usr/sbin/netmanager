@@ -12,7 +12,7 @@ LOG_FILE="$LOG_DIR/run.log"
 LOG_ENABLED=0
 
 # 在线更新配置：版本号与 GitHub 仓库（发版时同步修改 PLUGIN_VERSION）
-PLUGIN_VERSION="1.8.20"
+PLUGIN_VERSION="1.8.21"
 REPO_OWNER="District1655"
 REPO_NAME="luci-app-netmanager"
 REPO_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
@@ -346,7 +346,7 @@ cmd_port_list() {
     
     # 性能优化：nft list ruleset 全量查询在规则多时需 1~3 秒，
     # 改为只查 fw4 表（14KB 左右，十几毫秒），并加 2 秒文件缓存避免重复调用。
-    # v1.8.20 修复：原来是只查 chain dstnat —— 而 fw4 把真实 redirect 规则放在
+    # v1.8.19 修复：原来是只查 chain dstnat —— 而 fw4 把真实 redirect 规则放在
     # dstnat_wan / dstnat_lan / upnp_prerouting 等子链，主链只有 jump 语句，
     # 计数器一个都读不到，导致端口转发页面「命中数」恒为 0。
     # 现在整表导出（含 dstnat_*、forward_lan 里的 Allow-IPv6 规则），一处缓存两用。
@@ -507,7 +507,7 @@ cmd_port_list() {
 
     while IFS='|' read -r idx name proto dp en dip; do
         [ -z "$name" ] && continue
-        # v1.8.20：IPv6 直连放行规则按 fw4 规则名取计数器（之前拿 dstnat 端口匹配，恒为 0）
+        # v1.8.19：IPv6 直连放行规则按 fw4 规则名取计数器（之前拿 dstnat 端口匹配，恒为 0）
         pkts=$(get_rule_pkts "Allow-IPv6-${dp}-${proto}")
         anchor=$(echo "$track_data" | awk -v P="$dp" -v R="$proto" '
             /\.port=/ { v=$0; sub(/.*=/,"",v); gsub(/\047/,"",v); cur_p=v }

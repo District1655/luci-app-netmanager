@@ -2,7 +2,7 @@
     netmanager/cbi_nav.htm - CBI 页面专用页内导航 + 布局对齐
     v1.8.4：让 CBI 页面（上网设置 / 静态IPv6分配）与自绘页面（端口转发等）布局一致：
             主题头 → 「网络管理」标题栏 → 导航条 → 单一白卡内容区（h2页标题 + 各h3子节）。
-    v1.8.20：导航条不再在 cbi_nav 里手写一份，改为 include netmanager/nav，
+    v1.8.21：导航条不再在 cbi_nav 里手写一份，改为 include netmanager/nav，
             与自绘页面共用同一份菜单（原来漏了「IP过滤」，导致 CBI 页面顶部少一项）。
     做法：模板输出标题栏+导航+样式+脚本；脚本在 DOMContentLoaded 把两个 cbi-map
           （连同各自 form 整体移动，不破坏表单提交）合并进一个 .netmanager-content 卡片，
@@ -16,6 +16,7 @@
 <%+netmanager/nav%>
 <style>
 /* ===== 与 common_head.htm 一致的框架样式（CBI 页面不加载 common_head，自带） ===== */
+.netmanager-container { max-width: 1200px; margin: 0 auto; padding: 16px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif; color: #1f2937; }
 .netmanager-header { display:flex; justify-content:space-between; align-items:center; padding:14px 20px; background:#fff; border-radius:8px; margin-bottom:12px; box-shadow:0 1px 2px rgba(0,0,0,0.06); border:1px solid #e5e7eb; }
 .netmanager-header h1 { margin:0; font-size:18px; font-weight:600; color:#111827; }
 .netmanager-author { font-size:12px; color:#9ca3af; }
@@ -66,9 +67,15 @@ document.addEventListener('DOMContentLoaded', function () {
 
     var content = document.createElement('div');
     content.className = 'netmanager-content';
-    parent.insertBefore(hdr, first);
-    parent.insertBefore(nav, first);
-    parent.insertBefore(content, first);
+    /* v1.8.21：外面再包一层 .netmanager-container。
+       自绘页面有这层（max-width:1200px; margin:0 auto; padding:16px），
+       CBI 页面原来直接把卡片塞进主题容器，宽度铺满、没有居中，所以左上角位置和别的页面对不齐。 */
+    var wrap = document.createElement('div');
+    wrap.className = 'netmanager-container';
+    parent.insertBefore(wrap, first);
+    wrap.appendChild(hdr);
+    wrap.appendChild(nav);
+    wrap.appendChild(content);
 
     /* 页标题：优先首个 map 自带 h2，否则用导航 active 文本（去掉开头 emoji） */
     var mh = first.querySelector(':scope > h2');

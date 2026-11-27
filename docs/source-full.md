@@ -26,7 +26,7 @@ LOG_FILE="$LOG_DIR/run.log"
 LOG_ENABLED=0
 
 # 在线更新配置：版本号与 GitHub 仓库（发版时同步修改 PLUGIN_VERSION）
-PLUGIN_VERSION="1.8.20"
+PLUGIN_VERSION="1.8.21"
 REPO_OWNER="District1655"
 REPO_NAME="luci-app-netmanager"
 REPO_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
@@ -360,7 +360,7 @@ cmd_port_list() {
     
     # 性能优化：nft list ruleset 全量查询在规则多时需 1~3 秒，
     # 改为只查 fw4 表（14KB 左右，十几毫秒），并加 2 秒文件缓存避免重复调用。
-    # v1.8.20 修复：原来是只查 chain dstnat —— 而 fw4 把真实 redirect 规则放在
+    # v1.8.19 修复：原来是只查 chain dstnat —— 而 fw4 把真实 redirect 规则放在
     # dstnat_wan / dstnat_lan / upnp_prerouting 等子链，主链只有 jump 语句，
     # 计数器一个都读不到，导致端口转发页面「命中数」恒为 0。
     # 现在整表导出（含 dstnat_*、forward_lan 里的 Allow-IPv6 规则），一处缓存两用。
@@ -521,7 +521,7 @@ cmd_port_list() {
 
     while IFS='|' read -r idx name proto dp en dip; do
         [ -z "$name" ] && continue
-        # v1.8.20：IPv6 直连放行规则按 fw4 规则名取计数器（之前拿 dstnat 端口匹配，恒为 0）
+        # v1.8.19：IPv6 直连放行规则按 fw4 规则名取计数器（之前拿 dstnat 端口匹配，恒为 0）
         pkts=$(get_rule_pkts "Allow-IPv6-${dp}-${proto}")
         anchor=$(echo "$track_data" | awk -v P="$dp" -v R="$proto" '
             /\.port=/ { v=$0; sub(/.*=/,"",v); gsub(/\047/,"",v); cur_p=v }
@@ -7235,7 +7235,7 @@ function withBusy(btn, fn) {
 ### 5.9 files/usr/lib/lua/luci/view/netmanager/cbi_nav.htm
 
 - **用途**：CBI 页面专用导航条：自带内联样式，由两个 CBI 模型以 Template 节点注入
-- **规模**：105 行
+- **规模**：108 行
 - **维护要点**：CBI 页不加载 common_head，样式必须内联；active 判断带 nil 防护
 
 ```html
@@ -7243,16 +7243,12 @@ function withBusy(btn, fn) {
     netmanager/cbi_nav.htm - CBI 页面专用页内导航 + 布局对齐
     v1.8.4：让 CBI 页面（上网设置 / 静态IPv6分配）与自绘页面（端口转发等）布局一致：
             主题头 → 「网络管理」标题栏 → 导航条 → 单一白卡内容区（h2页标题 + 各h3子节）。
-    v1.8.20：导航条不再在 cbi_nav 里手写一份，改为 include netmanager/nav，
+    v1.8.21：导航条不再在 cbi_nav 里手写一份，改为 include netmanager/nav，
             与自绘页面共用同一份菜单（原来漏了「IP过滤」，导致 CBI 页面顶部少一项）。
     做法：模板输出标题栏+导航+样式+脚本；脚本在 DOMContentLoaded 把两个 cbi-map
           （连同各自 form 整体移动，不破坏表单提交）合并进一个 .netmanager-content 卡片，
           页标题/描述移到导航下方。CBI 页面不加载 common_head.htm，样式在此自带。
     注意：LuCI 模板注释用井号语法，注释内不可出现百分号加大于号组合。
-%>
-<%
-local path = luci.dispatcher.context.requestpath
-local cur = (type(path) == "table") and (path[3] or "") or ""
 %>
 <div class="netmanager-header">
     <h1>网络管理</h1>
@@ -7261,6 +7257,7 @@ local cur = (type(path) == "table") and (path[3] or "") or ""
 <%+netmanager/nav%>
 <style>
 /* ===== 与 common_head.htm 一致的框架样式（CBI 页面不加载 common_head，自带） ===== */
+.netmanager-container { max-width: 1200px; margin: 0 auto; padding: 16px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif; color: #1f2937; }
 .netmanager-header { display:flex; justify-content:space-between; align-items:center; padding:14px 20px; background:#fff; border-radius:8px; margin-bottom:12px; box-shadow:0 1px 2px rgba(0,0,0,0.06); border:1px solid #e5e7eb; }
 .netmanager-header h1 { margin:0; font-size:18px; font-weight:600; color:#111827; }
 .netmanager-author { font-size:12px; color:#9ca3af; }
@@ -7311,9 +7308,15 @@ document.addEventListener('DOMContentLoaded', function () {
 
     var content = document.createElement('div');
     content.className = 'netmanager-content';
-    parent.insertBefore(hdr, first);
-    parent.insertBefore(nav, first);
-    parent.insertBefore(content, first);
+    /* v1.8.21：外面再包一层 .netmanager-container。
+       自绘页面有这层（max-width:1200px; margin:0 auto; padding:16px），
+       CBI 页面原来直接把卡片塞进主题容器，宽度铺满、没有居中，所以左上角位置和别的页面对不齐。 */
+    var wrap = document.createElement('div');
+    wrap.className = 'netmanager-container';
+    parent.insertBefore(wrap, first);
+    wrap.appendChild(hdr);
+    wrap.appendChild(nav);
+    wrap.appendChild(content);
 
     /* 页标题：优先首个 map 自带 h2，否则用导航 active 文本（去掉开头 emoji） */
     var mh = first.querySelector(':scope > h2');
@@ -7433,7 +7436,7 @@ document.addEventListener('DOMContentLoaded', function () {
         </div>
         <div id="action_result" class="netmanager-result"></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.20</div>
+    <div class="footer-sign">网络管理插件 v1.8.21</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -7583,7 +7586,7 @@ setInterval(loadOverview, 30000);
         </table>
         <div id="action_result" class="netmanager-result"></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.20</div>
+    <div class="footer-sign">网络管理插件 v1.8.21</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -7903,7 +7906,7 @@ loadPortList();
         </div>
         <div id="action_result" class="netmanager-result"></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.20</div>
+    <div class="footer-sign">网络管理插件 v1.8.21</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -8093,7 +8096,7 @@ loadRuleList();
         <h3>失败登录记录</h3>
         <div class="netmanager-log" id="failed_log"><div class="text-muted">加载中...</div></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.20</div>
+    <div class="footer-sign">网络管理插件 v1.8.21</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -8215,7 +8218,7 @@ loadSshLog();
             <div id="bd_body" style="background:#ffffff;border:1px solid #e5e7eb;border-radius:6px;padding:4px;color:#1f2937;max-height:420px;overflow-y:auto;"></div>
         </div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.20</div>
+    <div class="footer-sign">网络管理插件 v1.8.21</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -8533,7 +8536,7 @@ loadAccessLog();
         </div>
         </div><!-- /nm_pane_white -->
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.20</div>
+    <div class="footer-sign">网络管理插件 v1.8.21</div>
 </div>
 <script>
 // ========== 中国IPv4访问限制 ==========
@@ -9030,7 +9033,7 @@ loadWhitelist();
             <table class="netmanager-table" style="margin-bottom:10px;">
                 <tr>
                     <td width="30%">当前版本</td>
-                    <td><b id="online_cur_version">v1.8.20</b></td>
+                    <td><b id="online_cur_version">v1.8.21</b></td>
                 </tr>
                 <tr>
                     <td>最新版本</td>
@@ -9149,7 +9152,7 @@ loadWhitelist();
         <h3>关于插件</h3>
         <table class="netmanager-table">
             <tr><td width="30%">插件名称</td><td>网络管理 (luci-app-netmanager)</td></tr>
-            <tr><td>版本</td><td id="plugin_version">v1.8.20</td></tr>
+            <tr><td>版本</td><td id="plugin_version">v1.8.21</td></tr>
             <tr><td>作者</td><td><b>吾爱破解liyu0828</b></td></tr>
             <tr><td>仓库地址</td><td><a href="https://github.com/District1655/luci-app-netmanager" target="_blank" style="color:#2563eb;">https://github.com/District1655/luci-app-netmanager</a></td></tr>
             <tr><td>适配系统</td><td>iStoreOS / OpenWrt (fw4/nftables)</td></tr>
@@ -9182,7 +9185,7 @@ loadWhitelist();
             </div>
         </div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.20<br><span style="font-size:10px;">适配 iStoreOS / OpenWrt | 基于 fw4/nftables</span></div>
+    <div class="footer-sign">网络管理插件 v1.8.21<br><span style="font-size:10px;">适配 iStoreOS / OpenWrt | 基于 fw4/nftables</span></div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -9874,12 +9877,12 @@ exit 0
 ```bash
 #!/bin/ash
 # ============================================================
-# 网络管理插件 (luci-app-netmanager) - 一键安装脚本 v1.8.20
+# 网络管理插件 (luci-app-netmanager) - 一键安装脚本 v1.8.21
 # 由 luci-app-fwmanager (防火墙管理) 与 luci-app-dnssettings (DNS设置) 合并而成
 # ============================================================
 
 echo "============================================"
-echo "  网络管理插件 (luci-app-netmanager) v1.8.20"
+echo "  网络管理插件 (luci-app-netmanager) v1.8.21"
 echo "  防火墙管理 + DNS设置 一体化"
 echo "============================================"
 echo ""
@@ -10718,7 +10721,7 @@ ls -lh "$OUTFILE"
 ### 5.28 tools/publish_istore.sh
 
 - **用途**：上架 PR 工具：blob→tree(base_tree 取上游 pending/main)→commit→ref→PR，幂等（同 head 有 open PR 则跳过）
-- **规模**：180 行
+- **规模**：187 行
 - **维护要点**：GH_TOKEN 走 ISTORE_TOKEN；DRY_RUN=1 干跑；请求体走 stdin，避免 argv 过长
 
 ```bash
@@ -10782,10 +10785,17 @@ upstream_base() { # repo branch -> "<commit_sha> <tree_sha>"
 ensure_ref() { # repo branch sha
     local repo=$1 br=$2 sha=$3
     if [ "$DRY_RUN" = "1" ]; then say "DRY: ref $br -> $sha"; return 0; fi
-    api DELETE "/repos/$repo/git/refs/heads/$br" >/dev/null 2>&1 || true
-    api POST "/repos/$repo/git/refs" \
-        "$(jq -n --arg r "refs/heads/$br" --arg s "$sha" '{ref:$r,sha:$s}')" >/dev/null
-    say "==> 推送分支 $br"
+    # v1.8.20：先 PATCH 强推已有分支，不再 DELETE + POST。
+    # 之前删分支会让 GitHub 认为 PR 被关闭（#860/#861 都是这样自动 CLOSED），
+    # 每个版本换一个新 PR，等于「固定分支复用 PR」没生效。
+    if api PATCH "/repos/$repo/git/refs/heads/$br" \
+        "$(jq -n --arg s "$sha" '{sha:$s,force:true}')" >/dev/null 2>&1; then
+        say "==> 更新分支 $br（PR 保持不变）"
+    else
+        api POST "/repos/$repo/git/refs" \
+            "$(jq -n --arg r "refs/heads/$br" --arg s "$sha" '{ref:$r,sha:$s}')" >/dev/null
+        say "==> 新建分支 $br"
+    fi
 }
 
 pr_open() { # repo head base title body
@@ -11418,7 +11428,7 @@ if __name__ == "__main__":
 ### 5.32 docs/CHANGELOG.md
 
 - **用途**：全部历史版本记录（v1.8.14 → v1.4.0 → 继承 fwmanager v1.3.33），GitHub Release body 的来源
-- **规模**：424 行
+- **规模**：428 行
 - **维护要点**：段落标题必须保持 `### vX.Y.Z (日期)`（build.yml 的 awk 按此匹配）；每版在顶部新增小节
 
 ```markdown
@@ -11431,8 +11441,12 @@ if __name__ == "__main__":
 
 > **2026-11-26 工程更新（版本号不变，交付形态与 CI 变更）**：新增 ipk/apk 双格式打包（`tools/`）、iStore 软件中心上架元数据（`istore/app-meta/`）、Release 后自动构建并提 PR 到 `istoreos/istore-repo` 与 `istoreos/openwrt-app-meta` 的流水线（`.github/workflows/publish-istore.yml`）；README 安装章节按 apk/opkg 双体系重写。
 
-### v1.8.20 (2026-11-27)
+### v1.8.21 (2026-11-27)
+- **CBI 页面（上网设置 / 静态IP分配）左上角位置与其它页面对齐**：自绘页面外层有 `.netmanager-container`（`max-width:1200px; margin:0 auto; padding:16px`），CBI 页面的 DOM 搬迁脚本只建了卡片、没建这层容器，卡片直接铺在主题容器里，于是宽度铺满、左边顶到屏幕边。现在脚本先建 `.netmanager-container` 再把标题栏/导航/内容卡放进去，横向起点、宽度、留白与端口转发等页一致；`cbi_nav.htm` 自带样式里也补了这条规则。
 - **CBI 页面导航统一，修复「上网设置 / 静态IP分配」页顶部少一项**：这两个页面走 CBI 渲染，导航是 `cbi_nav.htm` 里另写的一份硬编码菜单，v1.8.19 加「IP过滤」时只改了自绘页面的 `nav.htm`，所以切到这两页时 IP过滤 入口会“消失”。现在 `cbi_nav.htm` 改为 `<%+netmanager/nav%>` 直接 include 同一份导航，菜单只有一处维护，两个页面的高亮与顺序也和其它页面一致。
+- **iStore 自动 PR 真正实现「固定分支复用」**：`ensure_ref` 原来先 `DELETE` 分支再 `POST` 建分支，GitHub 会因此把旧 PR 判定为已关闭（v1.8.18→v1.8.20 每版都自动 CLOSED 并新开一个）。改为 `PATCH git/refs/heads/<branch>` 带 `force:true` 强推，PR 不再被关；分支不存在时才新建。
+
+### v1.8.20 (2026-11-27)
 - **系统概览：WAN IPv6 显示完整地址且对口**。原来 `WAN_IPV6` 取「系统上第一个 scope global 地址」，PPPoE 下取到的是 br-lan 的 GUA（`...:20d0::1`，短地址、且不是 WAN），WAN 真实地址在 `pppoe-wan` 上。改为按 `get_wan_devs` 逐设备读 `inet6 ... scope global`，保留 `/前缀` 长度。
 - **系统概览：PD 前缀长度按 DHCPv6-PD 实际委派显示**。原来从 `ip -6 route show dev br-lan` 抓，拿到的是内核写的静态 `/64` 路由，与真实委派（`ip6assign=60`）不一致。改为优先读 `ubus call network.interface.wan6 status` 的 `ipv6-prefix[0].address/mask`，取不到才回落到「br-lan 路由 + `network.lan.ip6assign`」。真机实测 `PD_PREFIX=2408:820c:8f29:20d0::/60`，与 LAN 分发地址一致。
 - **WAN /64 与 PD 前缀不同段属正常**：WAN 地址与 PD 是运营商两次独立分配（前者 RA/DHCPv6 给的单个 /64，后者 DHCPv6-PD 委派的整段），页面 IPv6 区下方已加说明，避免误判为显示错误。
@@ -11959,13 +11973,13 @@ dist/
 ### 5.36 README.md
 
 - **用途**：用户文档：功能 / 安装（apk·ipk·脚本三路）/ CLI / 配置说明 / 构建与发版 / 更新日志
-- **规模**：435 行
+- **规模**：439 行
 - **维护要点**：L3 版本号是 build.yml 的 tag 提取源（登记处 12）；更新日志已迁到 docs/CHANGELOG.md，本文件只留最近一版摘要
 
 ````markdown
 # 网络管理插件 (luci-app-netmanager)
 
-> 版本：v1.8.20
+> 版本：v1.8.21
 >
 > 适配：iStoreOS 25.12+（apk）/ iStoreOS 24.10 及 OpenWrt 23.05+（opkg / ipk），fw4 + nftables，Lua LuCI
 >
@@ -12379,9 +12393,13 @@ IPv4（每行一个 CIDR）：
 
 完整历史版本记录（v1.8.17 → v1.4.0 → 继承 fwmanager v1.3.33）已归档到 **[`docs/CHANGELOG.md`](docs/CHANGELOG.md)**，`build.yml` 从那里提取当前版本段落作为 GitHub Release body。
 
-**最近一版：v1.8.20（2026-11-27）**
+**最近一版：v1.8.21（2026-11-27）**
 
+- **CBI 页面（上网设置 / 静态IP分配）左上角对齐修正**：这两页少了自绘页面那层 `.netmanager-container`（`max-width:1200px; margin:0 auto; padding:16px`），卡片直接铺满、左边顶到屏幕边；现在搬迁脚本先建这层容器再放内容，横向起点与其它页面一致
 - **修复 CBI 页面导航少一项**：“上网设置 / 静态IP分配”原来用 `cbi_nav.htm` 里另一份硬编码菜单（漏了 IP过滤），现在改为 include 同一份 `nav.htm`，全插件只有一处菜单定义
+- **iStore 自动 PR 修好固定分支复用**：改分支原来走「删分支再建分支」，GitHub 会把旧 PR 判成已关闭、每个版本新开一个；改成 `PATCH ref` 强推后 PR 不再被关
+
+**v1.8.20（2026-11-27）**
 - **系统概览 IPv6 显示修正**：`WAN IPv6` 改为按 WAN 设备（含 pppoe-wan）逐口取 `scope global` 的**完整地址**（之前抓到的是 br-lan 的 GUA，短地址且不对口）
 - **PD 前缀长度修正**：改为读 wan6 的 DHCPv6-PD 委派结果（`ubus ipv6-prefix` 的 address/mask），不再从 br-lan 的静态 `/64` 路由倒推；前缀长度与 `ip6assign` 一致（本例 /60）。WAN 的 /64 与 PD 前缀分属运营商不同地址池，**本来就不要求同段**，页面已加说明
 - **DNS 显示重做**：拆成「WAN 上游 DNS」「LAN 下发 DNS」两组，各自分 IPv4 / IPv6 两行，长地址自动换行；来源按 `resolv.conf.auto` 的接口分块解析，缺省回落到 `dnssettings` 的 dns1/dns2 与 `dhcp.lan.dhcp_option` / `dhcp.lan.dns`

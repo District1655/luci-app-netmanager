@@ -367,7 +367,7 @@ dnssettings-apply.sh 执行流程：
 | §5.6 | `files/usr/lib/lua/luci/model/cbi/netmanager/dns_staticv6.lua` | 693 行 | 静态 IP 分配 CBI 模型：绑定 dhcp.host + 在线客户端速览（四数据源交叉）+ 冲突检测 | get_online_devices 四源（dnsmasq 租约/ARP/odhcpd/NDP）；first_opt() 替代 ucode 桥无 get_first；merge 只在 on_before_commit 执行 |
 | §5.7 | `files/usr/lib/lua/luci/view/netmanager/common_head.htm` | 240 行 | 全部视图公共头：CSS 样式 + 公共 JS（escapeHtml / nmFetch / CSRF token / withBusy） | nmFetch 支持 FormData/string/URLSearchParams 三种体，新增调用勿绕开它 |
 | §5.8 | `files/usr/lib/lua/luci/view/netmanager/nav.htm` | 11 行 | 页内导航条：防火墙 6 页 + 上网设置 / 静态 IP 两个 CBI 入口 | 与 controller 菜单双维护，新增页面两处同步 |
-| §5.9 | `files/usr/lib/lua/luci/view/netmanager/cbi_nav.htm` | 105 行 | CBI 页面专用导航条：自带内联样式，由两个 CBI 模型以 Template 节点注入 | CBI 页不加载 common_head，样式必须内联；active 判断带 nil 防护 |
+| §5.9 | `files/usr/lib/lua/luci/view/netmanager/cbi_nav.htm` | 108 行 | CBI 页面专用导航条：自带内联样式，由两个 CBI 模型以 Template 节点注入 | CBI 页不加载 common_head，样式必须内联；active 判断带 nil 防护 |
 | §5.10 | `files/usr/lib/lua/luci/view/netmanager/overview.htm` | 124 行 | 系统概览页：防火墙状态 / 端口统计 / 网络信息 / 快捷操作 | footer 含版本号（登记处 4） |
 | §5.11 | `files/usr/lib/lua/luci/view/netmanager/port_forward.htm` | 284 行 | 端口转发管理页：IPv4/IPv6 DNAT 列表 + 「IPv6 端口放行（直连）」区 + 添加/编辑/删除/跟踪 | 放行区来源标注（自动配套/自定义）；删除/编辑一律数组下标传参，不传自由文本 |
 | §5.12 | `files/usr/lib/lua/luci/view/netmanager/firewall_rules.htm` | 251 行 | 防火墙规则管理页：自定义规则增删改 + 常用模板一键应用 + 源IP/目的IP 列 | IPv6 放行规则不在此页渲染（v1.8.13 移至端口转发页），保留迁移提示 |
@@ -386,15 +386,15 @@ dnssettings-apply.sh 执行流程：
 | §5.25 | `.github/workflows/extract_changelog.awk` | 18 行 | Release body 提取脚本：从 docs/CHANGELOG.md 取出指定版本段落 | 注释里的版本号是历史记录，勿改 |
 | §5.26 | `tools/build_ipk.py` | 152 行 | 打 ipk 工具：固定 mtime、目录 755/文件 644、脚本可执行位，产出 tar.gz 外壳的 _all.ipk | iStore CI 只认 tar.gz 外壳（ar 格式判 invalid）；支持 --version/--release/--files/--out |
 | §5.27 | `tools/build_apk.sh` | 77 行 | 打 apk 工具：缓存 openwrt-sdk-mini，chmod 规范化后调 apk mkpkg，再用 adbdump 自检 | 字段名是 name/version（不是 pkgname/pkgver）；多个 depends 写在同一个 -I 值里空格分隔 |
-| §5.28 | `tools/publish_istore.sh` | 180 行 | 上架 PR 工具：blob→tree(base_tree 取上游 pending/main)→commit→ref→PR，幂等（同 head 有 open PR 则跳过） | GH_TOKEN 走 ISTORE_TOKEN；DRY_RUN=1 干跑；请求体走 stdin，避免 argv 过长 |
+| §5.28 | `tools/publish_istore.sh` | 187 行 | 上架 PR 工具：blob→tree(base_tree 取上游 pending/main)→commit→ref→PR，幂等（同 head 有 open PR 则跳过） | GH_TOKEN 走 ISTORE_TOKEN；DRY_RUN=1 干跑；请求体走 stdin，避免 argv 过长 |
 | §5.29 | `tools/ensure_changelog.py` | 146 行 | 发布兜底：docs/CHANGELOG.md 缺当前版本段落时，按 git log 自动补一节（已存在则不动） | CI 在 syntax gate 后调用；自动补的提交带 `[skip ci]`，避免二次触发发版；纯 docs/ci 提交默认不进 body |
 | §5.30 | `istore/app-meta/Makefile` | 17 行 | 软件中心卡片元数据模板：META_TITLE/DESCRIPTION/AUTHOR/DEPENDS/TAGS/LUCI_ENTRY/WEBSITE + PKG_VERSION/PKG_RELEASE | PKG_VERSION/PKG_RELEASE 由 publish 脚本 sed 注入，勿写死；末尾 include ../../meta.mk |
 | §5.31 | `docs/gen_source_part.py` | 313 行 | 文档生成器：写 docs/source-full.md 源码全录 + PROJECT.md 第 5 章索引与第 9 章行号表 | 新增受控文件时在 FILES 列表补一条；第 9 章行号自动抓取，无需手改 |
-| §5.32 | `docs/CHANGELOG.md` | 424 行 | 全部历史版本记录（v1.8.14 → v1.4.0 → 继承 fwmanager v1.3.33），GitHub Release body 的来源 | 段落标题必须保持 `### vX.Y.Z (日期)`（build.yml 的 awk 按此匹配）；每版在顶部新增小节 |
+| §5.32 | `docs/CHANGELOG.md` | 428 行 | 全部历史版本记录（v1.8.14 → v1.4.0 → 继承 fwmanager v1.3.33），GitHub Release body 的来源 | 段落标题必须保持 `### vX.Y.Z (日期)`（build.yml 的 awk 按此匹配）；每版在顶部新增小节 |
 | §5.33 | `docs/istore-publish.md` | 51 行 | iStore 上架与自动发版说明：一次性 Secret 配置、日常发版流程、本地出包、常见问题 | 与 README「构建与发版」章节互补，改动流水线时两边同步 |
 | §5.34 | `.gitattributes` | 15 行 | git 属性：强制文本文件 LF（路由器 BusyBox ash 不能吃 CRLF） | 二进制文件单独标注；CRLF 警告可忽略 |
 | §5.35 | `.gitignore` | 7 行 | 忽略构建产物（dist/、ipk/apk、临时 tar.gz）；docs/source-full.md 需要入库，别加进来 | 新增构建输出目录时同步补一条 |
-| §5.36 | `README.md` | 435 行 | 用户文档：功能 / 安装（apk·ipk·脚本三路）/ CLI / 配置说明 / 构建与发版 / 更新日志 | L3 版本号是 build.yml 的 tag 提取源（登记处 12）；更新日志已迁到 docs/CHANGELOG.md，本文件只留最近一版摘要 |
+| §5.36 | `README.md` | 439 行 | 用户文档：功能 / 安装（apk·ipk·脚本三路）/ CLI / 配置说明 / 构建与发版 / 更新日志 | L3 版本号是 build.yml 的 tag 提取源（登记处 12）；更新日志已迁到 docs/CHANGELOG.md，本文件只留最近一版摘要 |
 
 > 需要看某个文件的完整内容或某段实现，直接翻 [`docs/source-full.md`](source-full.md) 对应 §5.x 小节；
 > 想知道命令/函数在源码里的行号，见第 9 章（同样是自动抓取）。

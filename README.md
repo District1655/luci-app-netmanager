@@ -1,6 +1,6 @@
 # 网络管理插件 (luci-app-netmanager)
 
-> 版本：v1.8.20
+> 版本：v1.8.21
 >
 > 适配：iStoreOS 25.12+（apk）/ iStoreOS 24.10 及 OpenWrt 23.05+（opkg / ipk），fw4 + nftables，Lua LuCI
 >
@@ -414,9 +414,13 @@ IPv4（每行一个 CIDR）：
 
 完整历史版本记录（v1.8.17 → v1.4.0 → 继承 fwmanager v1.3.33）已归档到 **[`docs/CHANGELOG.md`](docs/CHANGELOG.md)**，`build.yml` 从那里提取当前版本段落作为 GitHub Release body。
 
-**最近一版：v1.8.20（2026-11-27）**
+**最近一版：v1.8.21（2026-11-27）**
 
+- **CBI 页面（上网设置 / 静态IP分配）左上角对齐修正**：这两页少了自绘页面那层 `.netmanager-container`（`max-width:1200px; margin:0 auto; padding:16px`），卡片直接铺满、左边顶到屏幕边；现在搬迁脚本先建这层容器再放内容，横向起点与其它页面一致
 - **修复 CBI 页面导航少一项**：“上网设置 / 静态IP分配”原来用 `cbi_nav.htm` 里另一份硬编码菜单（漏了 IP过滤），现在改为 include 同一份 `nav.htm`，全插件只有一处菜单定义
+- **iStore 自动 PR 修好固定分支复用**：改分支原来走「删分支再建分支」，GitHub 会把旧 PR 判成已关闭、每个版本新开一个；改成 `PATCH ref` 强推后 PR 不再被关
+
+**v1.8.20（2026-11-27）**
 - **系统概览 IPv6 显示修正**：`WAN IPv6` 改为按 WAN 设备（含 pppoe-wan）逐口取 `scope global` 的**完整地址**（之前抓到的是 br-lan 的 GUA，短地址且不对口）
 - **PD 前缀长度修正**：改为读 wan6 的 DHCPv6-PD 委派结果（`ubus ipv6-prefix` 的 address/mask），不再从 br-lan 的静态 `/64` 路由倒推；前缀长度与 `ip6assign` 一致（本例 /60）。WAN 的 /64 与 PD 前缀分属运营商不同地址池，**本来就不要求同段**，页面已加说明
 - **DNS 显示重做**：拆成「WAN 上游 DNS」「LAN 下发 DNS」两组，各自分 IPv4 / IPv6 两行，长地址自动换行；来源按 `resolv.conf.auto` 的接口分块解析，缺省回落到 `dnssettings` 的 dns1/dns2 与 `dhcp.lan.dhcp_option` / `dhcp.lan.dns`
