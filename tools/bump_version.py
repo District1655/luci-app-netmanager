@@ -28,14 +28,16 @@ def main() -> int:
     if n1 != 1:
         print("✗ netmanager 里找不到 PLUGIN_VERSION")
         return 1
-    NM.write_text(nm, encoding="utf-8")
+    # 必须显式 newline="\n"：Windows 下 write_text 默认会把 LF 转成 CRLF，
+    # 一旦 netmanager 变成 CRLF，路由器上是 #!/bin/ash\r，直接执行报 not found。
+    NM.write_text(nm, encoding="utf-8", newline="\n")
 
     rd = README.read_text(encoding="utf-8")
     rd, n2 = re.subn(r"> 版本：v[0-9.]+", f"> 版本：v{new}", rd, count=1)
     if n2 != 1:
         print("✗ README 顶部找不到「> 版本：」行")
         return 1
-    README.write_text(rd, encoding="utf-8")
+    README.write_text(rd, encoding="utf-8", newline="\n")
 
     print(f"✓ PLUGIN_VERSION={new}  README 版本行已同步")
     subprocess.run([sys.executable, str(ROOT / "docs/gen_source_part.py")], cwd=ROOT, check=False)
