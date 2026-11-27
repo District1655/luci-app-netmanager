@@ -394,7 +394,7 @@ dnssettings-apply.sh 执行流程：
 | §5.33 | `docs/istore-publish.md` | 51 行 | iStore 上架与自动发版说明：一次性 Secret 配置、日常发版流程、本地出包、常见问题 | 与 README「构建与发版」章节互补，改动流水线时两边同步 |
 | §5.34 | `.gitattributes` | 15 行 | git 属性：强制文本文件 LF（路由器 BusyBox ash 不能吃 CRLF） | 二进制文件单独标注；CRLF 警告可忽略 |
 | §5.35 | `.gitignore` | 7 行 | 忽略构建产物（dist/、ipk/apk、临时 tar.gz）；docs/source-full.md 需要入库，别加进来 | 新增构建输出目录时同步补一条 |
-| §5.36 | `README.md` | 417 行 | 用户文档：功能 / 安装（apk·ipk·脚本三路）/ CLI / 配置说明 / 构建与发版 / 更新日志 | L3 版本号是 build.yml 的 tag 提取源（登记处 12）；更新日志已迁到 docs/CHANGELOG.md，本文件只留最近一版摘要 |
+| §5.36 | `README.md` | 421 行 | 用户文档：功能 / 安装（apk·ipk·脚本三路）/ CLI / 配置说明 / 构建与发版 / 更新日志 | L3 版本号是 build.yml 的 tag 提取源（登记处 12）；更新日志已迁到 docs/CHANGELOG.md，本文件只留最近一版摘要 |
 
 > 需要看某个文件的完整内容或某段实现，直接翻 [`docs/source-full.md`](source-full.md) 对应 §5.x 小节；
 > 想知道命令/函数在源码里的行号，见第 9 章（同样是自动抓取）。

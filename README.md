@@ -31,14 +31,17 @@
 3. **防火墙规则管理**：自定义通信规则增删改 + 常用模板一键应用 + 源IP/目的IP 粒度列；IPv6 端口放行规则不在此页（归端口转发页「IPv6 端口放行」区）
 4. **SSH 登录日志**：成功/失败记录 + 失败 IP 排行 Top 10 + 自动刷新
 5. **端口访问日志**：活跃连接 / 入站出站计数 / 拦截统计
-6. **中国 IPv4 访问限制**：仅允许中国大陆 IPv4 访问已开放端口，境外 IPv4 新建连接丢弃；独立 nft 表 `inet netmanager`（fw4 reload 不影响）；订阅链接与 cron 更新计划可自定义；开机 init + WAN hotplug 自愈；旧版 nft 自动降级兼容
-7. **中国 IPv6 访问限制（v1.7.0 新增）**：与 IPv4 版本对称，仅允许中国大陆 IPv6 访问已开放端口；独立 nft 表 `inet netmanager6`（与 IPv4/ fw4 互不影响）；订阅链接与 cron 更新计划可自定义；默认订阅 `https://ispip.clang.cn/all_cn_ipv6.txt`；开机 init + WAN hotplug 自愈
-8. **手动黑名单（v1.7.0 新增）**：支持 IPv4/IPv6 单个 IP 与 CIDR 网段（如 `1.2.3.0/24`、`2001:db8::/32`）手动拉黑，入站与转发流量直接丢弃；独立 nft 表 `inet netmanager_ban`（fw4 reload 不影响），条目持久化并开机/WAN 重连自动恢复
-9. **设置**：默认目标 IP / 整插件配置备份（UCI 配置 + 黑名单/白名单列表，恢复后自动重应用规则与 cron） / 插件在线更新 / 运行日志排错 / 一键卸载
+6. **IP过滤（v1.8.19 新增，一级页面）**：中国 IPv4 / IPv6 访问限制、手动黑名单、手动白名单集中在一页（`admin/netmanager/ip_filter`），页内 4 个子页签切换，样式与顶部导航一致
+   - **中国 IPv4 访问限制**：仅允许中国大陆 IPv4 访问已开放端口，境外 IPv4 新建连接丢弃；独立 nft 表 `inet netmanager`（fw4 reload 不影响）；订阅链接与 cron 更新计划可自定义；开机 init + WAN hotplug 自愈；旧版 nft 自动降级兼容
+   - **中国 IPv6 访问限制**：与 IPv4 版本对称，独立 nft 表 `inet netmanager6`；默认订阅 `https://ispip.clang.cn/all_cn_ipv6.txt`；开机 init + WAN hotplug 自愈
+   - **手动黑名单**：IPv4/IPv6 单个 IP 与 CIDR 网段手动拉黑，入站与转发流量直接丢弃；独立 nft 表 `inet netmanager_ban`，条目持久化并开机/WAN 重连自动恢复
+   - **手动白名单**：IPv4/IPv6 单个 IP 与 CIDR，条目并入 `china_v4` / `china_v6` 集合，等于给中国IP限制加一份人工允许列表（不受订阅更新影响；仅在中国IP限制启用时生效）
+   - **放行上级网关**：自动放行与本机 WAN 同网段的来源，解决光猫/上级网关被误杀（issue #1）
+7. **设置**：默认目标 IP / 整插件配置备份（UCI 配置 + 黑名单/白名单列表，恢复后自动重应用规则与 cron） / 插件在线更新 / 运行日志排错 / 一键卸载
 
 ### 上网设置（原 luci-app-dnssettings，CBI 标准表单）
 
-10. **上网设置**：
+8. **上网设置**：
    - WAN 口上网方式：PPPoE 拨号 / DHCP 自动获取 / 静态 IP
    - LAN 口地址：LAN 口 IP 地址与子网掩码
    - IPv6 获取与分发：WAN 前缀请求长度（PD）+ LAN 分发模式（状态化 / SLAAC / 中继 / 关闭）
@@ -47,7 +50,7 @@
    - dnsmasq 全局转发：统一配置上游解析服务器
    - 配置备份：一键备份当前系统 network/dhcp 配置到 `/root/backup/`
    - 应用配置：一键写入系统并重启 network/dnsmasq/odhcpd
-11. **静态 IP 分配（IPv4 + IPv6）**：基于 MAC 绑定 IPv4 地址 / hostid / ip6 / DUID，支持在线客户端一键绑定与解绑、自动合并重复条目、在线状态显示、地址与 hostid 冲突检测；公网 GUA 随运营商前缀变化，静态 IPv6 仅允许绑定 ULA 后缀
+9. **静态 IP 分配（IPv4 + IPv6）**：基于 MAC 绑定 IPv4 地址 / hostid / ip6 / DUID，支持在线客户端一键绑定与解绑、自动合并重复条目、在线状态显示、地址与 hostid 冲突检测；公网 GUA 随运营商前缀变化，静态 IPv6 仅允许绑定 ULA 后缀
 
 ### 默认 DNS
 
@@ -78,7 +81,8 @@ luci-app-netmanager/
 │   │       ├── firewall_rules.htm            # 规则管理
 │   │       ├── ssh_log.htm                   # SSH 日志
 │   │       ├── access_log.htm                # 访问日志
-│   │       ├── settings.htm                  # 设置（备份/更新/运行日志/中国IPv4/6过滤/卸载）
+│   │       ├── ip_filter.htm                # IP过滤（中国IPv4/6访问限制 + 手动黑名单/白名单，4 个页签）
+│   │       ├── settings.htm                  # 设置（默认目标/备份/更新/运行日志/卸载）
 │   │       ├── common_head.htm               # 公共样式
 │   │       ├── cbi_nav.htm                   # CBI 页面公共导航
 │   │       └── nav.htm                       # 公共导航（含上网设置、静态IP分配入口）
