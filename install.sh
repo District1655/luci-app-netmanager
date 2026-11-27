@@ -1,11 +1,16 @@
 #!/bin/ash
 # ============================================================
-# 网络管理插件 (luci-app-netmanager) - 一键安装脚本 v1.8.21
+# 网络管理插件 (luci-app-netmanager) - 一键安装脚本
 # 由 luci-app-fwmanager (防火墙管理) 与 luci-app-dnssettings (DNS设置) 合并而成
+# 版本号不再写死：运行时从随身携带的 files/usr/sbin/netmanager 读取 PLUGIN_VERSION
 # ============================================================
 
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+NM_VER=$(sed -n 's/.*PLUGIN_VERSION="\([^"]*\)".*/\1/p' "$SCRIPT_DIR/files/usr/sbin/netmanager" 2>/dev/null | head -1)
+[ -z "$NM_VER" ] && NM_VER="unknown"
+
 echo "============================================"
-echo "  网络管理插件 (luci-app-netmanager) v1.8.21"
+echo "  网络管理插件 (luci-app-netmanager) v${NM_VER}"
 echo "  防火墙管理 + DNS设置 一体化"
 echo "============================================"
 echo ""

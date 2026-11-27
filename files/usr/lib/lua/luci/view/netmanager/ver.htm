@@ -1,0 +1,27 @@
+<%#
+    netmanager/ver.htm - 版本号唯一来源读取器（v1.8.22）
+    运行时只读 /usr/sbin/netmanager 头部 40 行里的 PLUGIN_VERSION="x.y.z"，
+    页脚与设置页「当前版本」统一引用本模板，避免各页写死版本。
+    模板首尾用修剪标记，输出只有版本号本身，不夹带换行（否则会把页脚拆行）。
+%><%-local v = "unknown"
+local pat = 'PLUGIN_VERSION="([^"]+)"'
+pcall(function()
+    local f = io.open("/usr/sbin/netmanager", "r")
+    if not f then return end
+    for _ = 1, 40 do
+        local line = f:read("*l")
+        if not line then break end
+        local m = line:match(pat)
+        if m then v = m; break end
+    end
+    f:close()
+end)
+if v == "unknown" then
+    pcall(function()
+        local fs = require("luci.fs")
+        local content = fs.readfile("/usr/sbin/netmanager")
+        local m = content and content:match(pat)
+        if m then v = m end
+    end)
+end
+-%><%=v-%>

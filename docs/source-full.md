@@ -26,7 +26,7 @@ LOG_FILE="$LOG_DIR/run.log"
 LOG_ENABLED=0
 
 # 在线更新配置：版本号与 GitHub 仓库（发版时同步修改 PLUGIN_VERSION）
-PLUGIN_VERSION="1.8.21"
+PLUGIN_VERSION="1.8.22"
 REPO_OWNER="District1655"
 REPO_NAME="luci-app-netmanager"
 REPO_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
@@ -7212,9 +7212,9 @@ function withBusy(btn, fn) {
 
 ### 5.8 files/usr/lib/lua/luci/view/netmanager/nav.htm
 
-- **用途**：页内导航条：防火墙 6 页 + 上网设置 / 静态 IP 两个 CBI 入口
+- **用途**：页内导航条：防火墙 6 页 + 上网设置 / 静态 IP / IP过滤 / 设置
 - **规模**：11 行
-- **维护要点**：与 controller 菜单双维护，新增页面两处同步
+- **维护要点**：全插件唯一菜单定义；CBI 页也 include 本模板（勿再另写一份）
 
 ```html
 <div class="netmanager-nav">
@@ -7232,7 +7232,45 @@ function withBusy(btn, fn) {
 
 ```
 
-### 5.9 files/usr/lib/lua/luci/view/netmanager/cbi_nav.htm
+### 5.9 files/usr/lib/lua/luci/view/netmanager/ver.htm
+
+- **用途**：版本号读取器：运行时取 /usr/sbin/netmanager 的 PLUGIN_VERSION
+- **规模**：27 行
+- **维护要点**：页脚与设置页统一引用它，页面里不要再写死版本号
+
+```html
+<%#
+    netmanager/ver.htm - 版本号唯一来源读取器（v1.8.22）
+    运行时只读 /usr/sbin/netmanager 头部 40 行里的 PLUGIN_VERSION="x.y.z"，
+    页脚与设置页「当前版本」统一引用本模板，避免各页写死版本。
+    模板首尾用修剪标记，输出只有版本号本身，不夹带换行（否则会把页脚拆行）。
+%><%-local v = "unknown"
+local pat = 'PLUGIN_VERSION="([^"]+)"'
+pcall(function()
+    local f = io.open("/usr/sbin/netmanager", "r")
+    if not f then return end
+    for _ = 1, 40 do
+        local line = f:read("*l")
+        if not line then break end
+        local m = line:match(pat)
+        if m then v = m; break end
+    end
+    f:close()
+end)
+if v == "unknown" then
+    pcall(function()
+        local fs = require("luci.fs")
+        local content = fs.readfile("/usr/sbin/netmanager")
+        local m = content and content:match(pat)
+        if m then v = m end
+    end)
+end
+-%><%=v-%>
+
+
+```
+
+### 5.10 files/usr/lib/lua/luci/view/netmanager/cbi_nav.htm
 
 - **用途**：CBI 页面专用导航条：自带内联样式，由两个 CBI 模型以 Template 节点注入
 - **规模**：108 行
@@ -7351,7 +7389,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
 ```
 
-### 5.10 files/usr/lib/lua/luci/view/netmanager/overview.htm
+### 5.11 files/usr/lib/lua/luci/view/netmanager/overview.htm
 
 - **用途**：系统概览页：防火墙状态 / 端口统计 / 网络信息 / 快捷操作
 - **规模**：124 行
@@ -7436,7 +7474,7 @@ document.addEventListener('DOMContentLoaded', function () {
         </div>
         <div id="action_result" class="netmanager-result"></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.21</div>
+    <div class="footer-sign">网络管理插件 v<%+netmanager/ver%></div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -7486,7 +7524,7 @@ setInterval(loadOverview, 30000);
 
 ```
 
-### 5.11 files/usr/lib/lua/luci/view/netmanager/port_forward.htm
+### 5.12 files/usr/lib/lua/luci/view/netmanager/port_forward.htm
 
 - **用途**：端口转发管理页：IPv4/IPv6 DNAT 列表 + 「IPv6 端口放行（直连）」区 + 添加/编辑/删除/跟踪
 - **规模**：284 行
@@ -7586,7 +7624,7 @@ setInterval(loadOverview, 30000);
         </table>
         <div id="action_result" class="netmanager-result"></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.21</div>
+    <div class="footer-sign">网络管理插件 v<%+netmanager/ver%></div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -7781,7 +7819,7 @@ loadPortList();
 
 ```
 
-### 5.12 files/usr/lib/lua/luci/view/netmanager/firewall_rules.htm
+### 5.13 files/usr/lib/lua/luci/view/netmanager/firewall_rules.htm
 
 - **用途**：防火墙规则管理页：自定义规则增删改 + 常用模板一键应用 + 源IP/目的IP 列
 - **规模**：251 行
@@ -7906,7 +7944,7 @@ loadPortList();
         </div>
         <div id="action_result" class="netmanager-result"></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.21</div>
+    <div class="footer-sign">网络管理插件 v<%+netmanager/ver%></div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -8043,7 +8081,7 @@ loadRuleList();
 
 ```
 
-### 5.13 files/usr/lib/lua/luci/view/netmanager/ssh_log.htm
+### 5.14 files/usr/lib/lua/luci/view/netmanager/ssh_log.htm
 
 - **用途**：SSH 登录日志页：成功/失败记录 + 失败 IP Top10 + 自动刷新
 - **规模**：103 行
@@ -8096,7 +8134,7 @@ loadRuleList();
         <h3>失败登录记录</h3>
         <div class="netmanager-log" id="failed_log"><div class="text-muted">加载中...</div></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.21</div>
+    <div class="footer-sign">网络管理插件 v<%+netmanager/ver%></div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -8157,7 +8195,7 @@ loadSshLog();
 
 ```
 
-### 5.14 files/usr/lib/lua/luci/view/netmanager/access_log.htm
+### 5.15 files/usr/lib/lua/luci/view/netmanager/access_log.htm
 
 - **用途**：端口访问日志页：活跃连接 / 入站出站计数 / 拦截统计
 - **规模**：171 行
@@ -8218,7 +8256,7 @@ loadSshLog();
             <div id="bd_body" style="background:#ffffff;border:1px solid #e5e7eb;border-radius:6px;padding:4px;color:#1f2937;max-height:420px;overflow-y:auto;"></div>
         </div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.21</div>
+    <div class="footer-sign">网络管理插件 v<%+netmanager/ver%></div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -8339,7 +8377,7 @@ loadAccessLog();
 
 ```
 
-### 5.15 files/usr/lib/lua/luci/view/netmanager/ip_filter.htm
+### 5.16 files/usr/lib/lua/luci/view/netmanager/ip_filter.htm
 
 - **用途**：IP过滤页（v1.8.19 新增）：中国 IPv4 / IPv6 访问限制 + 手动黑名单 / 白名单，四个子页签切换
 - **规模**：622 行
@@ -8536,7 +8574,7 @@ loadAccessLog();
         </div>
         </div><!-- /nm_pane_white -->
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.21</div>
+    <div class="footer-sign">网络管理插件 v<%+netmanager/ver%></div>
 </div>
 <script>
 // ========== 中国IPv4访问限制 ==========
@@ -8972,7 +9010,7 @@ loadWhitelist();
 
 ```
 
-### 5.16 files/usr/lib/lua/luci/view/netmanager/settings.htm
+### 5.17 files/usr/lib/lua/luci/view/netmanager/settings.htm
 
 - **用途**：设置页：默认转发目标 / 系统工具 / 备份恢复 / 在线更新 / 插件更新 / 运行日志 / 卸载
 - **规模**：673 行
@@ -9033,7 +9071,7 @@ loadWhitelist();
             <table class="netmanager-table" style="margin-bottom:10px;">
                 <tr>
                     <td width="30%">当前版本</td>
-                    <td><b id="online_cur_version">v1.8.21</b></td>
+                    <td><b id="online_cur_version">v<%+netmanager/ver%></b></td>
                 </tr>
                 <tr>
                     <td>最新版本</td>
@@ -9152,7 +9190,7 @@ loadWhitelist();
         <h3>关于插件</h3>
         <table class="netmanager-table">
             <tr><td width="30%">插件名称</td><td>网络管理 (luci-app-netmanager)</td></tr>
-            <tr><td>版本</td><td id="plugin_version">v1.8.21</td></tr>
+            <tr><td>版本</td><td id="plugin_version">v<%+netmanager/ver%></td></tr>
             <tr><td>作者</td><td><b>吾爱破解liyu0828</b></td></tr>
             <tr><td>仓库地址</td><td><a href="https://github.com/District1655/luci-app-netmanager" target="_blank" style="color:#2563eb;">https://github.com/District1655/luci-app-netmanager</a></td></tr>
             <tr><td>适配系统</td><td>iStoreOS / OpenWrt (fw4/nftables)</td></tr>
@@ -9185,7 +9223,7 @@ loadWhitelist();
             </div>
         </div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.21<br><span style="font-size:10px;">适配 iStoreOS / OpenWrt | 基于 fw4/nftables</span></div>
+    <div class="footer-sign">网络管理插件 v<%+netmanager/ver%><br><span style="font-size:10px;">适配 iStoreOS / OpenWrt | 基于 fw4/nftables</span></div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -9656,7 +9694,7 @@ listBackups();
 
 ```
 
-### 5.17 files/etc/config/netmanager
+### 5.18 files/etc/config/netmanager
 
 - **用途**：防火墙模块 UCI 配置：默认目标 IP / 日志开关 / 中国 IPv4·IPv6 过滤参数 / 更新镜像
 - **规模**：17 行
@@ -9684,7 +9722,7 @@ config netmanager 'settings'
 
 ```
 
-### 5.18 files/etc/config/dnssettings
+### 5.19 files/etc/config/dnssettings
 
 - **用途**：上网设置模块 UCI 配置：wan / lan / dnsmasq / actions 四节
 - **规模**：22 行
@@ -9717,7 +9755,7 @@ config actions 'actions'
 
 ```
 
-### 5.19 files/etc/init.d/netmanager-china
+### 5.20 files/etc/init.d/netmanager-china
 
 - **用途**：开机自启脚本：重建中国 IPv4/IPv6 过滤与黑名单 nft 规则
 - **规模**：26 行
@@ -9754,7 +9792,7 @@ restart() {
 
 ```
 
-### 5.20 files/etc/hotplug.d/iface/95-netmanager-china
+### 5.21 files/etc/hotplug.d/iface/95-netmanager-china
 
 - **用途**：WAN 上线热插拔：接口 up 时重应用过滤与黑名单（自愈）
 - **规模**：30 行
@@ -9795,7 +9833,7 @@ exit 0
 
 ```
 
-### 5.21 files/etc/hotplug.d/iface/96-netmanager-v6sync
+### 5.22 files/etc/hotplug.d/iface/96-netmanager-v6sync
 
 - **用途**：WAN 上线热插拔：同步 IPv6 转发目标（前缀变化跟随）
 - **规模**：62 行
@@ -9868,21 +9906,26 @@ exit 0
 
 ```
 
-### 5.22 install.sh
+### 5.23 install.sh
 
 - **用途**：一键安装脚本：7 步安装（复制文件/权限/符号链接/init/cron），支持 SKIP_UHTTPD_RESTART
-- **规模**：143 行
+- **规模**：148 行
 - **维护要点**：版本号登记处 2、3；新增安装产物须三处同步（install.sh / uninstall / files/）
 
 ```bash
 #!/bin/ash
 # ============================================================
-# 网络管理插件 (luci-app-netmanager) - 一键安装脚本 v1.8.21
+# 网络管理插件 (luci-app-netmanager) - 一键安装脚本
 # 由 luci-app-fwmanager (防火墙管理) 与 luci-app-dnssettings (DNS设置) 合并而成
+# 版本号不再写死：运行时从随身携带的 files/usr/sbin/netmanager 读取 PLUGIN_VERSION
 # ============================================================
 
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+NM_VER=$(sed -n 's/.*PLUGIN_VERSION="\([^"]*\)".*/\1/p' "$SCRIPT_DIR/files/usr/sbin/netmanager" 2>/dev/null | head -1)
+[ -z "$NM_VER" ] && NM_VER="unknown"
+
 echo "============================================"
-echo "  网络管理插件 (luci-app-netmanager) v1.8.21"
+echo "  网络管理插件 (luci-app-netmanager) v${NM_VER}"
 echo "  防火墙管理 + DNS设置 一体化"
 echo "============================================"
 echo ""
@@ -10022,10 +10065,10 @@ echo "============================================"
 
 ```
 
-### 5.23 .github/workflows/build.yml
+### 5.24 .github/workflows/build.yml
 
 - **用途**：CI：push main 时从 README 提版本 → 语法门禁 → 打 tar.gz → 打 tag → 发 Release（body 取自更新日志）
-- **规模**：276 行
+- **规模**：281 行
 - **维护要点**：tag 已存在则整条跳过；重发同版本用 workflow_dispatch 勾 force
 
 ````yaml
@@ -10055,15 +10098,20 @@ jobs:
           # 需要完整提交历史：缺更新日志时按 git log 自动补一节
           fetch-depth: 0
 
-      - name: Read version from README
+      - name: Read version from netmanager
         id: version
         run: |
-          # 从 README.md 头部「版本：vX.Y.Z」提取最新版本号（-m1 取第一处匹配）
-          # 提取失败时用当前日期兜底，保证流水线不中断
-          VERSION=$(grep -m1 -oE '版本：v[0-9]+\.[0-9]+\.[0-9]+' README.md | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
+          # v1.8.22：版本号唯一来源改为 files/usr/sbin/netmanager 的 PLUGIN_VERSION，
+          # 不再依赖 README（页面页脚也已改成运行时读取同一个值）。
+          # 取不到时退回 README，再退回日期，保证流水线不中断。
+          VERSION=$(sed -n 's/.*PLUGIN_VERSION="\([^"]*\)".*/\1/p' files/usr/sbin/netmanager | head -1)
+          if [ -z "$VERSION" ]; then
+            VERSION=$(grep -m1 -oE '版本：v[0-9]+\.[0-9]+\.[0-9]+' README.md | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
+            echo "WARN: 未从 PLUGIN_VERSION 取到版本号，回退 README: $VERSION"
+          fi
           if [ -z "$VERSION" ]; then
             VERSION=$(date +'%Y.%m.%d')
-            echo "WARN: 未从 README.md 提取到版本号，使用日期兜底: $VERSION"
+            echo "WARN: 未取到版本号，使用日期兜底: $VERSION"
           fi
           TAG="v${VERSION}"
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
@@ -10309,7 +10357,7 @@ jobs:
 
 ````
 
-### 5.24 .github/workflows/publish-istore.yml
+### 5.25 .github/workflows/publish-istore.yml
 
 - **用途**：CI：Release 发布后构建 ipk/apk、上传 Release 资产、自动向 istoreos/istore-repo（pending）与 openwrt-app-meta（main）提 PR
 - **规模**：118 行
@@ -10438,7 +10486,7 @@ jobs:
 
 ```
 
-### 5.25 .github/workflows/extract_changelog.awk
+### 5.26 .github/workflows/extract_changelog.awk
 
 - **用途**：Release body 提取脚本：从 docs/CHANGELOG.md 取出指定版本段落
 - **规模**：18 行
@@ -10467,7 +10515,7 @@ found {
 
 ```
 
-### 5.26 tools/build_ipk.py
+### 5.27 tools/build_ipk.py
 
 - **用途**：打 ipk 工具：固定 mtime、目录 755/文件 644、脚本可执行位，产出 tar.gz 外壳的 _all.ipk
 - **规模**：152 行
@@ -10630,7 +10678,7 @@ if __name__ == "__main__":
 
 ```
 
-### 5.27 tools/build_apk.sh
+### 5.28 tools/build_apk.sh
 
 - **用途**：打 apk 工具：缓存 openwrt-sdk-mini，chmod 规范化后调 apk mkpkg，再用 adbdump 自检
 - **规模**：77 行
@@ -10718,7 +10766,7 @@ ls -lh "$OUTFILE"
 
 ```
 
-### 5.28 tools/publish_istore.sh
+### 5.29 tools/publish_istore.sh
 
 - **用途**：上架 PR 工具：blob→tree(base_tree 取上游 pending/main)→commit→ref→PR，幂等（同 head 有 open PR 则跳过）
 - **规模**：187 行
@@ -10916,7 +10964,7 @@ fi
 
 ```
 
-### 5.29 tools/ensure_changelog.py
+### 5.30 tools/ensure_changelog.py
 
 - **用途**：发布兜底：docs/CHANGELOG.md 缺当前版本段落时，按 git log 自动补一节（已存在则不动）
 - **规模**：146 行
@@ -11073,7 +11121,7 @@ if __name__ == "__main__":
 
 ```
 
-### 5.30 istore/app-meta/Makefile
+### 5.31 istore/app-meta/Makefile
 
 - **用途**：软件中心卡片元数据模板：META_TITLE/DESCRIPTION/AUTHOR/DEPENDS/TAGS/LUCI_ENTRY/WEBSITE + PKG_VERSION/PKG_RELEASE
 - **规模**：17 行
@@ -11101,10 +11149,10 @@ include ../../meta.mk
 
 ```
 
-### 5.31 docs/gen_source_part.py
+### 5.32 docs/gen_source_part.py
 
 - **用途**：文档生成器：写 docs/source-full.md 源码全录 + PROJECT.md 第 5 章索引与第 9 章行号表
-- **规模**：313 行
+- **规模**：316 行
 - **维护要点**：新增受控文件时在 FILES 列表补一条；第 9 章行号自动抓取，无需手改
 
 ````python
@@ -11156,8 +11204,11 @@ FILES = [
      "全部视图公共头：CSS 样式 + 公共 JS（escapeHtml / nmFetch / CSRF token / withBusy）",
      "nmFetch 支持 FormData/string/URLSearchParams 三种体，新增调用勿绕开它"),
     ("files/usr/lib/lua/luci/view/netmanager/nav.htm", "html",
-     "页内导航条：防火墙 6 页 + 上网设置 / 静态 IP 两个 CBI 入口",
-     "与 controller 菜单双维护，新增页面两处同步"),
+     "页内导航条：防火墙 6 页 + 上网设置 / 静态 IP / IP过滤 / 设置",
+     "全插件唯一菜单定义；CBI 页也 include 本模板（勿再另写一份）"),
+    ("files/usr/lib/lua/luci/view/netmanager/ver.htm", "html",
+     "版本号读取器：运行时取 /usr/sbin/netmanager 的 PLUGIN_VERSION",
+     "页脚与设置页统一引用它，页面里不要再写死版本号"),
     ("files/usr/lib/lua/luci/view/netmanager/cbi_nav.htm", "html",
      "CBI 页面专用导航条：自带内联样式，由两个 CBI 模型以 Template 节点注入",
      "CBI 页不加载 common_head，样式必须内联；active 判断带 nil 防护"),
@@ -11425,10 +11476,10 @@ if __name__ == "__main__":
 
 ````
 
-### 5.32 docs/CHANGELOG.md
+### 5.33 docs/CHANGELOG.md
 
 - **用途**：全部历史版本记录（v1.8.14 → v1.4.0 → 继承 fwmanager v1.3.33），GitHub Release body 的来源
-- **规模**：428 行
+- **规模**：434 行
 - **维护要点**：段落标题必须保持 `### vX.Y.Z (日期)`（build.yml 的 awk 按此匹配）；每版在顶部新增小节
 
 ```markdown
@@ -11440,6 +11491,12 @@ if __name__ == "__main__":
 > `README.md` 只保留「最近一版要点 + 指向本文件的链接」。
 
 > **2026-11-26 工程更新（版本号不变，交付形态与 CI 变更）**：新增 ipk/apk 双格式打包（`tools/`）、iStore 软件中心上架元数据（`istore/app-meta/`）、Release 后自动构建并提 PR 到 `istoreos/istore-repo` 与 `istoreos/openwrt-app-meta` 的流水线（`.github/workflows/publish-istore.yml`）；README 安装章节按 apk/opkg 双体系重写。
+
+### v1.8.22 (2026-11-27)
+- **版本号不再写死在页面里**：新增 `view/netmanager/ver.htm`，运行时只读 `/usr/sbin/netmanager` 头部 40 行取 `PLUGIN_VERSION`；7 个页面的页脚、设置页「当前版本 / 插件版本」全部改成引用它。之前升到 1.8.21 后设置页还显示 1.8.19，就是因为 `settings.htm` 里写死的版本号没跟着改。
+- **`install.sh` 横幅版本改为运行时读取**：从随包的 `files/usr/sbin/netmanager` 里 sed 出 `PLUGIN_VERSION`，脚本自身不再写死版本。
+- **CI 版本来源改为 `PLUGIN_VERSION`**：`build.yml` 先读 `files/usr/sbin/netmanager`，取不到才回退 README，再取不到用日期兜底；打包、tag、Release、iStore PR 全部由这一个值驱动。
+- **新增 `tools/bump_version.py`**：`python tools/bump_version.py 1.8.22` 一条命令完成「改 PLUGIN_VERSION + 同步 README 展示行 + 重生成 docs/source-full.md 与 PROJECT 索引」，发版只需再补一段 CHANGELOG。
 
 ### v1.8.21 (2026-11-27)
 - **CBI 页面（上网设置 / 静态IP分配）左上角位置与其它页面对齐**：自绘页面外层有 `.netmanager-container`（`max-width:1200px; margin:0 auto; padding:16px`），CBI 页面的 DOM 搬迁脚本只建了卡片、没建这层容器，卡片直接铺在主题容器里，于是宽度铺满、左边顶到屏幕边。现在脚本先建 `.netmanager-container` 再把标题栏/导航/内容卡放进去，横向起点、宽度、留白与端口转发等页一致；`cbi_nav.htm` 自带样式里也补了这条规则。
@@ -11864,7 +11921,7 @@ if __name__ == "__main__":
 
 ```
 
-### 5.33 docs/istore-publish.md
+### 5.34 docs/istore-publish.md
 
 - **用途**：iStore 上架与自动发版说明：一次性 Secret 配置、日常发版流程、本地出包、常见问题
 - **规模**：51 行
@@ -11926,7 +11983,7 @@ VERSION=1.8.14 RELEASE=1 OUT=dist bash tools/build_apk.sh
 
 ````
 
-### 5.34 .gitattributes
+### 5.35 .gitattributes
 
 - **用途**：git 属性：强制文本文件 LF（路由器 BusyBox ash 不能吃 CRLF）
 - **规模**：15 行
@@ -11952,7 +12009,7 @@ VERSION=1.8.14 RELEASE=1 OUT=dist bash tools/build_apk.sh
 
 ```
 
-### 5.35 .gitignore
+### 5.36 .gitignore
 
 - **用途**：忽略构建产物（dist/、ipk/apk、临时 tar.gz）；docs/source-full.md 需要入库，别加进来
 - **规模**：7 行
@@ -11970,16 +12027,16 @@ dist/
 
 ```
 
-### 5.36 README.md
+### 5.37 README.md
 
 - **用途**：用户文档：功能 / 安装（apk·ipk·脚本三路）/ CLI / 配置说明 / 构建与发版 / 更新日志
-- **规模**：439 行
+- **规模**：444 行
 - **维护要点**：L3 版本号是 build.yml 的 tag 提取源（登记处 12）；更新日志已迁到 docs/CHANGELOG.md，本文件只留最近一版摘要
 
 ````markdown
 # 网络管理插件 (luci-app-netmanager)
 
-> 版本：v1.8.21
+> 版本：v1.8.22
 >
 > 适配：iStoreOS 25.12+（apk）/ iStoreOS 24.10 及 OpenWrt 23.05+（opkg / ipk），fw4 + nftables，Lua LuCI
 >
@@ -12163,10 +12220,10 @@ VERSION=1.8.14 RELEASE=1 FILES=files OUT=dist bash tools/build_apk.sh
 
 ### 发版（push main 一条链路到底）
 
-1. 改两处版本号：`files/usr/sbin/netmanager` 的 `PLUGIN_VERSION`（权威源，L15）与 `README.md` 头部 `> 版本：vX.Y.Z`
+1. 一条命令升版本：`python tools/bump_version.py 1.8.22`——它把**唯一权威源** `files/usr/sbin/netmanager` 的 `PLUGIN_VERSION`（L15）改掉，并同步 README 头部展示行、重生成 `docs/source-full.md` 与 PROJECT 索引。页面页脚、设置页「当前版本」、`install.sh` 横幅、CI 打包都运行时读取这一个值，不再逐处写死
 2. （可选）在 [`docs/CHANGELOG.md`](docs/CHANGELOG.md) 顶部手写 `### vX.Y.Z (日期)` 小节——**忘写不会阻塞发版**：CI 会按 `git log` 自动补一节（提交即带 `[skip ci]`，不会触发二次发版），Release body 照样有内容；手写的版本优先，CI 不覆盖已有段落
 3. `git push origin main`
-4. `build.yml`：校验两处版本一致 → `sh -n` / `luac -p` 门禁 → 打 `tar.gz` → 打 tag → 发 Release（tag 已存在则整条跳过，可手动 `workflow_dispatch` 勾 `force`）
+4. `build.yml`：从 `PLUGIN_VERSION` 读版本（取不到才回退 README）→ `sh -n` / `luac -p` 门禁 → 打 `tar.gz` → 打 tag → 发 Release（tag 已存在则整条跳过，可手动 `workflow_dispatch` 勾 `force`）
 5. `publish-istore.yml`（Release published 事件触发）：构建 `ipk` + `apk` → 上传为 Release 资产 → 自动向 `istoreos/istore-repo`（base `pending`）与 `istoreos/openwrt-app-meta`（base `main`）提 PR
 6. 官方合并 `pending` 后，上游 `ci-pending.yml` 会把包 cherry-pick 到 main、删同名旧包、刷新索引，软件中心即更新
 7. 发版末尾自动清理历史：`tools/prune_history.sh` 只保留版本号最高的 10 个 Tag 与 Release，更早的连 Release 带 tag 一起删（按版本号排序，不是按发布时间；`docs/CHANGELOG.md` 里的文字记录不受影响）
@@ -12393,7 +12450,12 @@ IPv4（每行一个 CIDR）：
 
 完整历史版本记录（v1.8.17 → v1.4.0 → 继承 fwmanager v1.3.33）已归档到 **[`docs/CHANGELOG.md`](docs/CHANGELOG.md)**，`build.yml` 从那里提取当前版本段落作为 GitHub Release body。
 
-**最近一版：v1.8.21（2026-11-27）**
+**最近一版：v1.8.22（2026-11-27）**
+
+- **版本号去写死**：新增 `ver.htm`，页脚与设置页版本运行时从 `netmanager` 的 `PLUGIN_VERSION` 读取；`install.sh` 横幅、CI 打包也改成读同一个值，发版不再需要逐处改页面
+- **新增 `tools/bump_version.py`**：一条命令升版本（改 `PLUGIN_VERSION` + README 展示行 + 重生成源码全录），避免漏改
+
+**v1.8.21（2026-11-27）**
 
 - **CBI 页面（上网设置 / 静态IP分配）左上角对齐修正**：这两页少了自绘页面那层 `.netmanager-container`（`max-width:1200px; margin:0 auto; padding:16px`），卡片直接铺满、左边顶到屏幕边；现在搬迁脚本先建这层容器再放内容，横向起点与其它页面一致
 - **修复 CBI 页面导航少一项**：“上网设置 / 静态IP分配”原来用 `cbi_nav.htm` 里另一份硬编码菜单（漏了 IP过滤），现在改为 include 同一份 `nav.htm`，全插件只有一处菜单定义

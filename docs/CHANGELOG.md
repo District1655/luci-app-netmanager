@@ -7,6 +7,12 @@
 
 > **2026-11-26 工程更新（版本号不变，交付形态与 CI 变更）**：新增 ipk/apk 双格式打包（`tools/`）、iStore 软件中心上架元数据（`istore/app-meta/`）、Release 后自动构建并提 PR 到 `istoreos/istore-repo` 与 `istoreos/openwrt-app-meta` 的流水线（`.github/workflows/publish-istore.yml`）；README 安装章节按 apk/opkg 双体系重写。
 
+### v1.8.22 (2026-11-27)
+- **版本号不再写死在页面里**：新增 `view/netmanager/ver.htm`，运行时只读 `/usr/sbin/netmanager` 头部 40 行取 `PLUGIN_VERSION`；7 个页面的页脚、设置页「当前版本 / 插件版本」全部改成引用它。之前升到 1.8.21 后设置页还显示 1.8.19，就是因为 `settings.htm` 里写死的版本号没跟着改。
+- **`install.sh` 横幅版本改为运行时读取**：从随包的 `files/usr/sbin/netmanager` 里 sed 出 `PLUGIN_VERSION`，脚本自身不再写死版本。
+- **CI 版本来源改为 `PLUGIN_VERSION`**：`build.yml` 先读 `files/usr/sbin/netmanager`，取不到才回退 README，再取不到用日期兜底；打包、tag、Release、iStore PR 全部由这一个值驱动。
+- **新增 `tools/bump_version.py`**：`python tools/bump_version.py 1.8.22` 一条命令完成「改 PLUGIN_VERSION + 同步 README 展示行 + 重生成 docs/source-full.md 与 PROJECT 索引」，发版只需再补一段 CHANGELOG。
+
 ### v1.8.21 (2026-11-27)
 - **CBI 页面（上网设置 / 静态IP分配）左上角位置与其它页面对齐**：自绘页面外层有 `.netmanager-container`（`max-width:1200px; margin:0 auto; padding:16px`），CBI 页面的 DOM 搬迁脚本只建了卡片、没建这层容器，卡片直接铺在主题容器里，于是宽度铺满、左边顶到屏幕边。现在脚本先建 `.netmanager-container` 再把标题栏/导航/内容卡放进去，横向起点、宽度、留白与端口转发等页一致；`cbi_nav.htm` 自带样式里也补了这条规则。
 - **CBI 页面导航统一，修复「上网设置 / 静态IP分配」页顶部少一项**：这两个页面走 CBI 渲染，导航是 `cbi_nav.htm` 里另写的一份硬编码菜单，v1.8.19 加「IP过滤」时只改了自绘页面的 `nav.htm`，所以切到这两页时 IP过滤 入口会“消失”。现在 `cbi_nav.htm` 改为 `<%+netmanager/nav%>` 直接 include 同一份导航，菜单只有一处维护，两个页面的高亮与顺序也和其它页面一致。

@@ -1,6 +1,6 @@
 # 网络管理插件 (luci-app-netmanager)
 
-> 版本：v1.8.21
+> 版本：v1.8.22
 >
 > 适配：iStoreOS 25.12+（apk）/ iStoreOS 24.10 及 OpenWrt 23.05+（opkg / ipk），fw4 + nftables，Lua LuCI
 >
@@ -184,10 +184,10 @@ VERSION=1.8.14 RELEASE=1 FILES=files OUT=dist bash tools/build_apk.sh
 
 ### 发版（push main 一条链路到底）
 
-1. 改两处版本号：`files/usr/sbin/netmanager` 的 `PLUGIN_VERSION`（权威源，L15）与 `README.md` 头部 `> 版本：vX.Y.Z`
+1. 一条命令升版本：`python tools/bump_version.py 1.8.22`——它把**唯一权威源** `files/usr/sbin/netmanager` 的 `PLUGIN_VERSION`（L15）改掉，并同步 README 头部展示行、重生成 `docs/source-full.md` 与 PROJECT 索引。页面页脚、设置页「当前版本」、`install.sh` 横幅、CI 打包都运行时读取这一个值，不再逐处写死
 2. （可选）在 [`docs/CHANGELOG.md`](docs/CHANGELOG.md) 顶部手写 `### vX.Y.Z (日期)` 小节——**忘写不会阻塞发版**：CI 会按 `git log` 自动补一节（提交即带 `[skip ci]`，不会触发二次发版），Release body 照样有内容；手写的版本优先，CI 不覆盖已有段落
 3. `git push origin main`
-4. `build.yml`：校验两处版本一致 → `sh -n` / `luac -p` 门禁 → 打 `tar.gz` → 打 tag → 发 Release（tag 已存在则整条跳过，可手动 `workflow_dispatch` 勾 `force`）
+4. `build.yml`：从 `PLUGIN_VERSION` 读版本（取不到才回退 README）→ `sh -n` / `luac -p` 门禁 → 打 `tar.gz` → 打 tag → 发 Release（tag 已存在则整条跳过，可手动 `workflow_dispatch` 勾 `force`）
 5. `publish-istore.yml`（Release published 事件触发）：构建 `ipk` + `apk` → 上传为 Release 资产 → 自动向 `istoreos/istore-repo`（base `pending`）与 `istoreos/openwrt-app-meta`（base `main`）提 PR
 6. 官方合并 `pending` 后，上游 `ci-pending.yml` 会把包 cherry-pick 到 main、删同名旧包、刷新索引，软件中心即更新
 7. 发版末尾自动清理历史：`tools/prune_history.sh` 只保留版本号最高的 10 个 Tag 与 Release，更早的连 Release 带 tag 一起删（按版本号排序，不是按发布时间；`docs/CHANGELOG.md` 里的文字记录不受影响）
@@ -414,7 +414,12 @@ IPv4（每行一个 CIDR）：
 
 完整历史版本记录（v1.8.17 → v1.4.0 → 继承 fwmanager v1.3.33）已归档到 **[`docs/CHANGELOG.md`](docs/CHANGELOG.md)**，`build.yml` 从那里提取当前版本段落作为 GitHub Release body。
 
-**最近一版：v1.8.21（2026-11-27）**
+**最近一版：v1.8.22（2026-11-27）**
+
+- **版本号去写死**：新增 `ver.htm`，页脚与设置页版本运行时从 `netmanager` 的 `PLUGIN_VERSION` 读取；`install.sh` 横幅、CI 打包也改成读同一个值，发版不再需要逐处改页面
+- **新增 `tools/bump_version.py`**：一条命令升版本（改 `PLUGIN_VERSION` + README 展示行 + 重生成源码全录），避免漏改
+
+**v1.8.21（2026-11-27）**
 
 - **CBI 页面（上网设置 / 静态IP分配）左上角对齐修正**：这两页少了自绘页面那层 `.netmanager-container`（`max-width:1200px; margin:0 auto; padding:16px`），卡片直接铺满、左边顶到屏幕边；现在搬迁脚本先建这层容器再放内容，横向起点与其它页面一致
 - **修复 CBI 页面导航少一项**：“上网设置 / 静态IP分配”原来用 `cbi_nav.htm` 里另一份硬编码菜单（漏了 IP过滤），现在改为 include 同一份 `nav.htm`，全插件只有一处菜单定义

@@ -24,15 +24,20 @@ jobs:
           # 需要完整提交历史：缺更新日志时按 git log 自动补一节
           fetch-depth: 0
 
-      - name: Read version from README
+      - name: Read version from netmanager
         id: version
         run: |
-          # 从 README.md 头部「版本：vX.Y.Z」提取最新版本号（-m1 取第一处匹配）
-          # 提取失败时用当前日期兜底，保证流水线不中断
-          VERSION=$(grep -m1 -oE '版本：v[0-9]+\.[0-9]+\.[0-9]+' README.md | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
+          # v1.8.22：版本号唯一来源改为 files/usr/sbin/netmanager 的 PLUGIN_VERSION，
+          # 不再依赖 README（页面页脚也已改成运行时读取同一个值）。
+          # 取不到时退回 README，再退回日期，保证流水线不中断。
+          VERSION=$(sed -n 's/.*PLUGIN_VERSION="\([^"]*\)".*/\1/p' files/usr/sbin/netmanager | head -1)
+          if [ -z "$VERSION" ]; then
+            VERSION=$(grep -m1 -oE '版本：v[0-9]+\.[0-9]+\.[0-9]+' README.md | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
+            echo "WARN: 未从 PLUGIN_VERSION 取到版本号，回退 README: $VERSION"
+          fi
           if [ -z "$VERSION" ]; then
             VERSION=$(date +'%Y.%m.%d')
-            echo "WARN: 未从 README.md 提取到版本号，使用日期兜底: $VERSION"
+            echo "WARN: 未取到版本号，使用日期兜底: $VERSION"
           fi
           TAG="v${VERSION}"
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
