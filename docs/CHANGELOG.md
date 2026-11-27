@@ -7,6 +7,11 @@
 
 > **2026-11-26 工程更新（版本号不变，交付形态与 CI 变更）**：新增 ipk/apk 双格式打包（`tools/`）、iStore 软件中心上架元数据（`istore/app-meta/`）、Release 后自动构建并提 PR 到 `istoreos/istore-repo` 与 `istoreos/openwrt-app-meta` 的流水线（`.github/workflows/publish-istore.yml`）；README 安装章节按 apk/opkg 双体系重写。
 
+### v1.8.18 (2026-11-27)
+- **设置页新增「过滤 / 名单」子菜单**：把「中国IPv4访问限制」「中国IPv6访问限制」「手动黑名单」「手动白名单」收进一排 4 个页签，点击只显示当前区块，其余隐藏；样式沿用顶部导航（白底圆角、选中蓝底白字，字号略收），每项前有与对应区块左边框同色的小圆点。页签选择记在 `localStorage`，刷新后回到上次所在页签，默认第一项。
+- 顺带去掉 4 个区块重复的 `h3` 标题（页签本身即标题），避免“页签文字 + 标题文字”连着出现两遍。
+- **iStore 自动 PR 改为固定分支**：`tools/publish_istore.sh` 不再按版本号建分支（原来每发一版就在上游新开一对 PR），改为固定 `auto/luci-app-netmanager` 与 `auto/app-meta-luci-app-netmanager`，每次发版强推同一分支、标题/说明更新为最新版本，PR 自动跟随；提交树里会同时删掉上一版本的 ipk/apk，避免一个 PR 里堆多个版本。
+
 ### v1.8.17 (2026-11-27)
 - **新增手动白名单（IPv4 / IPv6 双栈）**：`netmanager whitelist list|add|del|clear|apply`，支持单个 IP 与 CIDR 网段（`8.8.8.8`、`203.0.113.0/24`、`2001:db8::1`、`2001:db8::/32`）。实现方式是**把手动条目直接并进中国过滤的 `china_v4` / `china_v6` 集合**，等于给订阅列表加了一份“人工补充的允许列表”——这些来源不再命中 `ip saddr != @china_v4 drop`；条目不受 china.txt 订阅更新影响。
 - **为什么不用独立 accept 链**：netfilter 里 `accept` 只结束当前 base chain，同一个 hook 上的其它 base chain（中国过滤 -50）仍会继续执行。真机实测独立的 -60 `accept` 链：accept 计数在涨、drop 计数同时也在涨，包照样被丢；因此改为集合注入，行为可预期。

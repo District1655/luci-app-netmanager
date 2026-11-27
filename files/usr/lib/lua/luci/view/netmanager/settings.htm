@@ -27,8 +27,16 @@
             <button class="btn btn-secondary btn-sm" onclick="loadSettings()">刷新</button>
         </div>
 
+        <!-- v1.8.18：过滤/名单子菜单（4 个页签，样式与顶部导航一致） -->
+        <div class="nm-subnav" id="nm_subnav">
+            <button type="button" class="active" data-pane="china4" onclick="nmSwitchPane('china4')"><span class="nm-dot" style="background:#f97316;"></span>中国IPv4访问限制</button>
+            <button type="button" data-pane="china6" onclick="nmSwitchPane('china6')"><span class="nm-dot" style="background:#8b5cf6;"></span>中国IPv6访问限制</button>
+            <button type="button" data-pane="black" onclick="nmSwitchPane('black')"><span class="nm-dot" style="background:#ef4444;"></span>手动黑名单</button>
+            <button type="button" data-pane="white" onclick="nmSwitchPane('white')"><span class="nm-dot" style="background:#22c55e;"></span>手动白名单</button>
+        </div>
+
+        <div class="nm-pane" id="nm_pane_china4">
         <!-- 中国IPv4访问限制 -->
-        <h3>中国IPv4访问限制</h3>
         <div class="netmanager-form" style="border-left:3px solid #f97316;">
             <div style="margin-bottom:10px;">
                 <b>仅允许中国大陆 IPv4 访问已开放端口</b>
@@ -85,9 +93,10 @@
                 <button class="btn btn-secondary btn-sm" onclick="loadChinaStatus()">刷新状态</button>
             </div>
         </div>
+        </div><!-- /nm_pane_china4 -->
 
+        <div class="nm-pane" id="nm_pane_china6" style="display:none;">
         <!-- 中国IPv6访问限制 -->
-        <h3>中国IPv6访问限制</h3>
         <div class="netmanager-form" style="border-left:3px solid #8b5cf6;">
             <div style="margin-bottom:10px;">
                 <b>仅允许中国大陆 IPv6 访问已开放端口</b>
@@ -136,9 +145,10 @@
                 <button class="btn btn-secondary btn-sm" onclick="loadChina6Status()">刷新状态</button>
             </div>
         </div>
+        </div><!-- /nm_pane_china6 -->
 
+        <div class="nm-pane" id="nm_pane_black" style="display:none;">
         <!-- 手动黑名单（IPv4/IPv6） -->
-        <h3>手动黑名单（IPv4 / IPv6）</h3>
         <div class="netmanager-form" style="border-left:3px solid #ef4444;">
             <div style="margin-bottom:10px;">
                 <b>手动拉黑 IP / IP段</b>
@@ -165,9 +175,10 @@
                 规则状态: <span id="ban_active_cell">—</span> | 条目持久化于 <code>/etc/netmanager/blacklist_v4.list</code> / <code>blacklist_v6.list</code>，重启或WAN重连后自动恢复
             </div>
         </div>
+        </div><!-- /nm_pane_black -->
 
+        <div class="nm-pane" id="nm_pane_white" style="display:none;">
         <!-- 手动白名单（IPv4/IPv6，v1.8.17） -->
-        <h3>手动白名单（IPv4 / IPv6）</h3>
         <div class="netmanager-form" style="border-left:3px solid #22c55e;">
             <div style="margin-bottom:10px;">
                 <b>给中国IP限制开例外，放行指定 IP / IP段</b>
@@ -194,6 +205,7 @@
                 规则状态: <span id="wl_active_cell">—</span> | 条目持久化于 <code>/etc/netmanager/whitelist_v4.list</code> / <code>whitelist_v6.list</code>，重启、WAN重连或 china 列表更新后自动重新并入
             </div>
         </div>
+        </div><!-- /nm_pane_white -->
 
         <!-- 备份管理 -->
         <h3>备份管理</h3>
@@ -220,7 +232,7 @@
             <table class="netmanager-table" style="margin-bottom:10px;">
                 <tr>
                     <td width="30%">当前版本</td>
-                    <td><b id="online_cur_version">v1.8.17</b></td>
+                    <td><b id="online_cur_version">v1.8.18</b></td>
                 </tr>
                 <tr>
                     <td>最新版本</td>
@@ -339,7 +351,7 @@
         <h3>关于插件</h3>
         <table class="netmanager-table">
             <tr><td width="30%">插件名称</td><td>网络管理 (luci-app-netmanager)</td></tr>
-            <tr><td>版本</td><td id="plugin_version">v1.8.17</td></tr>
+            <tr><td>版本</td><td id="plugin_version">v1.8.18</td></tr>
             <tr><td>作者</td><td><b>吾爱破解liyu0828</b></td></tr>
             <tr><td>仓库地址</td><td><a href="https://github.com/District1655/luci-app-netmanager" target="_blank" style="color:#2563eb;">https://github.com/District1655/luci-app-netmanager</a></td></tr>
             <tr><td>适配系统</td><td>iStoreOS / OpenWrt (fw4/nftables)</td></tr>
@@ -372,7 +384,7 @@
             </div>
         </div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.17<br><span style="font-size:10px;">适配 iStoreOS / OpenWrt | 基于 fw4/nftables</span></div>
+    <div class="footer-sign">网络管理插件 v1.8.18<br><span style="font-size:10px;">适配 iStoreOS / OpenWrt | 基于 fw4/nftables</span></div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -874,7 +886,7 @@ function saveChinaUrl() {
     });
 }
 
-// v1.8.17：保存"放行 WAN 同网段来源"开关（上级光猫/网关访问）
+// v1.8.16：保存"放行 WAN 同网段来源"开关（上级光猫/网关访问）
 function saveChinaAllowWan() {
     const el = document.getElementById('china_allow_wan');
     const val = el && el.checked ? '1' : '0';
@@ -1118,6 +1130,28 @@ function clearBlacklist(family) {
     }).catch(e => alert('清空失败: ' + e.message));
 }
 
+// ========== 过滤/名单子菜单（v1.8.18）：4 个页签切换 ==========
+function nmSwitchPane(name) {
+    var panes = ['china4', 'china6', 'black', 'white'];
+    if (panes.indexOf(name) < 0) name = 'china4';
+    panes.forEach(function (n) {
+        var el = document.getElementById('nm_pane_' + n);
+        if (el) el.style.display = (n === name) ? '' : 'none';
+    });
+    var nav = document.getElementById('nm_subnav');
+    if (nav) {
+        Array.prototype.forEach.call(nav.querySelectorAll('button'), function (b) {
+            b.className = (b.getAttribute('data-pane') === name) ? 'active' : '';
+        });
+    }
+    try { localStorage.setItem('nm_settings_pane', name); } catch (e) { }
+}
+function nmInitPanes() {
+    var saved = '';
+    try { saved = localStorage.getItem('nm_settings_pane') || ''; } catch (e) { }
+    nmSwitchPane(saved || 'china4');
+}
+
 // ========== 手动白名单（IPv4 / IPv6，v1.8.17） ==========
 let _wlV4 = [], _wlV6 = [];
 
@@ -1234,6 +1268,7 @@ function uninstallPlugin() {
 }
 
 // 初始化
+nmInitPanes();
 loadSettings();
 listBackups();
 loadChina6Status();

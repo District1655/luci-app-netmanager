@@ -26,7 +26,7 @@ LOG_FILE="$LOG_DIR/run.log"
 LOG_ENABLED=0
 
 # 在线更新配置：版本号与 GitHub 仓库（发版时同步修改 PLUGIN_VERSION）
-PLUGIN_VERSION="1.8.17"
+PLUGIN_VERSION="1.8.18"
 REPO_OWNER="District1655"
 REPO_NAME="luci-app-netmanager"
 REPO_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
@@ -123,7 +123,7 @@ load_config() {
         uci set netmanager.settings.china_filter_count='0'
         uci commit netmanager 2>/dev/null
     fi
-    # v1.8.17：放行 WAN 口同网段来源（上级光猫/网关等私网邻居）
+    # v1.8.16：放行 WAN 口同网段来源（上级光猫/网关等私网邻居）
     # 默认开启；选项缺失时补写，不覆盖用户已有设置
     if [ -z "$(uci get netmanager.settings.china_filter_allow_wan_peers 2>/dev/null)" ]; then
         uci set netmanager.settings.china_filter_allow_wan_peers='1'
@@ -3173,7 +3173,7 @@ china_apply_rules() {
     local ifname_set
     ifname_set=$(echo "$devs" | awk '{for(i=1;i<=NF;i++){if(i>1)printf ", ";printf "\"%s\"",$i}}')
 
-    # v1.8.17：放行 WAN 口自身所在网段的来源。
+    # v1.8.16：放行 WAN 口自身所在网段的来源。
     # 典型场景：光猫拨号/桥接时，光猫管理 IP 与路由器 WAN 同处一个私网段（如 192.168.1.1），
     # 该 IP 不在 china.txt（公网库）里 → 会被「saddr != @china_v4 drop」误杀，导致上级光猫访问不到路由器。
     # 只放行"与自己同段"的地址，比放行整个 RFC1918 精确得多。
@@ -3200,7 +3200,7 @@ china_apply_rules() {
         # 「ip saddr != @china_v4 drop」误判为境外 IPv4 直接丢弃，导致租约续不上。
         printf 'add rule inet netmanager china_forward iifname { %s } udp sport 67 udp dport 68 counter accept\n' "$ifname_set"
         printf 'add rule inet netmanager china_forward iifname { %s } ip saddr 169.254.0.0/16 counter accept\n' "$ifname_set"
-        # v1.8.17：WAN 同网段来源（上级光猫/网关）在两条链上都要放行，且在 drop 之前
+        # v1.8.16：WAN 同网段来源（上级光猫/网关）在两条链上都要放行，且在 drop 之前
         local pfx
         for pfx in $wan_prefixes; do
             printf 'add rule inet netmanager china_input iifname { %s } ip saddr %s counter accept\n' "$ifname_set" "$pfx"
@@ -3480,7 +3480,7 @@ cmd_china_filter() {
     esac
 }
 
-# v1.8.17：是否放行 WAN 口同网段来源（上级光猫/网关等私网邻居）
+# v1.8.16：是否放行 WAN 口同网段来源（上级光猫/网关等私网邻居）
 # 用法: netmanager china_filter allow_wan on|off|status
 cmd_china_allow_wan() {
     local v="$1"
@@ -3711,7 +3711,7 @@ china6_apply_rules() {
     local ifname_set
     ifname_set=$(echo "$devs" | awk '{for(i=1;i<=NF;i++){if(i>1)printf ", ";printf "\"%s\"",$i}}')
 
-    # v1.8.17：与 IPv4 对称——放行 WAN 口自身网段与 ULA(fd00::/8) 来源，
+    # v1.8.16：与 IPv4 对称——放行 WAN 口自身网段与 ULA(fd00::/8) 来源，
     # 避免上级光猫用私网 IPv6（ULA）访问时被当成“境外地址”丢弃
     local allow_peers wan_prefixes6
     allow_peers=$(uci get netmanager.settings.china_filter_allow_wan_peers 2>/dev/null)
@@ -3739,7 +3739,7 @@ china6_apply_rules() {
         printf 'add rule inet netmanager6 china6_forward iifname { %s } ip6 saddr fe80::/10 counter accept\n' "$ifname_set"
         printf 'add rule inet netmanager6 china6_forward iifname { %s } ip6 saddr ff00::/8 counter accept\n' "$ifname_set"
         printf 'add rule inet netmanager6 china6_forward iifname { %s } udp sport 547 udp dport 546 counter accept\n' "$ifname_set"
-        # v1.8.17：WAN 同网段 / ULA 来源放行（须在 drop 之前）
+        # v1.8.16：WAN 同网段 / ULA 来源放行（须在 drop 之前）
         if [ "$allow_peers" = "1" ]; then
             local pfx6
             printf 'add rule inet netmanager6 china6_input iifname { %s } ip6 saddr fd00::/8 counter accept\n' "$ifname_set"
@@ -4285,7 +4285,7 @@ wl_add_to_set() {
 # 应用白名单：重建已启用的中国IP规则（重建时会把白名单并入集合，删条目也随之移除）
 wl_apply_all() {
     mkdir -p "$CHINA_LIST_DIR" 2>/dev/null
-    # 清理 v1.8.17 早期版本留下的独立表（改用集合注入方案后不再需要）
+    # 清理 v1.8.17 早期实现留下的独立表（后来改为集合注入，不再需要）
     nft delete table inet netmanager_wl 2>/dev/null
 
     local v4n v6n en4 en6 rc=0
@@ -6868,7 +6868,7 @@ return m
 ### 5.7 files/usr/lib/lua/luci/view/netmanager/common_head.htm
 
 - **用途**：全部视图公共头：CSS 样式 + 公共 JS（escapeHtml / nmFetch / CSRF token / withBusy）
-- **规模**：232 行
+- **规模**：240 行
 - **维护要点**：nmFetch 支持 FormData/string/URLSearchParams 三种体，新增调用勿绕开它
 
 ```html
@@ -6882,6 +6882,14 @@ return m
 .netmanager-nav a { padding: 7px 14px; text-decoration: none; color: #6b7280; border-radius: 6px; font-size: 13px; transition: all 0.15s; }
 .netmanager-nav a:hover { background: #f3f4f6; color: #111827; }
 .netmanager-nav a.active { background: #2563eb; color: #fff; }
+/* v1.8.18：设置页内的过滤/名单子菜单（与顶部导航同一套视觉语言，尺寸略收） */
+.nm-subnav { display: flex; gap: 2px; background: #f9fafb; padding: 5px; border-radius: 8px; margin: 14px 0 4px 0; border: 1px solid #e5e7eb; flex-wrap: wrap; }
+.nm-subnav button { padding: 6px 13px; border: 0; background: transparent; color: #6b7280; border-radius: 6px; font-size: 13px; font-family: inherit; cursor: pointer; transition: all 0.15s; }
+.nm-subnav button:hover { background: #eef2f7; color: #111827; }
+.nm-subnav button.active { background: #2563eb; color: #fff; }
+.nm-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+.nm-pane { display: block; }
+.nm-pane h3 { margin-top: 12px; }
 .netmanager-content { background: #fff; border-radius: 8px; padding: 20px; box-shadow: 0 1px 2px rgba(0,0,0,0.06); border: 1px solid #e5e7eb; }
 .netmanager-content h2 { margin: 0 0 16px 0; font-size: 16px; font-weight: 600; color: #111827; padding-bottom: 12px; border-bottom: 1px solid #f3f4f6; }
 .netmanager-content h3 { margin: 20px 0 10px 0; font-size: 14px; font-weight: 600; color: #374151; }
@@ -7333,7 +7341,7 @@ document.addEventListener('DOMContentLoaded', function () {
         </div>
         <div id="action_result" class="netmanager-result"></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.17</div>
+    <div class="footer-sign">网络管理插件 v1.8.18</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -7483,7 +7491,7 @@ setInterval(loadOverview, 30000);
         </table>
         <div id="action_result" class="netmanager-result"></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.17</div>
+    <div class="footer-sign">网络管理插件 v1.8.18</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -7803,7 +7811,7 @@ loadPortList();
         </div>
         <div id="action_result" class="netmanager-result"></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.17</div>
+    <div class="footer-sign">网络管理插件 v1.8.18</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -7993,7 +8001,7 @@ loadRuleList();
         <h3>失败登录记录</h3>
         <div class="netmanager-log" id="failed_log"><div class="text-muted">加载中...</div></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.17</div>
+    <div class="footer-sign">网络管理插件 v1.8.18</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -8115,7 +8123,7 @@ loadSshLog();
             <div id="bd_body" style="background:#ffffff;border:1px solid #e5e7eb;border-radius:6px;padding:4px;color:#1f2937;max-height:420px;overflow-y:auto;"></div>
         </div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.17</div>
+    <div class="footer-sign">网络管理插件 v1.8.18</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -8239,7 +8247,7 @@ loadAccessLog();
 ### 5.15 files/usr/lib/lua/luci/view/netmanager/settings.htm
 
 - **用途**：设置页（最复杂视图，1100 行）：默认目标 / 备份恢复 / 插件更新 / 在线更新 / 中国 IPv4·IPv6 过滤 / 黑名单 / 运行日志 / 卸载
-- **规模**：1243 行
+- **规模**：1278 行
 - **维护要点**：三个版本号登记处（L186/L305/L338）；备份列表与过滤状态均需 escapeHtml + 数组下标传参
 
 ```html
@@ -8272,8 +8280,16 @@ loadAccessLog();
             <button class="btn btn-secondary btn-sm" onclick="loadSettings()">刷新</button>
         </div>
 
+        <!-- v1.8.18：过滤/名单子菜单（4 个页签，样式与顶部导航一致） -->
+        <div class="nm-subnav" id="nm_subnav">
+            <button type="button" class="active" data-pane="china4" onclick="nmSwitchPane('china4')"><span class="nm-dot" style="background:#f97316;"></span>中国IPv4访问限制</button>
+            <button type="button" data-pane="china6" onclick="nmSwitchPane('china6')"><span class="nm-dot" style="background:#8b5cf6;"></span>中国IPv6访问限制</button>
+            <button type="button" data-pane="black" onclick="nmSwitchPane('black')"><span class="nm-dot" style="background:#ef4444;"></span>手动黑名单</button>
+            <button type="button" data-pane="white" onclick="nmSwitchPane('white')"><span class="nm-dot" style="background:#22c55e;"></span>手动白名单</button>
+        </div>
+
+        <div class="nm-pane" id="nm_pane_china4">
         <!-- 中国IPv4访问限制 -->
-        <h3>中国IPv4访问限制</h3>
         <div class="netmanager-form" style="border-left:3px solid #f97316;">
             <div style="margin-bottom:10px;">
                 <b>仅允许中国大陆 IPv4 访问已开放端口</b>
@@ -8330,9 +8346,10 @@ loadAccessLog();
                 <button class="btn btn-secondary btn-sm" onclick="loadChinaStatus()">刷新状态</button>
             </div>
         </div>
+        </div><!-- /nm_pane_china4 -->
 
+        <div class="nm-pane" id="nm_pane_china6" style="display:none;">
         <!-- 中国IPv6访问限制 -->
-        <h3>中国IPv6访问限制</h3>
         <div class="netmanager-form" style="border-left:3px solid #8b5cf6;">
             <div style="margin-bottom:10px;">
                 <b>仅允许中国大陆 IPv6 访问已开放端口</b>
@@ -8381,9 +8398,10 @@ loadAccessLog();
                 <button class="btn btn-secondary btn-sm" onclick="loadChina6Status()">刷新状态</button>
             </div>
         </div>
+        </div><!-- /nm_pane_china6 -->
 
+        <div class="nm-pane" id="nm_pane_black" style="display:none;">
         <!-- 手动黑名单（IPv4/IPv6） -->
-        <h3>手动黑名单（IPv4 / IPv6）</h3>
         <div class="netmanager-form" style="border-left:3px solid #ef4444;">
             <div style="margin-bottom:10px;">
                 <b>手动拉黑 IP / IP段</b>
@@ -8410,9 +8428,10 @@ loadAccessLog();
                 规则状态: <span id="ban_active_cell">—</span> | 条目持久化于 <code>/etc/netmanager/blacklist_v4.list</code> / <code>blacklist_v6.list</code>，重启或WAN重连后自动恢复
             </div>
         </div>
+        </div><!-- /nm_pane_black -->
 
+        <div class="nm-pane" id="nm_pane_white" style="display:none;">
         <!-- 手动白名单（IPv4/IPv6，v1.8.17） -->
-        <h3>手动白名单（IPv4 / IPv6）</h3>
         <div class="netmanager-form" style="border-left:3px solid #22c55e;">
             <div style="margin-bottom:10px;">
                 <b>给中国IP限制开例外，放行指定 IP / IP段</b>
@@ -8439,6 +8458,7 @@ loadAccessLog();
                 规则状态: <span id="wl_active_cell">—</span> | 条目持久化于 <code>/etc/netmanager/whitelist_v4.list</code> / <code>whitelist_v6.list</code>，重启、WAN重连或 china 列表更新后自动重新并入
             </div>
         </div>
+        </div><!-- /nm_pane_white -->
 
         <!-- 备份管理 -->
         <h3>备份管理</h3>
@@ -8465,7 +8485,7 @@ loadAccessLog();
             <table class="netmanager-table" style="margin-bottom:10px;">
                 <tr>
                     <td width="30%">当前版本</td>
-                    <td><b id="online_cur_version">v1.8.17</b></td>
+                    <td><b id="online_cur_version">v1.8.18</b></td>
                 </tr>
                 <tr>
                     <td>最新版本</td>
@@ -8584,7 +8604,7 @@ loadAccessLog();
         <h3>关于插件</h3>
         <table class="netmanager-table">
             <tr><td width="30%">插件名称</td><td>网络管理 (luci-app-netmanager)</td></tr>
-            <tr><td>版本</td><td id="plugin_version">v1.8.17</td></tr>
+            <tr><td>版本</td><td id="plugin_version">v1.8.18</td></tr>
             <tr><td>作者</td><td><b>吾爱破解liyu0828</b></td></tr>
             <tr><td>仓库地址</td><td><a href="https://github.com/District1655/luci-app-netmanager" target="_blank" style="color:#2563eb;">https://github.com/District1655/luci-app-netmanager</a></td></tr>
             <tr><td>适配系统</td><td>iStoreOS / OpenWrt (fw4/nftables)</td></tr>
@@ -8617,7 +8637,7 @@ loadAccessLog();
             </div>
         </div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.17<br><span style="font-size:10px;">适配 iStoreOS / OpenWrt | 基于 fw4/nftables</span></div>
+    <div class="footer-sign">网络管理插件 v1.8.18<br><span style="font-size:10px;">适配 iStoreOS / OpenWrt | 基于 fw4/nftables</span></div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -9119,7 +9139,7 @@ function saveChinaUrl() {
     });
 }
 
-// v1.8.17：保存"放行 WAN 同网段来源"开关（上级光猫/网关访问）
+// v1.8.16：保存"放行 WAN 同网段来源"开关（上级光猫/网关访问）
 function saveChinaAllowWan() {
     const el = document.getElementById('china_allow_wan');
     const val = el && el.checked ? '1' : '0';
@@ -9363,6 +9383,28 @@ function clearBlacklist(family) {
     }).catch(e => alert('清空失败: ' + e.message));
 }
 
+// ========== 过滤/名单子菜单（v1.8.18）：4 个页签切换 ==========
+function nmSwitchPane(name) {
+    var panes = ['china4', 'china6', 'black', 'white'];
+    if (panes.indexOf(name) < 0) name = 'china4';
+    panes.forEach(function (n) {
+        var el = document.getElementById('nm_pane_' + n);
+        if (el) el.style.display = (n === name) ? '' : 'none';
+    });
+    var nav = document.getElementById('nm_subnav');
+    if (nav) {
+        Array.prototype.forEach.call(nav.querySelectorAll('button'), function (b) {
+            b.className = (b.getAttribute('data-pane') === name) ? 'active' : '';
+        });
+    }
+    try { localStorage.setItem('nm_settings_pane', name); } catch (e) { }
+}
+function nmInitPanes() {
+    var saved = '';
+    try { saved = localStorage.getItem('nm_settings_pane') || ''; } catch (e) { }
+    nmSwitchPane(saved || 'china4');
+}
+
 // ========== 手动白名单（IPv4 / IPv6，v1.8.17） ==========
 let _wlV4 = [], _wlV6 = [];
 
@@ -9479,6 +9521,7 @@ function uninstallPlugin() {
 }
 
 // 初始化
+nmInitPanes();
 loadSettings();
 listBackups();
 loadChina6Status();
@@ -9711,12 +9754,12 @@ exit 0
 ```bash
 #!/bin/ash
 # ============================================================
-# 网络管理插件 (luci-app-netmanager) - 一键安装脚本 v1.8.17
+# 网络管理插件 (luci-app-netmanager) - 一键安装脚本 v1.8.18
 # 由 luci-app-fwmanager (防火墙管理) 与 luci-app-dnssettings (DNS设置) 合并而成
 # ============================================================
 
 echo "============================================"
-echo "  网络管理插件 (luci-app-netmanager) v1.8.17"
+echo "  网络管理插件 (luci-app-netmanager) v1.8.18"
 echo "  防火墙管理 + DNS设置 一体化"
 echo "============================================"
 echo ""
@@ -10555,7 +10598,7 @@ ls -lh "$OUTFILE"
 ### 5.27 tools/publish_istore.sh
 
 - **用途**：上架 PR 工具：blob→tree(base_tree 取上游 pending/main)→commit→ref→PR，幂等（同 head 有 open PR 则跳过）
-- **规模**：160 行
+- **规模**：180 行
 - **维护要点**：GH_TOKEN 走 ISTORE_TOKEN；DRY_RUN=1 干跑；请求体走 stdin，避免 argv 过长
 
 ```bash
@@ -10573,8 +10616,10 @@ DRY_RUN=${DRY_RUN:-0}
 PKG=luci-app-netmanager
 UP_REPO=istoreos/istore-repo
 UP_META=istoreos/openwrt-app-meta
-BRANCH="auto/$PKG-$VERSION-r$RELEASE"
-META_BRANCH="auto/app-meta-$PKG-$VERSION"
+# 固定分支名：每个仓库只保留一个自动分支 / 一个 PR，版本升级时强制更新同一分支内容，
+# 避免每次发版都新开 PR 把上游 PR 列表刷满
+BRANCH="auto/$PKG"
+META_BRANCH="auto/app-meta-$PKG"
 API=https://api.github.com
 
 [ "$DRY_RUN" = "1" ] || : "${GH_TOKEN:?需要 GH_TOKEN（PAT）}"
@@ -10624,12 +10669,16 @@ ensure_ref() { # repo branch sha
 }
 
 pr_open() { # repo head base title body
-    local repo=$1 head=$2 base=$3 title=$4 body=$5 existing
+    local repo=$1 head=$2 base=$3 title=$4 body=$5 existing num
     if [ "$DRY_RUN" = "1" ]; then say "DRY: PR $repo $head -> $base"; echo "https://github.com/$repo/pulls"; return 0; fi
-    existing=$(api GET "/repos/$repo/pulls?state=open&head=$OWNER:$head" | jq 'length')
-    if [ "$existing" != "0" ]; then
-        say "==> $repo 已有同分支的 PR，跳过"
-        api GET "/repos/$repo/pulls?state=open&head=$OWNER:$head" | jqv '.[0].html_url'
+    existing=$(api GET "/repos/$repo/pulls?state=open&head=$OWNER:$head")
+    num=$(printf '%s' "$existing" | jq -r 'if length > 0 then .[0].number else "" end')
+    if [ -n "$num" ]; then
+        # 固定分支：已存在同一个 PR，直接把标题与说明更新到最新版本
+        say "==> $repo 复用已有 PR #$num，更新标题与说明"
+        api PATCH "/repos/$repo/pulls/$num" \
+            "$(jq -n --arg t "$title" --arg d "$body" '{title:$t,body:$d}')" >/dev/null
+        printf '%s' "$existing" | jqv '.[0].html_url'
         return 0
     fi
     api POST "/repos/$repo/pulls" \
@@ -10653,6 +10702,20 @@ ENTRIES=$(echo "$ENTRIES" | jq --arg p "bin/packages/all/nas_luci/$(basename "$I
 if [ -n "$APK" ]; then
     APK_BLOB=$(blob_sha "$OWNER/istore-repo" "$APK")
     ENTRIES=$(echo "$ENTRIES" | jq --arg p "bin/apks/all/nas_luci/$(basename "$APK")" --arg s "$APK_BLOB" '. + [{path:$p,mode:"100644",type:"blob",sha:$s}]')
+fi
+
+# 固定分支复用 PR：把上一版本的 ipk/apk 从提交树里删掉，保证一个 PR 只有最新版本文件
+OLD_LIST=$(api GET "/repos/$UP_REPO/git/trees/$PEND_TREE?recursive=1" | \
+    jq -r --arg n "$PKG" '(.tree // [])[] | select(.type=="blob") | .path
+        | select(contains("/nas_luci/") and contains($n))' 2>/dev/null || true)
+if [ -n "$OLD_LIST" ]; then
+    DEL=$(printf '%s\n' "$OLD_LIST" | jq -R -s \
+        --arg a "bin/packages/all/nas_luci/$(basename "$IPK")" \
+        --arg b "bin/apks/all/nas_luci/$(basename "${APK:-__none__}")" \
+        'split("\n") | map(select(length > 0))
+         | map(select(. != $a and . != $b))
+         | map({path: ., mode: "100644", type: "blob", sha: null})')
+    ENTRIES=$(echo "$ENTRIES" | jq --argjson d "$DEL" '. + $d')
 fi
 
 TREE=$(api POST "/repos/$OWNER/istore-repo/git/trees" \
@@ -11232,7 +11295,7 @@ if __name__ == "__main__":
 ### 5.31 docs/CHANGELOG.md
 
 - **用途**：全部历史版本记录（v1.8.14 → v1.4.0 → 继承 fwmanager v1.3.33），GitHub Release body 的来源
-- **规模**：403 行
+- **规模**：408 行
 - **维护要点**：段落标题必须保持 `### vX.Y.Z (日期)`（build.yml 的 awk 按此匹配）；每版在顶部新增小节
 
 ```markdown
@@ -11244,6 +11307,11 @@ if __name__ == "__main__":
 > `README.md` 只保留「最近一版要点 + 指向本文件的链接」。
 
 > **2026-11-26 工程更新（版本号不变，交付形态与 CI 变更）**：新增 ipk/apk 双格式打包（`tools/`）、iStore 软件中心上架元数据（`istore/app-meta/`）、Release 后自动构建并提 PR 到 `istoreos/istore-repo` 与 `istoreos/openwrt-app-meta` 的流水线（`.github/workflows/publish-istore.yml`）；README 安装章节按 apk/opkg 双体系重写。
+
+### v1.8.18 (2026-11-27)
+- **设置页新增「过滤 / 名单」子菜单**：把「中国IPv4访问限制」「中国IPv6访问限制」「手动黑名单」「手动白名单」收进一排 4 个页签，点击只显示当前区块，其余隐藏；样式沿用顶部导航（白底圆角、选中蓝底白字，字号略收），每项前有与对应区块左边框同色的小圆点。页签选择记在 `localStorage`，刷新后回到上次所在页签，默认第一项。
+- 顺带去掉 4 个区块重复的 `h3` 标题（页签本身即标题），避免“页签文字 + 标题文字”连着出现两遍。
+- **iStore 自动 PR 改为固定分支**：`tools/publish_istore.sh` 不再按版本号建分支（原来每发一版就在上游新开一对 PR），改为固定 `auto/luci-app-netmanager` 与 `auto/app-meta-luci-app-netmanager`，每次发版强推同一分支、标题/说明更新为最新版本，PR 自动跟随；提交树里会同时删掉上一版本的 ipk/apk，避免一个 PR 里堆多个版本。
 
 ### v1.8.17 (2026-11-27)
 - **新增手动白名单（IPv4 / IPv6 双栈）**：`netmanager whitelist list|add|del|clear|apply`，支持单个 IP 与 CIDR 网段（`8.8.8.8`、`203.0.113.0/24`、`2001:db8::1`、`2001:db8::/32`）。实现方式是**把手动条目直接并进中国过滤的 `china_v4` / `china_v6` 集合**，等于给订阅列表加了一份“人工补充的允许列表”——这些来源不再命中 `ip saddr != @china_v4 drop`；条目不受 china.txt 订阅更新影响。
@@ -11752,13 +11820,13 @@ dist/
 ### 5.35 README.md
 
 - **用途**：用户文档：功能 / 安装（apk·ipk·脚本三路）/ CLI / 配置说明 / 构建与发版 / 更新日志
-- **规模**：415 行
+- **规模**：416 行
 - **维护要点**：L3 版本号是 build.yml 的 tag 提取源（登记处 12）；更新日志已迁到 docs/CHANGELOG.md，本文件只留最近一版摘要
 
 ````markdown
 # 网络管理插件 (luci-app-netmanager)
 
-> 版本：v1.8.17
+> 版本：v1.8.18
 >
 > 适配：iStoreOS 25.12+（apk）/ iStoreOS 24.10 及 OpenWrt 23.05+（opkg / ipk），fw4 + nftables，Lua LuCI
 >
@@ -12162,8 +12230,9 @@ IPv4（每行一个 CIDR）：
 
 完整历史版本记录（v1.8.17 → v1.4.0 → 继承 fwmanager v1.3.33）已归档到 **[`docs/CHANGELOG.md`](docs/CHANGELOG.md)**，`build.yml` 从那里提取当前版本段落作为 GitHub Release body。
 
-**最近一版：v1.8.17（2026-11-27）**
+**最近一版：v1.8.18（2026-11-27）**
 
+- **设置页新增「过滤 / 名单」子菜单**：把中国IPv4访问限制、中国IPv6访问限制、手动黑名单、手动白名单收进 4 个页签，切换只显示当前区块，视觉与顶部导航保持一致（圆点颜色对应各区块边框色），刷新后记住上次所选页签
 - **新增手动白名单（IPv4/IPv6 双栈）**：`netmanager whitelist add 203.0.113.0/24` / `2001:db8::/32`，设置页同样有输入框与列表；实现是把条目并进 `china_v4` / `china_v6` 集合，等于给中国IP限制加一份人工允许列表（不受 china.txt 订阅更新影响）
 - **持久化自愈**：条目存 `/etc/netmanager/whitelist_v4.list`、`whitelist_v6.list`，重启/WAN 重连/china 列表更新/备份恢复后都会重新并入集合；删条目立刻从集合移除
 - **修复上级光猫/网关访问不到路由器**（v1.8.16 延续）：自动放行 WAN 口同网段来源，「放行上级网关」可在设置页开关

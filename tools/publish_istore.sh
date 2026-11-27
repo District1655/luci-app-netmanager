@@ -12,8 +12,10 @@ DRY_RUN=${DRY_RUN:-0}
 PKG=luci-app-netmanager
 UP_REPO=istoreos/istore-repo
 UP_META=istoreos/openwrt-app-meta
-BRANCH="auto/$PKG-$VERSION-r$RELEASE"
-META_BRANCH="auto/app-meta-$PKG-$VERSION"
+# 固定分支名：每个仓库只保留一个自动分支 / 一个 PR，版本升级时强制更新同一分支内容，
+# 避免每次发版都新开 PR 把上游 PR 列表刷满
+BRANCH="auto/$PKG"
+META_BRANCH="auto/app-meta-$PKG"
 API=https://api.github.com
 
 [ "$DRY_RUN" = "1" ] || : "${GH_TOKEN:?需要 GH_TOKEN（PAT）}"
@@ -63,12 +65,16 @@ ensure_ref() { # repo branch sha
 }
 
 pr_open() { # repo head base title body
-    local repo=$1 head=$2 base=$3 title=$4 body=$5 existing
+    local repo=$1 head=$2 base=$3 title=$4 body=$5 existing num
     if [ "$DRY_RUN" = "1" ]; then say "DRY: PR $repo $head -> $base"; echo "https://github.com/$repo/pulls"; return 0; fi
-    existing=$(api GET "/repos/$repo/pulls?state=open&head=$OWNER:$head" | jq 'length')
-    if [ "$existing" != "0" ]; then
-        say "==> $repo 已有同分支的 PR，跳过"
-        api GET "/repos/$repo/pulls?state=open&head=$OWNER:$head" | jqv '.[0].html_url'
+    existing=$(api GET "/repos/$repo/pulls?state=open&head=$OWNER:$head")
+    num=$(printf '%s' "$existing" | jq -r 'if length > 0 then .[0].number else "" end')
+    if [ -n "$num" ]; then
+        # 固定分支：已存在同一个 PR，直接把标题与说明更新到最新版本
+        say "==> $repo 复用已有 PR #$num，更新标题与说明"
+        api PATCH "/repos/$repo/pulls/$num" \
+            "$(jq -n --arg t "$title" --arg d "$body" '{title:$t,body:$d}')" >/dev/null
+        printf '%s' "$existing" | jqv '.[0].html_url'
         return 0
     fi
     api POST "/repos/$repo/pulls" \
@@ -92,6 +98,20 @@ ENTRIES=$(echo "$ENTRIES" | jq --arg p "bin/packages/all/nas_luci/$(basename "$I
 if [ -n "$APK" ]; then
     APK_BLOB=$(blob_sha "$OWNER/istore-repo" "$APK")
     ENTRIES=$(echo "$ENTRIES" | jq --arg p "bin/apks/all/nas_luci/$(basename "$APK")" --arg s "$APK_BLOB" '. + [{path:$p,mode:"100644",type:"blob",sha:$s}]')
+fi
+
+# 固定分支复用 PR：把上一版本的 ipk/apk 从提交树里删掉，保证一个 PR 只有最新版本文件
+OLD_LIST=$(api GET "/repos/$UP_REPO/git/trees/$PEND_TREE?recursive=1" | \
+    jq -r --arg n "$PKG" '(.tree // [])[] | select(.type=="blob") | .path
+        | select(contains("/nas_luci/") and contains($n))' 2>/dev/null || true)
+if [ -n "$OLD_LIST" ]; then
+    DEL=$(printf '%s\n' "$OLD_LIST" | jq -R -s \
+        --arg a "bin/packages/all/nas_luci/$(basename "$IPK")" \
+        --arg b "bin/apks/all/nas_luci/$(basename "${APK:-__none__}")" \
+        'split("\n") | map(select(length > 0))
+         | map(select(. != $a and . != $b))
+         | map({path: ., mode: "100644", type: "blob", sha: null})')
+    ENTRIES=$(echo "$ENTRIES" | jq --argjson d "$DEL" '. + $d')
 fi
 
 TREE=$(api POST "/repos/$OWNER/istore-repo/git/trees" \

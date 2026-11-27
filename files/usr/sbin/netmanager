@@ -12,7 +12,7 @@ LOG_FILE="$LOG_DIR/run.log"
 LOG_ENABLED=0
 
 # 在线更新配置：版本号与 GitHub 仓库（发版时同步修改 PLUGIN_VERSION）
-PLUGIN_VERSION="1.8.17"
+PLUGIN_VERSION="1.8.18"
 REPO_OWNER="District1655"
 REPO_NAME="luci-app-netmanager"
 REPO_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
@@ -109,7 +109,7 @@ load_config() {
         uci set netmanager.settings.china_filter_count='0'
         uci commit netmanager 2>/dev/null
     fi
-    # v1.8.17：放行 WAN 口同网段来源（上级光猫/网关等私网邻居）
+    # v1.8.16：放行 WAN 口同网段来源（上级光猫/网关等私网邻居）
     # 默认开启；选项缺失时补写，不覆盖用户已有设置
     if [ -z "$(uci get netmanager.settings.china_filter_allow_wan_peers 2>/dev/null)" ]; then
         uci set netmanager.settings.china_filter_allow_wan_peers='1'
@@ -3159,7 +3159,7 @@ china_apply_rules() {
     local ifname_set
     ifname_set=$(echo "$devs" | awk '{for(i=1;i<=NF;i++){if(i>1)printf ", ";printf "\"%s\"",$i}}')
 
-    # v1.8.17：放行 WAN 口自身所在网段的来源。
+    # v1.8.16：放行 WAN 口自身所在网段的来源。
     # 典型场景：光猫拨号/桥接时，光猫管理 IP 与路由器 WAN 同处一个私网段（如 192.168.1.1），
     # 该 IP 不在 china.txt（公网库）里 → 会被「saddr != @china_v4 drop」误杀，导致上级光猫访问不到路由器。
     # 只放行"与自己同段"的地址，比放行整个 RFC1918 精确得多。
@@ -3186,7 +3186,7 @@ china_apply_rules() {
         # 「ip saddr != @china_v4 drop」误判为境外 IPv4 直接丢弃，导致租约续不上。
         printf 'add rule inet netmanager china_forward iifname { %s } udp sport 67 udp dport 68 counter accept\n' "$ifname_set"
         printf 'add rule inet netmanager china_forward iifname { %s } ip saddr 169.254.0.0/16 counter accept\n' "$ifname_set"
-        # v1.8.17：WAN 同网段来源（上级光猫/网关）在两条链上都要放行，且在 drop 之前
+        # v1.8.16：WAN 同网段来源（上级光猫/网关）在两条链上都要放行，且在 drop 之前
         local pfx
         for pfx in $wan_prefixes; do
             printf 'add rule inet netmanager china_input iifname { %s } ip saddr %s counter accept\n' "$ifname_set" "$pfx"
@@ -3466,7 +3466,7 @@ cmd_china_filter() {
     esac
 }
 
-# v1.8.17：是否放行 WAN 口同网段来源（上级光猫/网关等私网邻居）
+# v1.8.16：是否放行 WAN 口同网段来源（上级光猫/网关等私网邻居）
 # 用法: netmanager china_filter allow_wan on|off|status
 cmd_china_allow_wan() {
     local v="$1"
@@ -3697,7 +3697,7 @@ china6_apply_rules() {
     local ifname_set
     ifname_set=$(echo "$devs" | awk '{for(i=1;i<=NF;i++){if(i>1)printf ", ";printf "\"%s\"",$i}}')
 
-    # v1.8.17：与 IPv4 对称——放行 WAN 口自身网段与 ULA(fd00::/8) 来源，
+    # v1.8.16：与 IPv4 对称——放行 WAN 口自身网段与 ULA(fd00::/8) 来源，
     # 避免上级光猫用私网 IPv6（ULA）访问时被当成“境外地址”丢弃
     local allow_peers wan_prefixes6
     allow_peers=$(uci get netmanager.settings.china_filter_allow_wan_peers 2>/dev/null)
@@ -3725,7 +3725,7 @@ china6_apply_rules() {
         printf 'add rule inet netmanager6 china6_forward iifname { %s } ip6 saddr fe80::/10 counter accept\n' "$ifname_set"
         printf 'add rule inet netmanager6 china6_forward iifname { %s } ip6 saddr ff00::/8 counter accept\n' "$ifname_set"
         printf 'add rule inet netmanager6 china6_forward iifname { %s } udp sport 547 udp dport 546 counter accept\n' "$ifname_set"
-        # v1.8.17：WAN 同网段 / ULA 来源放行（须在 drop 之前）
+        # v1.8.16：WAN 同网段 / ULA 来源放行（须在 drop 之前）
         if [ "$allow_peers" = "1" ]; then
             local pfx6
             printf 'add rule inet netmanager6 china6_input iifname { %s } ip6 saddr fd00::/8 counter accept\n' "$ifname_set"
@@ -4271,7 +4271,7 @@ wl_add_to_set() {
 # 应用白名单：重建已启用的中国IP规则（重建时会把白名单并入集合，删条目也随之移除）
 wl_apply_all() {
     mkdir -p "$CHINA_LIST_DIR" 2>/dev/null
-    # 清理 v1.8.17 早期版本留下的独立表（改用集合注入方案后不再需要）
+    # 清理 v1.8.17 早期实现留下的独立表（后来改为集合注入，不再需要）
     nft delete table inet netmanager_wl 2>/dev/null
 
     local v4n v6n en4 en6 rc=0

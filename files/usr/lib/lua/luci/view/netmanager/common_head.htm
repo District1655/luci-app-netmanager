@@ -8,6 +8,14 @@
 .netmanager-nav a { padding: 7px 14px; text-decoration: none; color: #6b7280; border-radius: 6px; font-size: 13px; transition: all 0.15s; }
 .netmanager-nav a:hover { background: #f3f4f6; color: #111827; }
 .netmanager-nav a.active { background: #2563eb; color: #fff; }
+/* v1.8.18：设置页内的过滤/名单子菜单（与顶部导航同一套视觉语言，尺寸略收） */
+.nm-subnav { display: flex; gap: 2px; background: #f9fafb; padding: 5px; border-radius: 8px; margin: 14px 0 4px 0; border: 1px solid #e5e7eb; flex-wrap: wrap; }
+.nm-subnav button { padding: 6px 13px; border: 0; background: transparent; color: #6b7280; border-radius: 6px; font-size: 13px; font-family: inherit; cursor: pointer; transition: all 0.15s; }
+.nm-subnav button:hover { background: #eef2f7; color: #111827; }
+.nm-subnav button.active { background: #2563eb; color: #fff; }
+.nm-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+.nm-pane { display: block; }
+.nm-pane h3 { margin-top: 12px; }
 .netmanager-content { background: #fff; border-radius: 8px; padding: 20px; box-shadow: 0 1px 2px rgba(0,0,0,0.06); border: 1px solid #e5e7eb; }
 .netmanager-content h2 { margin: 0 0 16px 0; font-size: 16px; font-weight: 600; color: #111827; padding-bottom: 12px; border-bottom: 1px solid #f3f4f6; }
 .netmanager-content h3 { margin: 20px 0 10px 0; font-size: 14px; font-weight: 600; color: #374151; }
