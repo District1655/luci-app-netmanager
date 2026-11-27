@@ -2,31 +2,18 @@
     netmanager/cbi_nav.htm - CBI 页面专用页内导航 + 布局对齐
     v1.8.4：让 CBI 页面（上网设置 / 静态IPv6分配）与自绘页面（端口转发等）布局一致：
             主题头 → 「网络管理」标题栏 → 导航条 → 单一白卡内容区（h2页标题 + 各h3子节）。
+    v1.8.20：导航条不再在 cbi_nav 里手写一份，改为 include netmanager/nav，
+            与自绘页面共用同一份菜单（原来漏了「IP过滤」，导致 CBI 页面顶部少一项）。
     做法：模板输出标题栏+导航+样式+脚本；脚本在 DOMContentLoaded 把两个 cbi-map
           （连同各自 form 整体移动，不破坏表单提交）合并进一个 .netmanager-content 卡片，
           页标题/描述移到导航下方。CBI 页面不加载 common_head.htm，样式在此自带。
     注意：LuCI 模板注释用井号语法，注释内不可出现百分号加大于号组合。
 %>
-<%
-local path = luci.dispatcher.context.requestpath
-local cur = (type(path) == "table") and (path[3] or "") or ""
-local function url(...) return luci.dispatcher.build_url("admin", "netmanager", ...) end
-local function cls(id) return (cur == id) and ' class="active"' or '' end
-%>
 <div class="netmanager-header">
     <h1>网络管理</h1>
     <span class="netmanager-author">吾爱破解liyu0828</span>
 </div>
-<div class="netmanager-nav">
-    <a href="<%=url('overview')%>"<%=cls('overview')%>>📊 系统概览</a>
-    <a href="<%=url('port_forward')%>"<%=cls('port_forward')%>>🔄 端口转发</a>
-    <a href="<%=url('firewall_rules')%>"<%=cls('firewall_rules')%>>📋 规则管理</a>
-    <a href="<%=url('ssh_log')%>"<%=cls('ssh_log')%>>🔐 SSH登录日志</a>
-    <a href="<%=url('access_log')%>"<%=cls('access_log')%>>🌐 端口访问日志</a>
-    <a href="<%=url('dns')%>"<%=cls('dns')%>>🌐 上网设置</a>
-    <a href="<%=url('dns_staticv6')%>"<%=cls('dns_staticv6')%>>📮 静态IP分配</a>
-    <a href="<%=url('settings')%>"<%=cls('settings')%>>⚙️ 设置</a>
-</div>
+<%+netmanager/nav%>
 <style>
 /* ===== 与 common_head.htm 一致的框架样式（CBI 页面不加载 common_head，自带） ===== */
 .netmanager-header { display:flex; justify-content:space-between; align-items:center; padding:14px 20px; background:#fff; border-radius:8px; margin-bottom:12px; box-shadow:0 1px 2px rgba(0,0,0,0.06); border:1px solid #e5e7eb; }

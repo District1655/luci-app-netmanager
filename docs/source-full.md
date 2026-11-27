@@ -8,7 +8,7 @@
 ### 5.1 files/usr/sbin/netmanager
 
 - **用途**：后端核心脚本：全部 CLI 子命令（概览/端口转发/规则/日志/备份/上传/在线更新/中国 IPv4·IPv6 过滤/黑名单/卸载）
-- **规模**：4598 行
+- **规模**：4667 行
 - **维护要点**：单文件约 4200 行，v1.5+ 模块化拆分对象。PLUGIN_VERSION 在 L15（唯一权威源）；命令入口行号见 9.1
 
 ```bash
@@ -26,7 +26,7 @@ LOG_FILE="$LOG_DIR/run.log"
 LOG_ENABLED=0
 
 # 在线更新配置：版本号与 GitHub 仓库（发版时同步修改 PLUGIN_VERSION）
-PLUGIN_VERSION="1.8.19"
+PLUGIN_VERSION="1.8.20"
 REPO_OWNER="District1655"
 REPO_NAME="luci-app-netmanager"
 REPO_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
@@ -178,9 +178,20 @@ cmd_overview() {
     [ -z "$wan_ip" ] && wan_ip="N/A"
     echo "WAN_IP=$wan_ip"
 
-    # WAN IPv6
-    wan_ipv6=$(ip -6 route get 2001:4860:4860::8888 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}' | head -1)
-    [ -z "$wan_ipv6" ] && wan_ipv6=$(ip -6 addr show 2>/dev/null | grep 'scope global' | grep -v 'fd' | awk '{print $2}' | cut -d/ -f1 | head -1)
+    # WAN IPv6（v1.8.20 修复：原来取系统上第一个 scope global 的地址，
+    # 在 PPPoE/双栈环境下常常拿到 br-lan 的 GUA，看着像“被截断的短地址”。
+    # 现在按 WAN 设备优先级逐个取，并保留 /前缀 长度，显示完整长地址。）
+    wan_ipv6=""
+    for _wdev in $(get_wan_devs 2>/dev/null); do
+        [ "$_wdev" = "@wan" ] && continue
+        wan_ipv6=$(ip -6 addr show dev "$_wdev" 2>/dev/null \
+            | awk '$1=="inet6" && $3=="scope" && $4=="global" {print $2; exit}')
+        [ -n "$wan_ipv6" ] && break
+    done
+    if [ -z "$wan_ipv6" ]; then
+        wan_ipv6=$(ip -6 route get 2001:4860:4860::8888 2>/dev/null \
+            | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}' | head -1)
+    fi
     [ -z "$wan_ipv6" ] && wan_ipv6="N/A"
     echo "WAN_IPV6=$wan_ipv6"
 
@@ -249,8 +260,21 @@ cmd_overview() {
     echo "CONN_COUNT=$conn_count"
 
     # 【v1.8.8】IPv6 状态（出口/PD前缀/LAN分发/默认路由）
-    local pd_prefix lan_v6 v6gw ipv6_status
-    pd_prefix=$(ip -6 route show 2>/dev/null | grep 'dev br-lan' | grep -v default | awk '{print $1}' | head -1)
+    # 【v1.8.20】PD 前缀优先取 wan6 的 DHCPv6-PD 委派结果（ubus ipv6-prefix 的 address/mask），
+    # 之前从 br-lan 路由里抓，拿到的是内核按 /64 静态写的路由，长度与真实委派（如 /60）不符；
+    # WAN 的 /64 全局地址来自运营商另一段地址池，与 PD 前缀本来就不是同一段，不必相等。
+    local pd_prefix lan_v6 v6gw ipv6_status pd_addr pd_mask
+    pd_addr=$(ubus call network.interface.wan6 status 2>/dev/null | jsonfilter -e '@["ipv6-prefix"][0].address' 2>/dev/null)
+    pd_mask=$(ubus call network.interface.wan6 status 2>/dev/null | jsonfilter -e '@["ipv6-prefix"][0].mask' 2>/dev/null)
+    if [ -n "$pd_addr" ] && [ -n "$pd_mask" ]; then
+        pd_prefix="${pd_addr}/${pd_mask}"
+    else
+        pd_prefix=$(ip -6 route show 2>/dev/null | grep 'dev br-lan' | grep -v default | awk '{print $1}' | head -1)
+        _assign=$(uci -q get network.lan.ip6assign)
+        if [ -n "$pd_prefix" ] && [ -n "$_assign" ]; then
+            pd_prefix="${pd_prefix%/*}/${_assign}"
+        fi
+    fi
     [ -z "$pd_prefix" ] && pd_prefix="N/A"
     lan_v6=$(ip -6 addr show br-lan 2>/dev/null | grep 'scope global' | grep -v 'fd' | awk '{print $2}' | head -1)
     [ -z "$lan_v6" ] && lan_v6="N/A"
@@ -264,20 +288,65 @@ cmd_overview() {
     echo "LAN_IPV6=$lan_v6"
     echo "IPV6_GW=$v6gw"
 
-    # 【v1.8.8】DNS 模式与上游
-    local dns_mode dns_servers dm
-    dm=$(uci -q get netmanager.settings.dns_mode)
-    case "$dm" in
-        custom) dns_mode="自定义" ;;
-        dot)    dns_mode="加密 DoT" ;;
-        doh)    dns_mode="加密 DoH" ;;
-        *)      dns_mode="运营商自动" ;;
-    esac
-    dns_servers=$(grep -h '^nameserver' /tmp/resolv.conf.d/resolv.conf.auto 2>/dev/null | awk '{print $2}' | tr '\n' ' ')
-    [ -z "$dns_servers" ] && dns_servers=$(uci -q get netmanager.settings.dns_server1)
-    [ -z "$dns_servers" ] && dns_servers="N/A"
+    # 【v1.8.20】DNS 面板重做：原来把所有接口的 nameserver 混在一起显示，既重复又难懂。
+    # 现在按 /tmp/resolv.conf.d/resolv.conf.auto 的 "# Interface xxx" 分块解析，
+    # 分成「WAN 上游」「LAN 下发」两组，v4/v6 分开；缺省回落到 uci 配置与 dhcp_option。
+    local dns_mode dm dns_wan4 dns_wan6 dns_lan4 dns_lan6 resolv_file
+    resolv_file="/tmp/resolv.conf.d/resolv.conf.auto"
+
+    if [ "$(uci -q get dnssettings.wan.peerdns 2>/dev/null)" = "0" ]; then
+        dns_mode="自定义"
+    else
+        dm=$(uci -q get netmanager.settings.dns_mode)
+        case "$dm" in
+            custom) dns_mode="自定义" ;;
+            dot)    dns_mode="加密 DoT" ;;
+            doh)    dns_mode="加密 DoH" ;;
+            *)      dns_mode="运营商自动" ;;
+        esac
+    fi
+
+    # 单个接口块的 nameserver（$1=块名，如 wan / wan6 / lan）
+    dns_block() {
+        awk -v want="# Interface $1" '
+            $0 == want {f=1; next}
+            /^# Interface/ {f=0}
+            f && /^nameserver/ {printf "%s ", $2}
+        ' "$resolv_file" 2>/dev/null | sed 's/[[:space:]]*$//'
+    }
+    dns_wan4=$(dns_block wan)
+    dns_wan6=$(dns_block wan6)
+    dns_lan4=$(dns_block lan)
+    # LAN IPv6 DNS 不在 resolv.conf.auto 的 lan 块里（那块只有 IPv4），
+    # 实际由 dhcp.lan.dns 下发给终端，交给下面的回落逻辑取
+    dns_lan6=""
+
+    # 回落：WAN 自定义 DNS（dnssettings）按 v4/v6 归类
+    if [ -z "$dns_wan4" ] || [ -z "$dns_wan6" ]; then
+        local _w1 _w2
+        _w1=$(uci -q get dnssettings.wan.dns1_v4); _w2=$(uci -q get dnssettings.wan.dns2_v4)
+        [ -z "$dns_wan4" ] && dns_wan4=$(printf '%s %s' "$_w1" "$_w2" | sed 's/^ *//;s/  */ /g;s/ *$//')
+        _w1=$(uci -q get dnssettings.wan.dns1_v6); _w2=$(uci -q get dnssettings.wan.dns2_v6)
+        [ -z "$dns_wan6" ] && dns_wan6=$(printf '%s %s' "$_w1" "$_w2" | sed 's/^ *//;s/  */ /g;s/ *$//')
+    fi
+
+    # 回落：LAN 下发 DNS —— v4 取 dhcp_option 6，v6 取 dhcp.lan.dns
+    if [ -z "$dns_lan4" ]; then
+        dns_lan4=$(uci -q get dhcp.lan.dhcp_option 2>/dev/null | tr ',' ' ' \
+            | awk '{for(i=1;i<=NF;i++) if($i=="6"){for(j=i+1;j<=NF;j++){if($j ~ /^[0-9.]+$/) printf "%s ", $j; else break}; break}}' \
+            | sed 's/[[:space:]]*$//')
+    fi
+    if [ -z "$dns_lan6" ]; then
+        dns_lan6=$(uci -q get dhcp.lan.dns 2>/dev/null | tr ' ' '\n' | grep ':' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+    fi
+
     echo "DNS_MODE=$dns_mode"
-    echo "DNS_SERVERS=$dns_servers"
+    echo "DNS_WAN4=$dns_wan4"
+    echo "DNS_WAN6=$dns_wan6"
+    echo "DNS_LAN4=$dns_lan4"
+    echo "DNS_LAN6=$dns_lan6"
+    # 兼容旧字段（外部脚本可能还在读）
+    echo "DNS_SERVERS=$(printf '%s %s' "$dns_wan4" "$dns_wan6" | sed 's/^ *//;s/ *$//')"
 
     echo "===END==="
 }
@@ -291,7 +360,7 @@ cmd_port_list() {
     
     # 性能优化：nft list ruleset 全量查询在规则多时需 1~3 秒，
     # 改为只查 fw4 表（14KB 左右，十几毫秒），并加 2 秒文件缓存避免重复调用。
-    # v1.8.19 修复：原来是只查 chain dstnat —— 而 fw4 把真实 redirect 规则放在
+    # v1.8.20 修复：原来是只查 chain dstnat —— 而 fw4 把真实 redirect 规则放在
     # dstnat_wan / dstnat_lan / upnp_prerouting 等子链，主链只有 jump 语句，
     # 计数器一个都读不到，导致端口转发页面「命中数」恒为 0。
     # 现在整表导出（含 dstnat_*、forward_lan 里的 Allow-IPv6 规则），一处缓存两用。
@@ -452,7 +521,7 @@ cmd_port_list() {
 
     while IFS='|' read -r idx name proto dp en dip; do
         [ -z "$name" ] && continue
-        # v1.8.19：IPv6 直连放行规则按 fw4 规则名取计数器（之前拿 dstnat 端口匹配，恒为 0）
+        # v1.8.20：IPv6 直连放行规则按 fw4 规则名取计数器（之前拿 dstnat 端口匹配，恒为 0）
         pkts=$(get_rule_pkts "Allow-IPv6-${dp}-${proto}")
         anchor=$(echo "$track_data" | awk -v P="$dp" -v R="$proto" '
             /\.port=/ { v=$0; sub(/.*=/,"",v); gsub(/\047/,"",v); cur_p=v }
@@ -7166,7 +7235,7 @@ function withBusy(btn, fn) {
 ### 5.9 files/usr/lib/lua/luci/view/netmanager/cbi_nav.htm
 
 - **用途**：CBI 页面专用导航条：自带内联样式，由两个 CBI 模型以 Template 节点注入
-- **规模**：114 行
+- **规模**：105 行
 - **维护要点**：CBI 页不加载 common_head，样式必须内联；active 判断带 nil 防护
 
 ```html
@@ -7174,6 +7243,8 @@ function withBusy(btn, fn) {
     netmanager/cbi_nav.htm - CBI 页面专用页内导航 + 布局对齐
     v1.8.4：让 CBI 页面（上网设置 / 静态IPv6分配）与自绘页面（端口转发等）布局一致：
             主题头 → 「网络管理」标题栏 → 导航条 → 单一白卡内容区（h2页标题 + 各h3子节）。
+    v1.8.20：导航条不再在 cbi_nav 里手写一份，改为 include netmanager/nav，
+            与自绘页面共用同一份菜单（原来漏了「IP过滤」，导致 CBI 页面顶部少一项）。
     做法：模板输出标题栏+导航+样式+脚本；脚本在 DOMContentLoaded 把两个 cbi-map
           （连同各自 form 整体移动，不破坏表单提交）合并进一个 .netmanager-content 卡片，
           页标题/描述移到导航下方。CBI 页面不加载 common_head.htm，样式在此自带。
@@ -7182,23 +7253,12 @@ function withBusy(btn, fn) {
 <%
 local path = luci.dispatcher.context.requestpath
 local cur = (type(path) == "table") and (path[3] or "") or ""
-local function url(...) return luci.dispatcher.build_url("admin", "netmanager", ...) end
-local function cls(id) return (cur == id) and ' class="active"' or '' end
 %>
 <div class="netmanager-header">
     <h1>网络管理</h1>
     <span class="netmanager-author">吾爱破解liyu0828</span>
 </div>
-<div class="netmanager-nav">
-    <a href="<%=url('overview')%>"<%=cls('overview')%>>📊 系统概览</a>
-    <a href="<%=url('port_forward')%>"<%=cls('port_forward')%>>🔄 端口转发</a>
-    <a href="<%=url('firewall_rules')%>"<%=cls('firewall_rules')%>>📋 规则管理</a>
-    <a href="<%=url('ssh_log')%>"<%=cls('ssh_log')%>>🔐 SSH登录日志</a>
-    <a href="<%=url('access_log')%>"<%=cls('access_log')%>>🌐 端口访问日志</a>
-    <a href="<%=url('dns')%>"<%=cls('dns')%>>🌐 上网设置</a>
-    <a href="<%=url('dns_staticv6')%>"<%=cls('dns_staticv6')%>>📮 静态IP分配</a>
-    <a href="<%=url('settings')%>"<%=cls('settings')%>>⚙️ 设置</a>
-</div>
+<%+netmanager/nav%>
 <style>
 /* ===== 与 common_head.htm 一致的框架样式（CBI 页面不加载 common_head，自带） ===== */
 .netmanager-header { display:flex; justify-content:space-between; align-items:center; padding:14px 20px; background:#fff; border-radius:8px; margin-bottom:12px; box-shadow:0 1px 2px rgba(0,0,0,0.06); border:1px solid #e5e7eb; }
@@ -7291,7 +7351,7 @@ document.addEventListener('DOMContentLoaded', function () {
 ### 5.10 files/usr/lib/lua/luci/view/netmanager/overview.htm
 
 - **用途**：系统概览页：防火墙状态 / 端口统计 / 网络信息 / 快捷操作
-- **规模**：118 行
+- **规模**：124 行
 - **维护要点**：footer 含版本号（登记处 4）
 
 ```html
@@ -7348,15 +7408,21 @@ document.addEventListener('DOMContentLoaded', function () {
         <h3>IPv6 状态</h3>
         <table class="netmanager-table">
             <tr><td width="30%">IPv6 出口</td><td id="ipv6_status">--</td></tr>
-            <tr><td>WAN IPv6</td><td id="wan_ipv6">--</td></tr>
+            <tr><td>WAN IPv6（全局地址）</td><td id="wan_ipv6" style="word-break:break-all;">--</td></tr>
             <tr><td>PD 前缀</td><td id="pd_prefix">--</td></tr>
             <tr><td>LAN 分发地址</td><td id="lan_ipv6">--</td></tr>
             <tr><td>IPv6 默认路由</td><td id="ipv6_gw">--</td></tr>
         </table>
+        <div class="text-muted" style="margin-top:6px;font-size:12px;">
+            说明：WAN IPv6（/64）由运营商单独分配，PD 前缀是另外委派给内网使用的地址段，两者不在同一段属正常现象；PD 前缀长度以 DHCPv6-PD 委派结果为准。
+        </div>
         <h3>DNS</h3>
         <table class="netmanager-table">
             <tr><td width="30%">DNS 模式</td><td id="dns_mode">--</td></tr>
-            <tr><td>上游服务器</td><td id="dns_servers">--</td></tr>
+            <tr><td>WAN 上游 DNS（IPv4）</td><td id="dns_wan4" style="word-break:break-all;">--</td></tr>
+            <tr><td>WAN 上游 DNS（IPv6）</td><td id="dns_wan6" style="word-break:break-all;">--</td></tr>
+            <tr><td>LAN 下发 DNS（IPv4）</td><td id="dns_lan4" style="word-break:break-all;">--</td></tr>
+            <tr><td>LAN 下发 DNS（IPv6）</td><td id="dns_lan6" style="word-break:break-all;">--</td></tr>
         </table>
         <h3>快捷操作</h3>
         <div class="netmanager-toolbar">
@@ -7367,7 +7433,7 @@ document.addEventListener('DOMContentLoaded', function () {
         </div>
         <div id="action_result" class="netmanager-result"></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.19</div>
+    <div class="footer-sign">网络管理插件 v1.8.20</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -7517,7 +7583,7 @@ setInterval(loadOverview, 30000);
         </table>
         <div id="action_result" class="netmanager-result"></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.19</div>
+    <div class="footer-sign">网络管理插件 v1.8.20</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -7837,7 +7903,7 @@ loadPortList();
         </div>
         <div id="action_result" class="netmanager-result"></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.19</div>
+    <div class="footer-sign">网络管理插件 v1.8.20</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -8027,7 +8093,7 @@ loadRuleList();
         <h3>失败登录记录</h3>
         <div class="netmanager-log" id="failed_log"><div class="text-muted">加载中...</div></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.19</div>
+    <div class="footer-sign">网络管理插件 v1.8.20</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -8149,7 +8215,7 @@ loadSshLog();
             <div id="bd_body" style="background:#ffffff;border:1px solid #e5e7eb;border-radius:6px;padding:4px;color:#1f2937;max-height:420px;overflow-y:auto;"></div>
         </div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.19</div>
+    <div class="footer-sign">网络管理插件 v1.8.20</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -8467,7 +8533,7 @@ loadAccessLog();
         </div>
         </div><!-- /nm_pane_white -->
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.19</div>
+    <div class="footer-sign">网络管理插件 v1.8.20</div>
 </div>
 <script>
 // ========== 中国IPv4访问限制 ==========
@@ -8964,7 +9030,7 @@ loadWhitelist();
             <table class="netmanager-table" style="margin-bottom:10px;">
                 <tr>
                     <td width="30%">当前版本</td>
-                    <td><b id="online_cur_version">v1.8.19</b></td>
+                    <td><b id="online_cur_version">v1.8.20</b></td>
                 </tr>
                 <tr>
                     <td>最新版本</td>
@@ -9083,7 +9149,7 @@ loadWhitelist();
         <h3>关于插件</h3>
         <table class="netmanager-table">
             <tr><td width="30%">插件名称</td><td>网络管理 (luci-app-netmanager)</td></tr>
-            <tr><td>版本</td><td id="plugin_version">v1.8.19</td></tr>
+            <tr><td>版本</td><td id="plugin_version">v1.8.20</td></tr>
             <tr><td>作者</td><td><b>吾爱破解liyu0828</b></td></tr>
             <tr><td>仓库地址</td><td><a href="https://github.com/District1655/luci-app-netmanager" target="_blank" style="color:#2563eb;">https://github.com/District1655/luci-app-netmanager</a></td></tr>
             <tr><td>适配系统</td><td>iStoreOS / OpenWrt (fw4/nftables)</td></tr>
@@ -9116,7 +9182,7 @@ loadWhitelist();
             </div>
         </div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.19<br><span style="font-size:10px;">适配 iStoreOS / OpenWrt | 基于 fw4/nftables</span></div>
+    <div class="footer-sign">网络管理插件 v1.8.20<br><span style="font-size:10px;">适配 iStoreOS / OpenWrt | 基于 fw4/nftables</span></div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -9808,12 +9874,12 @@ exit 0
 ```bash
 #!/bin/ash
 # ============================================================
-# 网络管理插件 (luci-app-netmanager) - 一键安装脚本 v1.8.19
+# 网络管理插件 (luci-app-netmanager) - 一键安装脚本 v1.8.20
 # 由 luci-app-fwmanager (防火墙管理) 与 luci-app-dnssettings (DNS设置) 合并而成
 # ============================================================
 
 echo "============================================"
-echo "  网络管理插件 (luci-app-netmanager) v1.8.19"
+echo "  网络管理插件 (luci-app-netmanager) v1.8.20"
 echo "  防火墙管理 + DNS设置 一体化"
 echo "============================================"
 echo ""
@@ -11352,7 +11418,7 @@ if __name__ == "__main__":
 ### 5.32 docs/CHANGELOG.md
 
 - **用途**：全部历史版本记录（v1.8.14 → v1.4.0 → 继承 fwmanager v1.3.33），GitHub Release body 的来源
-- **规模**：415 行
+- **规模**：424 行
 - **维护要点**：段落标题必须保持 `### vX.Y.Z (日期)`（build.yml 的 awk 按此匹配）；每版在顶部新增小节
 
 ```markdown
@@ -11364,6 +11430,15 @@ if __name__ == "__main__":
 > `README.md` 只保留「最近一版要点 + 指向本文件的链接」。
 
 > **2026-11-26 工程更新（版本号不变，交付形态与 CI 变更）**：新增 ipk/apk 双格式打包（`tools/`）、iStore 软件中心上架元数据（`istore/app-meta/`）、Release 后自动构建并提 PR 到 `istoreos/istore-repo` 与 `istoreos/openwrt-app-meta` 的流水线（`.github/workflows/publish-istore.yml`）；README 安装章节按 apk/opkg 双体系重写。
+
+### v1.8.20 (2026-11-27)
+- **CBI 页面导航统一，修复「上网设置 / 静态IP分配」页顶部少一项**：这两个页面走 CBI 渲染，导航是 `cbi_nav.htm` 里另写的一份硬编码菜单，v1.8.19 加「IP过滤」时只改了自绘页面的 `nav.htm`，所以切到这两页时 IP过滤 入口会“消失”。现在 `cbi_nav.htm` 改为 `<%+netmanager/nav%>` 直接 include 同一份导航，菜单只有一处维护，两个页面的高亮与顺序也和其它页面一致。
+- **系统概览：WAN IPv6 显示完整地址且对口**。原来 `WAN_IPV6` 取「系统上第一个 scope global 地址」，PPPoE 下取到的是 br-lan 的 GUA（`...:20d0::1`，短地址、且不是 WAN），WAN 真实地址在 `pppoe-wan` 上。改为按 `get_wan_devs` 逐设备读 `inet6 ... scope global`，保留 `/前缀` 长度。
+- **系统概览：PD 前缀长度按 DHCPv6-PD 实际委派显示**。原来从 `ip -6 route show dev br-lan` 抓，拿到的是内核写的静态 `/64` 路由，与真实委派（`ip6assign=60`）不一致。改为优先读 `ubus call network.interface.wan6 status` 的 `ipv6-prefix[0].address/mask`，取不到才回落到「br-lan 路由 + `network.lan.ip6assign`」。真机实测 `PD_PREFIX=2408:820c:8f29:20d0::/60`，与 LAN 分发地址一致。
+- **WAN /64 与 PD 前缀不同段属正常**：WAN 地址与 PD 是运营商两次独立分配（前者 RA/DHCPv6 给的单个 /64，后者 DHCPv6-PD 委派的整段），页面 IPv6 区下方已加说明，避免误判为显示错误。
+- **系统概览：DNS 信息按 WAN / LAN 分组重做**。原来 `grep '^nameserver'` 把 lan / wan / wan6 三段混在一起，重复且看不懂。现在按 `# Interface xxx` 分块解析，输出四项：`WAN 上游 DNS（IPv4/IPv6）`、`LAN 下发 DNS（IPv4/IPv6）`，长地址 `word-break:break-all` 换行；缺省回落顺序为 `dnssettings.wan.dns1_v4|dns2_v4|dns1_v6|dns2_v6`、`dhcp.lan.dhcp_option` 的 option 6、`dhcp.lan.dns` 中的 IPv6 项。`DNS_SERVERS` 保留原字段以兼容旧调用。
+- **README 增加界面预览 GIF**（`docs/images/netmanager-demo.gif`）：不截真机，改用真实视图源码 + 真实 CSS 离线渲染静态演示页并注入示例数据（IPv4 `198.51.100.x`、IPv6 `2001:db8::/32`、公共 DNS），页头署名替换为「示例数据 · 功能演示」，不含任何真实 WAN IP / IPv6 / 域名 / 登录信息。
+- **真机验证（iStoreOS 25.12.6 / x86_64）**：`netmanager overview` 输出 `WAN_IPV6=<完整 /64>`、`PD_PREFIX=...::/60`、`DNS_MODE=自定义`、`DNS_WAN4/DNS_WAN6/DNS_LAN4/DNS_LAN6` 四行分别正确，直接继承自 `resolv.conf.auto` 与 uci 配置。
 
 ### v1.8.19 (2026-11-27)
 - **新增一级页面「IP过滤」**：把「中国IPv4访问限制」「中国IPv6访问限制」「手动黑名单」「手动白名单」从设置页整体迁出，挂到顶部导航（`admin/netmanager/ip_filter`，位置在「设置」之前）。页内 4 个子页签切换内容，样式沿用顶部导航（白底圆角、选中蓝底白字，每项前有与区块左边框同色的小圆点），选择记在 `localStorage`，默认第一项；设置页只剩默认转发目标、系统工具、备份/在线更新/日志等工具类配置。
@@ -11884,13 +11959,13 @@ dist/
 ### 5.36 README.md
 
 - **用途**：用户文档：功能 / 安装（apk·ipk·脚本三路）/ CLI / 配置说明 / 构建与发版 / 更新日志
-- **规模**：421 行
+- **规模**：435 行
 - **维护要点**：L3 版本号是 build.yml 的 tag 提取源（登记处 12）；更新日志已迁到 docs/CHANGELOG.md，本文件只留最近一版摘要
 
 ````markdown
 # 网络管理插件 (luci-app-netmanager)
 
-> 版本：v1.8.19
+> 版本：v1.8.20
 >
 > 适配：iStoreOS 25.12+（apk）/ iStoreOS 24.10 及 OpenWrt 23.05+（opkg / ipk），fw4 + nftables，Lua LuCI
 >
@@ -11899,6 +11974,12 @@ dist/
 > 由 **luci-app-fwmanager**（防火墙管理）与 **luci-app-dnssettings**（上网设置）合并而成的网络管理一体化 LuCI 插件。
 
 一站式管理路由器网络：端口转发、防火墙规则、SSH/访问日志、中国 IPv4/IPv6 访问限制、手动黑名单、WAN/LAN 口上网方式与双栈 DNS 统一管理、静态 IP 分配（IPv4/IPv6）、配置备份恢复、插件在线更新、一键卸载。
+
+## 界面预览
+
+![界面预览](docs/images/netmanager-demo.gif)
+
+> 演示图使用**示例数据**渲染（文档专用地址段 198.51.100.x / 2001:db8::/32 与公共 DNS），不含任何真实 WAN IP、IPv6 地址、域名或登录信息。依次为：系统概览（IPv6 状态 / WAN·LAN 双栈 DNS）→ 端口转发（IPv4/IPv6 DNAT 与直连放行）→ IP过滤（中国 IPv4 限制 / 手动白名单）→ 设置。
 
 ## 安装方式速览
 
@@ -11916,7 +11997,7 @@ dist/
 
 ### 防火墙管理（原 luci-app-fwmanager）
 
-1. **系统概览**：防火墙状态 / 端口统计 / 网络信息 / 快捷操作
+1. **系统概览**：防火墙状态 / 端口统计 / 网络信息 / 快捷操作；IPv6 状态区展示 WAN 全局地址（含完整前缀长度）、PD 委派前缀（按 DHCPv6-PD 实际长度）、LAN 分发地址；DNS 区按「WAN 上游 / LAN 下发」× 「IPv4 / IPv6」四行分开显示，不再混成一串
 2. **端口转发管理**：IPv4 / IPv6 DNAT 端口映射统一管理，支持 TCP/UDP/双协议、单端口与端口范围；「IPv6 端口放行（直连）」区独立展示直连放行规则（转发是转发，放行是放行），自动配套规则随映射增删与前缀跟随，支持启用/禁用
 3. **防火墙规则管理**：自定义通信规则增删改 + 常用模板一键应用 + 源IP/目的IP 粒度列；IPv6 端口放行规则不在此页（归端口转发页「IPv6 端口放行」区）
 4. **SSH 登录日志**：成功/失败记录 + 失败 IP 排行 Top 10 + 自动刷新
@@ -12298,7 +12379,15 @@ IPv4（每行一个 CIDR）：
 
 完整历史版本记录（v1.8.17 → v1.4.0 → 继承 fwmanager v1.3.33）已归档到 **[`docs/CHANGELOG.md`](docs/CHANGELOG.md)**，`build.yml` 从那里提取当前版本段落作为 GitHub Release body。
 
-**最近一版：v1.8.19（2026-11-27）**
+**最近一版：v1.8.20（2026-11-27）**
+
+- **修复 CBI 页面导航少一项**：“上网设置 / 静态IP分配”原来用 `cbi_nav.htm` 里另一份硬编码菜单（漏了 IP过滤），现在改为 include 同一份 `nav.htm`，全插件只有一处菜单定义
+- **系统概览 IPv6 显示修正**：`WAN IPv6` 改为按 WAN 设备（含 pppoe-wan）逐口取 `scope global` 的**完整地址**（之前抓到的是 br-lan 的 GUA，短地址且不对口）
+- **PD 前缀长度修正**：改为读 wan6 的 DHCPv6-PD 委派结果（`ubus ipv6-prefix` 的 address/mask），不再从 br-lan 的静态 `/64` 路由倒推；前缀长度与 `ip6assign` 一致（本例 /60）。WAN 的 /64 与 PD 前缀分属运营商不同地址池，**本来就不要求同段**，页面已加说明
+- **DNS 显示重做**：拆成「WAN 上游 DNS」「LAN 下发 DNS」两组，各自分 IPv4 / IPv6 两行，长地址自动换行；来源按 `resolv.conf.auto` 的接口分块解析，缺省回落到 `dnssettings` 的 dns1/dns2 与 `dhcp.lan.dhcp_option` / `dhcp.lan.dns`
+- **README 增加界面预览 GIF**：用真实视图源码 + 示例数据离线渲染（`198.51.100.x` / `2001:db8::/32`），不含真实 IP、IPv6、域名等隐私信息
+
+**v1.8.19（2026-11-27）**
 
 - **新增「IP过滤」一级页面**：中国IPv4访问限制、中国IPv6访问限制、手动黑名单（IPv4/IPv6）、手动白名单（IPv4/IPv6）从设置页挪出，集中到顶部导航的「IP过滤」页，页内用 4 个子页签切换（样式与顶部导航一致，圆点颜色对应区块边框色），刷新后记住上次所在页签；设置页只保留工具类配置
 - **修复端口转发「命中数」恒为 0**：fw4 把 redirect 规则放在 `dstnat_wan` / `dstnat_lan` / `upnp_prerouting` 等子链，原来只读主链 `dstnat`（里面只有 jump），计数器一个都拿不到；现在整表读 `inet fw4` 并按 family + 协议匹配端口，同端口的 tcp/udp 规则命中数求和；IPv6 直连放行规则改按 fw4 规则名（`Allow-IPv6-<端口>-<协议>`）统计

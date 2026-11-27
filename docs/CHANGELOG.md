@@ -7,6 +7,15 @@
 
 > **2026-11-26 工程更新（版本号不变，交付形态与 CI 变更）**：新增 ipk/apk 双格式打包（`tools/`）、iStore 软件中心上架元数据（`istore/app-meta/`）、Release 后自动构建并提 PR 到 `istoreos/istore-repo` 与 `istoreos/openwrt-app-meta` 的流水线（`.github/workflows/publish-istore.yml`）；README 安装章节按 apk/opkg 双体系重写。
 
+### v1.8.20 (2026-11-27)
+- **CBI 页面导航统一，修复「上网设置 / 静态IP分配」页顶部少一项**：这两个页面走 CBI 渲染，导航是 `cbi_nav.htm` 里另写的一份硬编码菜单，v1.8.19 加「IP过滤」时只改了自绘页面的 `nav.htm`，所以切到这两页时 IP过滤 入口会“消失”。现在 `cbi_nav.htm` 改为 `<%+netmanager/nav%>` 直接 include 同一份导航，菜单只有一处维护，两个页面的高亮与顺序也和其它页面一致。
+- **系统概览：WAN IPv6 显示完整地址且对口**。原来 `WAN_IPV6` 取「系统上第一个 scope global 地址」，PPPoE 下取到的是 br-lan 的 GUA（`...:20d0::1`，短地址、且不是 WAN），WAN 真实地址在 `pppoe-wan` 上。改为按 `get_wan_devs` 逐设备读 `inet6 ... scope global`，保留 `/前缀` 长度。
+- **系统概览：PD 前缀长度按 DHCPv6-PD 实际委派显示**。原来从 `ip -6 route show dev br-lan` 抓，拿到的是内核写的静态 `/64` 路由，与真实委派（`ip6assign=60`）不一致。改为优先读 `ubus call network.interface.wan6 status` 的 `ipv6-prefix[0].address/mask`，取不到才回落到「br-lan 路由 + `network.lan.ip6assign`」。真机实测 `PD_PREFIX=2408:820c:8f29:20d0::/60`，与 LAN 分发地址一致。
+- **WAN /64 与 PD 前缀不同段属正常**：WAN 地址与 PD 是运营商两次独立分配（前者 RA/DHCPv6 给的单个 /64，后者 DHCPv6-PD 委派的整段），页面 IPv6 区下方已加说明，避免误判为显示错误。
+- **系统概览：DNS 信息按 WAN / LAN 分组重做**。原来 `grep '^nameserver'` 把 lan / wan / wan6 三段混在一起，重复且看不懂。现在按 `# Interface xxx` 分块解析，输出四项：`WAN 上游 DNS（IPv4/IPv6）`、`LAN 下发 DNS（IPv4/IPv6）`，长地址 `word-break:break-all` 换行；缺省回落顺序为 `dnssettings.wan.dns1_v4|dns2_v4|dns1_v6|dns2_v6`、`dhcp.lan.dhcp_option` 的 option 6、`dhcp.lan.dns` 中的 IPv6 项。`DNS_SERVERS` 保留原字段以兼容旧调用。
+- **README 增加界面预览 GIF**（`docs/images/netmanager-demo.gif`）：不截真机，改用真实视图源码 + 真实 CSS 离线渲染静态演示页并注入示例数据（IPv4 `198.51.100.x`、IPv6 `2001:db8::/32`、公共 DNS），页头署名替换为「示例数据 · 功能演示」，不含任何真实 WAN IP / IPv6 / 域名 / 登录信息。
+- **真机验证（iStoreOS 25.12.6 / x86_64）**：`netmanager overview` 输出 `WAN_IPV6=<完整 /64>`、`PD_PREFIX=...::/60`、`DNS_MODE=自定义`、`DNS_WAN4/DNS_WAN6/DNS_LAN4/DNS_LAN6` 四行分别正确，直接继承自 `resolv.conf.auto` 与 uci 配置。
+
 ### v1.8.19 (2026-11-27)
 - **新增一级页面「IP过滤」**：把「中国IPv4访问限制」「中国IPv6访问限制」「手动黑名单」「手动白名单」从设置页整体迁出，挂到顶部导航（`admin/netmanager/ip_filter`，位置在「设置」之前）。页内 4 个子页签切换内容，样式沿用顶部导航（白底圆角、选中蓝底白字，每项前有与区块左边框同色的小圆点），选择记在 `localStorage`，默认第一项；设置页只剩默认转发目标、系统工具、备份/在线更新/日志等工具类配置。
 - **取代 v1.8.18 的“设置页内子菜单”方案**：v1.8.18 把四个区块塞进设置页做成页签，层级仍挂在设置下；这一版改为独立页面，入口在主导航。

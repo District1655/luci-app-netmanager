@@ -1,6 +1,6 @@
 # 网络管理插件 (luci-app-netmanager)
 
-> 版本：v1.8.19
+> 版本：v1.8.20
 >
 > 适配：iStoreOS 25.12+（apk）/ iStoreOS 24.10 及 OpenWrt 23.05+（opkg / ipk），fw4 + nftables，Lua LuCI
 >
@@ -9,6 +9,12 @@
 > 由 **luci-app-fwmanager**（防火墙管理）与 **luci-app-dnssettings**（上网设置）合并而成的网络管理一体化 LuCI 插件。
 
 一站式管理路由器网络：端口转发、防火墙规则、SSH/访问日志、中国 IPv4/IPv6 访问限制、手动黑名单、WAN/LAN 口上网方式与双栈 DNS 统一管理、静态 IP 分配（IPv4/IPv6）、配置备份恢复、插件在线更新、一键卸载。
+
+## 界面预览
+
+![界面预览](docs/images/netmanager-demo.gif)
+
+> 演示图使用**示例数据**渲染（文档专用地址段 198.51.100.x / 2001:db8::/32 与公共 DNS），不含任何真实 WAN IP、IPv6 地址、域名或登录信息。依次为：系统概览（IPv6 状态 / WAN·LAN 双栈 DNS）→ 端口转发（IPv4/IPv6 DNAT 与直连放行）→ IP过滤（中国 IPv4 限制 / 手动白名单）→ 设置。
 
 ## 安装方式速览
 
@@ -26,7 +32,7 @@
 
 ### 防火墙管理（原 luci-app-fwmanager）
 
-1. **系统概览**：防火墙状态 / 端口统计 / 网络信息 / 快捷操作
+1. **系统概览**：防火墙状态 / 端口统计 / 网络信息 / 快捷操作；IPv6 状态区展示 WAN 全局地址（含完整前缀长度）、PD 委派前缀（按 DHCPv6-PD 实际长度）、LAN 分发地址；DNS 区按「WAN 上游 / LAN 下发」× 「IPv4 / IPv6」四行分开显示，不再混成一串
 2. **端口转发管理**：IPv4 / IPv6 DNAT 端口映射统一管理，支持 TCP/UDP/双协议、单端口与端口范围；「IPv6 端口放行（直连）」区独立展示直连放行规则（转发是转发，放行是放行），自动配套规则随映射增删与前缀跟随，支持启用/禁用
 3. **防火墙规则管理**：自定义通信规则增删改 + 常用模板一键应用 + 源IP/目的IP 粒度列；IPv6 端口放行规则不在此页（归端口转发页「IPv6 端口放行」区）
 4. **SSH 登录日志**：成功/失败记录 + 失败 IP 排行 Top 10 + 自动刷新
@@ -408,7 +414,15 @@ IPv4（每行一个 CIDR）：
 
 完整历史版本记录（v1.8.17 → v1.4.0 → 继承 fwmanager v1.3.33）已归档到 **[`docs/CHANGELOG.md`](docs/CHANGELOG.md)**，`build.yml` 从那里提取当前版本段落作为 GitHub Release body。
 
-**最近一版：v1.8.19（2026-11-27）**
+**最近一版：v1.8.20（2026-11-27）**
+
+- **修复 CBI 页面导航少一项**：“上网设置 / 静态IP分配”原来用 `cbi_nav.htm` 里另一份硬编码菜单（漏了 IP过滤），现在改为 include 同一份 `nav.htm`，全插件只有一处菜单定义
+- **系统概览 IPv6 显示修正**：`WAN IPv6` 改为按 WAN 设备（含 pppoe-wan）逐口取 `scope global` 的**完整地址**（之前抓到的是 br-lan 的 GUA，短地址且不对口）
+- **PD 前缀长度修正**：改为读 wan6 的 DHCPv6-PD 委派结果（`ubus ipv6-prefix` 的 address/mask），不再从 br-lan 的静态 `/64` 路由倒推；前缀长度与 `ip6assign` 一致（本例 /60）。WAN 的 /64 与 PD 前缀分属运营商不同地址池，**本来就不要求同段**，页面已加说明
+- **DNS 显示重做**：拆成「WAN 上游 DNS」「LAN 下发 DNS」两组，各自分 IPv4 / IPv6 两行，长地址自动换行；来源按 `resolv.conf.auto` 的接口分块解析，缺省回落到 `dnssettings` 的 dns1/dns2 与 `dhcp.lan.dhcp_option` / `dhcp.lan.dns`
+- **README 增加界面预览 GIF**：用真实视图源码 + 示例数据离线渲染（`198.51.100.x` / `2001:db8::/32`），不含真实 IP、IPv6、域名等隐私信息
+
+**v1.8.19（2026-11-27）**
 
 - **新增「IP过滤」一级页面**：中国IPv4访问限制、中国IPv6访问限制、手动黑名单（IPv4/IPv6）、手动白名单（IPv4/IPv6）从设置页挪出，集中到顶部导航的「IP过滤」页，页内用 4 个子页签切换（样式与顶部导航一致，圆点颜色对应区块边框色），刷新后记住上次所在页签；设置页只保留工具类配置
 - **修复端口转发「命中数」恒为 0**：fw4 把 redirect 规则放在 `dstnat_wan` / `dstnat_lan` / `upnp_prerouting` 等子链，原来只读主链 `dstnat`（里面只有 jump），计数器一个都拿不到；现在整表读 `inet fw4` 并按 family + 协议匹配端口，同端口的 tcp/udp 规则命中数求和；IPv6 直连放行规则改按 fw4 规则名（`Allow-IPv6-<端口>-<协议>`）统计

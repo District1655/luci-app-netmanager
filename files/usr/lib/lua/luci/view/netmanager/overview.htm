@@ -51,15 +51,21 @@
         <h3>IPv6 状态</h3>
         <table class="netmanager-table">
             <tr><td width="30%">IPv6 出口</td><td id="ipv6_status">--</td></tr>
-            <tr><td>WAN IPv6</td><td id="wan_ipv6">--</td></tr>
+            <tr><td>WAN IPv6（全局地址）</td><td id="wan_ipv6" style="word-break:break-all;">--</td></tr>
             <tr><td>PD 前缀</td><td id="pd_prefix">--</td></tr>
             <tr><td>LAN 分发地址</td><td id="lan_ipv6">--</td></tr>
             <tr><td>IPv6 默认路由</td><td id="ipv6_gw">--</td></tr>
         </table>
+        <div class="text-muted" style="margin-top:6px;font-size:12px;">
+            说明：WAN IPv6（/64）由运营商单独分配，PD 前缀是另外委派给内网使用的地址段，两者不在同一段属正常现象；PD 前缀长度以 DHCPv6-PD 委派结果为准。
+        </div>
         <h3>DNS</h3>
         <table class="netmanager-table">
             <tr><td width="30%">DNS 模式</td><td id="dns_mode">--</td></tr>
-            <tr><td>上游服务器</td><td id="dns_servers">--</td></tr>
+            <tr><td>WAN 上游 DNS（IPv4）</td><td id="dns_wan4" style="word-break:break-all;">--</td></tr>
+            <tr><td>WAN 上游 DNS（IPv6）</td><td id="dns_wan6" style="word-break:break-all;">--</td></tr>
+            <tr><td>LAN 下发 DNS（IPv4）</td><td id="dns_lan4" style="word-break:break-all;">--</td></tr>
+            <tr><td>LAN 下发 DNS（IPv6）</td><td id="dns_lan6" style="word-break:break-all;">--</td></tr>
         </table>
         <h3>快捷操作</h3>
         <div class="netmanager-toolbar">
@@ -70,7 +76,7 @@
         </div>
         <div id="action_result" class="netmanager-result"></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.19</div>
+    <div class="footer-sign">网络管理插件 v1.8.20</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
