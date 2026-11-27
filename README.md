@@ -1,6 +1,6 @@
 # 网络管理插件 (luci-app-netmanager)
 
-> 版本：v1.8.16
+> 版本：v1.8.17
 >
 > 适配：iStoreOS 25.12+（apk）/ iStoreOS 24.10 及 OpenWrt 23.05+（opkg / ipk），fw4 + nftables，Lua LuCI
 >
@@ -402,14 +402,13 @@ IPv4（每行一个 CIDR）：
 
 ## 更新日志
 
-完整历史版本记录（v1.8.16 → v1.4.0 → 继承 fwmanager v1.3.33）已归档到 **[`docs/CHANGELOG.md`](docs/CHANGELOG.md)**，`build.yml` 从那里提取当前版本段落作为 GitHub Release body。
+完整历史版本记录（v1.8.17 → v1.4.0 → 继承 fwmanager v1.3.33）已归档到 **[`docs/CHANGELOG.md`](docs/CHANGELOG.md)**，`build.yml` 从那里提取当前版本段落作为 GitHub Release body。
 
-**最近一版：v1.8.16（2026-11-27）**
+**最近一版：v1.8.17（2026-11-27）**
 
-- **修复上级光猫/网关访问不到路由器**：白名单只认 `china.txt` 里的大陆公网段，光猫在私网段（如 `192.168.1.0/24`）时会被当成境外地址丢弃；现在自动解析 WAN 口自身网段并在 drop 前放行（issue #1）
-- **新增「放行上级网关」开关**：设置页可勾选，`netmanager china_filter allow_wan on|off` 同效；状态里显示实际放行的网段
-- **IPv6 对称修复**：`fd00::/8`（ULA）与 WAN 口自身 `/64` 也在 drop 前放行
-- **真机验证**：veth + netns 复现，老规则全丢、新规则全过；PPPoE `/32`、IPv4/IPv6 链均正常
+- **新增手动白名单（IPv4/IPv6 双栈）**：`netmanager whitelist add 203.0.113.0/24` / `2001:db8::/32`，设置页同样有输入框与列表；实现是把条目并进 `china_v4` / `china_v6` 集合，等于给中国IP限制加一份人工允许列表（不受 china.txt 订阅更新影响）
+- **持久化自愈**：条目存 `/etc/netmanager/whitelist_v4.list`、`whitelist_v6.list`，重启/WAN 重连/china 列表更新/备份恢复后都会重新并入集合；删条目立刻从集合移除
+- **修复上级光猫/网关访问不到路由器**（v1.8.16 延续）：自动放行 WAN 口同网段来源，「放行上级网关」可在设置页开关
 
 ## 许可证
 

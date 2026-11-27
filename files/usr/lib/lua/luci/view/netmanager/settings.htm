@@ -166,6 +166,35 @@
             </div>
         </div>
 
+        <!-- 手动白名单（IPv4/IPv6，v1.8.17） -->
+        <h3>手动白名单（IPv4 / IPv6）</h3>
+        <div class="netmanager-form" style="border-left:3px solid #22c55e;">
+            <div style="margin-bottom:10px;">
+                <b>给中国IP限制开例外，放行指定 IP / IP段</b>
+                <span class="text-muted" style="margin-left:8px;">支持单个 IP 与 CIDR 网段（如 8.8.8.8、203.0.113.0/24、2001:db8::1、2001:db8::/32）；这些条目会被并入 china_v4 / china_v6 集合，等于给中国IP限制加了一份“人工允许列表”，不受订阅更新影响；仅在中国IP限制启用时生效</span>
+            </div>
+            <div class="netmanager-toolbar" style="margin-bottom:10px;">
+                <input type="text" id="wl_input" placeholder="输入 IP 或 CIDR，如 203.0.113.0/24 或 2001:db8::/32" style="width:45%;">
+                <button class="btn btn-success btn-sm" onclick="addWhitelistEntry()">添加放行</button>
+                <button class="btn btn-secondary btn-sm" onclick="loadWhitelist()">刷新</button>
+                <button class="btn btn-warning btn-sm" onclick="clearWhitelist('v4')">清空IPv4</button>
+                <button class="btn btn-warning btn-sm" onclick="clearWhitelist('v6')">清空IPv6</button>
+            </div>
+            <table class="netmanager-table">
+                <tr>
+                    <td width="22%">IPv4 白名单 (<span id="wl_v4_count">0</span>)</td>
+                    <td id="wl_v4_list"><span class="text-muted">—</span></td>
+                </tr>
+                <tr>
+                    <td>IPv6 白名单 (<span id="wl_v6_count">0</span>)</td>
+                    <td id="wl_v6_list"><span class="text-muted">—</span></td>
+                </tr>
+            </table>
+            <div class="text-muted" style="margin-top:6px;font-size:11px;">
+                规则状态: <span id="wl_active_cell">—</span> | 条目持久化于 <code>/etc/netmanager/whitelist_v4.list</code> / <code>whitelist_v6.list</code>，重启、WAN重连或 china 列表更新后自动重新并入
+            </div>
+        </div>
+
         <!-- 备份管理 -->
         <h3>备份管理</h3>
         <div class="netmanager-form" style="border-left:3px solid #10b981;">
@@ -191,7 +220,7 @@
             <table class="netmanager-table" style="margin-bottom:10px;">
                 <tr>
                     <td width="30%">当前版本</td>
-                    <td><b id="online_cur_version">v1.8.16</b></td>
+                    <td><b id="online_cur_version">v1.8.17</b></td>
                 </tr>
                 <tr>
                     <td>最新版本</td>
@@ -310,7 +339,7 @@
         <h3>关于插件</h3>
         <table class="netmanager-table">
             <tr><td width="30%">插件名称</td><td>网络管理 (luci-app-netmanager)</td></tr>
-            <tr><td>版本</td><td id="plugin_version">v1.8.16</td></tr>
+            <tr><td>版本</td><td id="plugin_version">v1.8.17</td></tr>
             <tr><td>作者</td><td><b>吾爱破解liyu0828</b></td></tr>
             <tr><td>仓库地址</td><td><a href="https://github.com/District1655/luci-app-netmanager" target="_blank" style="color:#2563eb;">https://github.com/District1655/luci-app-netmanager</a></td></tr>
             <tr><td>适配系统</td><td>iStoreOS / OpenWrt (fw4/nftables)</td></tr>
@@ -343,7 +372,7 @@
             </div>
         </div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.16<br><span style="font-size:10px;">适配 iStoreOS / OpenWrt | 基于 fw4/nftables</span></div>
+    <div class="footer-sign">网络管理插件 v1.8.17<br><span style="font-size:10px;">适配 iStoreOS / OpenWrt | 基于 fw4/nftables</span></div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -845,7 +874,7 @@ function saveChinaUrl() {
     });
 }
 
-// v1.8.16：保存"放行 WAN 同网段来源"开关（上级光猫/网关访问）
+// v1.8.17：保存"放行 WAN 同网段来源"开关（上级光猫/网关访问）
 function saveChinaAllowWan() {
     const el = document.getElementById('china_allow_wan');
     const val = el && el.checked ? '1' : '0';
@@ -1089,6 +1118,88 @@ function clearBlacklist(family) {
     }).catch(e => alert('清空失败: ' + e.message));
 }
 
+// ========== 手动白名单（IPv4 / IPv6，v1.8.17） ==========
+let _wlV4 = [], _wlV6 = [];
+
+function renderWlList(family) {
+    const list = (family === 'v4') ? _wlV4 : _wlV6;
+    const el = document.getElementById(family === 'v4' ? 'wl_v4_list' : 'wl_v6_list');
+    if (!el) return;
+    if (!list.length) { el.innerHTML = '<span class="text-muted">（空）</span>'; return; }
+    let html = '';
+    list.forEach((entry, i) => {
+        html += '<span class="badge badge-gray" style="display:inline-block;margin:2px 4px 2px 0;padding:3px 8px;font-family:monospace;">'
+             + escapeHtml(entry)
+             + ' <a href="javascript:void(0)" style="color:#dc2626;text-decoration:none;margin-left:4px;font-weight:bold;" '
+             + 'onclick="deleteWhitelistEntry(\'' + family + '\',' + i + ')" title="删除">×</a></span>';
+    });
+    el.innerHTML = html;
+}
+
+function loadWhitelist() {
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=whitelist_list'})
+    .then(r => r.text()).then(data => {
+        let v4='', v6='', v4n='0', v6n='0', active='0';
+        data.split('\n').forEach(line => {
+            const idx = line.indexOf('=');
+            if (idx > 0) {
+                const k = line.substring(0, idx), v = line.substring(idx + 1);
+                if (k === 'V4') v4 = v;
+                else if (k === 'V6') v6 = v;
+                else if (k === 'V4_COUNT') v4n = v;
+                else if (k === 'V6_COUNT') v6n = v;
+                else if (k === 'ACTIVE') active = v;
+            }
+        });
+        _wlV4 = v4 ? v4.split(',') : [];
+        _wlV6 = v6 ? v6.split(',') : [];
+        const c4 = document.getElementById('wl_v4_count'), c6 = document.getElementById('wl_v6_count');
+        if (c4) c4.textContent = v4n;
+        if (c6) c6.textContent = v6n;
+        const ac = document.getElementById('wl_active_cell');
+        if (ac) ac.innerHTML = active === '1'
+            ? '<span class="text-success">规则生效中（白名单来源已放行）</span>'
+            : '<span class="text-muted">未生效（无条目或未应用）</span>';
+        renderWlList('v4');
+        renderWlList('v6');
+    }).catch(e => {
+        const el = document.getElementById('wl_v4_list');
+        if (el) el.innerHTML = '<span class="text-danger">加载失败: ' + escapeHtml(e.message) + '</span>';
+    });
+}
+
+function addWhitelistEntry() {
+    const ip = document.getElementById('wl_input').value.trim();
+    if (!ip) { alert('请输入 IP 或 CIDR 网段'); return; }
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=whitelist_add&ip=' + encodeURIComponent(ip)})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        if (data.indexOf('已加入白名单') >= 0) document.getElementById('wl_input').value = '';
+        setTimeout(loadWhitelist, 300);
+    }).catch(e => alert('添加失败: ' + e.message));
+}
+
+function deleteWhitelistEntry(family, idx) {
+    const list = (family === 'v4') ? _wlV4 : _wlV6;
+    const entry = list[idx];
+    if (!entry) return;
+    if (!confirm('确定从白名单移除该条目吗？\n\n' + entry)) return;
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=whitelist_del&ip=' + encodeURIComponent(entry)})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        setTimeout(loadWhitelist, 300);
+    }).catch(e => alert('删除失败: ' + e.message));
+}
+
+function clearWhitelist(family) {
+    if (!confirm('确定清空 ' + (family === 'v4' ? 'IPv4' : 'IPv6') + ' 白名单吗？此操作不可撤销。')) return;
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=whitelist_clear&family=' + encodeURIComponent(family)})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        setTimeout(loadWhitelist, 300);
+    }).catch(e => alert('清空失败: ' + e.message));
+}
+
 // ========== 卸载插件 ==========
 function uninstallPlugin() {
     const keep = document.getElementById('uninstall_keep_config').checked ? '1' : '0';
@@ -1127,5 +1238,6 @@ loadSettings();
 listBackups();
 loadChina6Status();
 loadBlacklist();
+loadWhitelist();
 </script>
 <%+footer%>

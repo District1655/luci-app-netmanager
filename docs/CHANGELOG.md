@@ -7,6 +7,14 @@
 
 > **2026-11-26 工程更新（版本号不变，交付形态与 CI 变更）**：新增 ipk/apk 双格式打包（`tools/`）、iStore 软件中心上架元数据（`istore/app-meta/`）、Release 后自动构建并提 PR 到 `istoreos/istore-repo` 与 `istoreos/openwrt-app-meta` 的流水线（`.github/workflows/publish-istore.yml`）；README 安装章节按 apk/opkg 双体系重写。
 
+### v1.8.17 (2026-11-27)
+- **新增手动白名单（IPv4 / IPv6 双栈）**：`netmanager whitelist list|add|del|clear|apply`，支持单个 IP 与 CIDR 网段（`8.8.8.8`、`203.0.113.0/24`、`2001:db8::1`、`2001:db8::/32`）。实现方式是**把手动条目直接并进中国过滤的 `china_v4` / `china_v6` 集合**，等于给订阅列表加了一份“人工补充的允许列表”——这些来源不再命中 `ip saddr != @china_v4 drop`；条目不受 china.txt 订阅更新影响。
+- **为什么不用独立 accept 链**：netfilter 里 `accept` 只结束当前 base chain，同一个 hook 上的其它 base chain（中国过滤 -50）仍会继续执行。真机实测独立的 -60 `accept` 链：accept 计数在涨、drop 计数同时也在涨，包照样被丢；因此改为集合注入，行为可预期。
+- **持久化与自愈**：条目存 `/etc/netmanager/whitelist_v4.list` / `whitelist_v6.list`，重启、WAN 重连、china 列表更新或备份恢复后都会重新并入集合（`wl_apply_all` 重建规则）；删条目同样立刻从集合里消失。
+- **设置页新增「手动白名单」区块**：输入框 + 添加/删除/清空 + IPv4/IPv6 条目列表与规则状态，交互与「手动黑名单」一致；控制器新增 `whitelist_list/add/del/clear` 四个 action。
+- **与自动化配合**：v1.8.16 的「放行 WAN 同网段来源」解决“上级光猫恰好同段”的普遍场景；白名单用于逐条精确放行（境外 VPS、跨网段光猫、临时排障），两者互不冲突。注意：白名单只在中国IP限制启用时生效。
+- **真机验证（iStoreOS 25.12.6 / x86_64 / nft 1.1.6）**：`whitelist add 203.0.113.0/24`、`2001:db8::/32` 后集合内可见该条目；用 veth+netns 构造同构校验规则做 A/B——白名单在场时 drop 计数 0，`del` 后集合里消失；`clear all` 后 china_v4 回到 5570 条、china6 1719 条，规则正常。
+
 ### v1.8.16 (2026-11-27)
 - **修复：上级光猫/网关访问不到路由器（issue #1）**。此前白名单规则为「`iifname {WAN}` 且 `ip saddr != @china_v4` → drop」，而 `china.txt` 只收录**大陆公网**地址段；光猫拨号/桥接场景下 WAN 口落在私网段（如 `192.168.1.0/24`），光猫自身的私网 IP 不在集合里 → 被当成境外地址丢弃。现在规则解析出 **WAN 口自身所在网段**，在 drop 之前放行该网段来源（`get_wan_prefixes`，纯 shell 算 CIDR，不依赖 ipcalc；PPP 点对点接口按 `peer` 后的掩码解析）。只放行“与自己同段”的地址，**不是**把整个 RFC1918 灌进去，攻击面几乎不变。
 - **新增开关「放行上级网关」**：`uci netmanager.settings.china_filter_allow_wan_peers`（默认 1），设置页中国 IPv4 区块新增勾选框与保存按钮（`china_filter_set_allow_wan`），命令行 `netmanager china_filter allow_wan on|off|status`；`china_filter status` 增加 `ALLOW_WAN_PEERS` / `WAN_PEERS` 两行，设置页「生效WAN口 / 规则」一行同时显示放行网段。

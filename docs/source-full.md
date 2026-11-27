@@ -8,7 +8,7 @@
 ### 5.1 files/usr/sbin/netmanager
 
 - **用途**：后端核心脚本：全部 CLI 子命令（概览/端口转发/规则/日志/备份/上传/在线更新/中国 IPv4·IPv6 过滤/黑名单/卸载）
-- **规模**：4382 行
+- **规模**：4575 行
 - **维护要点**：单文件约 4200 行，v1.5+ 模块化拆分对象。PLUGIN_VERSION 在 L15（唯一权威源）；命令入口行号见 9.1
 
 ```bash
@@ -26,7 +26,7 @@ LOG_FILE="$LOG_DIR/run.log"
 LOG_ENABLED=0
 
 # 在线更新配置：版本号与 GitHub 仓库（发版时同步修改 PLUGIN_VERSION）
-PLUGIN_VERSION="1.8.16"
+PLUGIN_VERSION="1.8.17"
 REPO_OWNER="District1655"
 REPO_NAME="luci-app-netmanager"
 REPO_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
@@ -123,7 +123,7 @@ load_config() {
         uci set netmanager.settings.china_filter_count='0'
         uci commit netmanager 2>/dev/null
     fi
-    # v1.8.16：放行 WAN 口同网段来源（上级光猫/网关等私网邻居）
+    # v1.8.17：放行 WAN 口同网段来源（上级光猫/网关等私网邻居）
     # 默认开启；选项缺失时补写，不覆盖用户已有设置
     if [ -z "$(uci get netmanager.settings.china_filter_allow_wan_peers 2>/dev/null)" ]; then
         uci set netmanager.settings.china_filter_allow_wan_peers='1'
@@ -2041,6 +2041,10 @@ cmd_backup_restore() {
         if [ -s "$BAN_V4_FILE" ] || [ -s "$BAN_V6_FILE" ]; then
             ban_apply_all > /dev/null 2>&1
         fi
+        # v1.8.17：恢复备份后同样重建白名单表
+        if [ -s "$WL_V4_FILE" ] || [ -s "$WL_V6_FILE" ]; then
+            wl_apply_all > /dev/null 2>&1
+        fi
         if [ "$(china_get_enable)" = "1" ] && [ -f "$CHINA_LIST_FILE" ]; then
             china_apply_rules > /dev/null 2>&1
             china_cron_install > /dev/null 2>&1
@@ -2839,7 +2843,7 @@ cmd_settings() {
 cmd_version() {
     echo "网络管理插件 v$PLUGIN_VERSION"
     echo ""
-    echo "功能: 系统概览 / 端口转发 / 规则管理 / SSH日志 / 访问日志 / 备份恢复 / 在线更新 / 插件更新 / 运行日志 / 中国IPv4+IPv6访问限制 / 手动黑名单"
+    echo "功能: 系统概览 / 端口转发 / 规则管理 / SSH日志 / 访问日志 / 备份恢复 / 在线更新 / 插件更新 / 运行日志 / 中国IPv4+IPv6访问限制 / 手动黑名单 / 手动白名单(IPv4+IPv6)"
     echo "适配: iStoreOS / OpenWrt (fw4/nftables)"
 }
 
@@ -3153,6 +3157,12 @@ china_apply_rules() {
         return 1
     fi
 
+    # v1.8.17：把手动白名单并进 china_v4 集合（等价于人工补充的允许列表）
+    if [ -n "${WL_V4_FILE:-}" ] && [ -s "$WL_V4_FILE" ]; then
+        wl_add_to_set netmanager china_v4 "$WL_V4_FILE" || \
+            write_log "ERROR" "china_filter: 手动白名单(IPv4)并入失败"
+    fi
+
     local devs
     devs=$(get_wan_devs)
     if [ -z "$devs" ]; then
@@ -3163,7 +3173,7 @@ china_apply_rules() {
     local ifname_set
     ifname_set=$(echo "$devs" | awk '{for(i=1;i<=NF;i++){if(i>1)printf ", ";printf "\"%s\"",$i}}')
 
-    # v1.8.16：放行 WAN 口自身所在网段的来源。
+    # v1.8.17：放行 WAN 口自身所在网段的来源。
     # 典型场景：光猫拨号/桥接时，光猫管理 IP 与路由器 WAN 同处一个私网段（如 192.168.1.1），
     # 该 IP 不在 china.txt（公网库）里 → 会被「saddr != @china_v4 drop」误杀，导致上级光猫访问不到路由器。
     # 只放行"与自己同段"的地址，比放行整个 RFC1918 精确得多。
@@ -3190,7 +3200,7 @@ china_apply_rules() {
         # 「ip saddr != @china_v4 drop」误判为境外 IPv4 直接丢弃，导致租约续不上。
         printf 'add rule inet netmanager china_forward iifname { %s } udp sport 67 udp dport 68 counter accept\n' "$ifname_set"
         printf 'add rule inet netmanager china_forward iifname { %s } ip saddr 169.254.0.0/16 counter accept\n' "$ifname_set"
-        # v1.8.16：WAN 同网段来源（上级光猫/网关）在两条链上都要放行，且在 drop 之前
+        # v1.8.17：WAN 同网段来源（上级光猫/网关）在两条链上都要放行，且在 drop 之前
         local pfx
         for pfx in $wan_prefixes; do
             printf 'add rule inet netmanager china_input iifname { %s } ip saddr %s counter accept\n' "$ifname_set" "$pfx"
@@ -3444,6 +3454,11 @@ cmd_china_boot() {
         ban_apply_all >/dev/null 2>&1
         write_log "INFO" "blacklist boot: 已重新应用黑名单规则"
     fi
+    # v1.8.17：手动白名单（同样只在内存里，需重建）
+    if [ -s "$WL_V4_FILE" ] || [ -s "$WL_V6_FILE" ]; then
+        wl_apply_all >/dev/null 2>&1
+        write_log "INFO" "whitelist boot: 已重新应用白名单规则"
+    fi
     # v1.8.14：开机补建 */10 兜底 cron
     v6sync_cron_ensure
     return 0
@@ -3465,7 +3480,7 @@ cmd_china_filter() {
     esac
 }
 
-# v1.8.16：是否放行 WAN 口同网段来源（上级光猫/网关等私网邻居）
+# v1.8.17：是否放行 WAN 口同网段来源（上级光猫/网关等私网邻居）
 # 用法: netmanager china_filter allow_wan on|off|status
 cmd_china_allow_wan() {
     local v="$1"
@@ -3681,6 +3696,12 @@ china6_apply_rules() {
         return 1
     fi
 
+    # v1.8.17：手动白名单并进 china_v6 集合（与 IPv4 对称）
+    if [ -n "${WL_V6_FILE:-}" ] && [ -s "$WL_V6_FILE" ]; then
+        wl_add_to_set netmanager6 china_v6 "$WL_V6_FILE" || \
+            write_log "ERROR" "china6_filter: 手动白名单(IPv6)并入失败"
+    fi
+
     local devs
     devs=$(get_wan_devs)
     if [ -z "$devs" ]; then
@@ -3690,7 +3711,7 @@ china6_apply_rules() {
     local ifname_set
     ifname_set=$(echo "$devs" | awk '{for(i=1;i<=NF;i++){if(i>1)printf ", ";printf "\"%s\"",$i}}')
 
-    # v1.8.16：与 IPv4 对称——放行 WAN 口自身网段与 ULA(fd00::/8) 来源，
+    # v1.8.17：与 IPv4 对称——放行 WAN 口自身网段与 ULA(fd00::/8) 来源，
     # 避免上级光猫用私网 IPv6（ULA）访问时被当成“境外地址”丢弃
     local allow_peers wan_prefixes6
     allow_peers=$(uci get netmanager.settings.china_filter_allow_wan_peers 2>/dev/null)
@@ -3718,7 +3739,7 @@ china6_apply_rules() {
         printf 'add rule inet netmanager6 china6_forward iifname { %s } ip6 saddr fe80::/10 counter accept\n' "$ifname_set"
         printf 'add rule inet netmanager6 china6_forward iifname { %s } ip6 saddr ff00::/8 counter accept\n' "$ifname_set"
         printf 'add rule inet netmanager6 china6_forward iifname { %s } udp sport 547 udp dport 546 counter accept\n' "$ifname_set"
-        # v1.8.16：WAN 同网段 / ULA 来源放行（须在 drop 之前）
+        # v1.8.17：WAN 同网段 / ULA 来源放行（须在 drop 之前）
         if [ "$allow_peers" = "1" ]; then
             local pfx6
             printf 'add rule inet netmanager6 china6_input iifname { %s } ip6 saddr fd00::/8 counter accept\n' "$ifname_set"
@@ -4218,6 +4239,174 @@ cmd_blacklist() {
 }
 
 
+# ========== 15.5 手动白名单（v1.8.17，IPv4/IPv6 双栈，支持单IP与CIDR） ==========
+# 作用：给「中国IPv4/IPv6访问限制」开例外——白名单里的 IP/网段会被并进
+#       inet netmanager china_v4 / inet netmanager6 china_v6 集合，等价于“人工补充的允许列表”，
+#       这些来源就不再命中 `ip saddr != @china_v4 drop`。
+# 为什么不用独立的 -60 accept 链：netfilter 的 NF_ACCEPT 只结束当前 base chain，
+#       同一 hook 上其它 base chain 仍会继续执行（-50 的中国过滤照样丢包）。
+#       真机实测：独立 accept 链的计数在涨、中国过滤的 drop 计数同时在涨，包还是进不来。
+# 只在中国IP限制启用时生效（未启用时白名单仅保存条目，不起作用）。
+# 条目持久化：/etc/netmanager/whitelist_v4.list、whitelist_v6.list（每行一个 IP 或 CIDR）。
+WL_V4_FILE="$CHINA_LIST_DIR/whitelist_v4.list"
+WL_V6_FILE="$CHINA_LIST_DIR/whitelist_v6.list"
+
+wl_count_file() {
+    [ -f "$1" ] || { echo 0; return; }
+    grep -c -vE '^[[:space:]]*(#|$)' "$1" 2>/dev/null | tr -d ' '
+}
+
+# 把白名单文件并进指定集合：$1=table $2=set $3=文件
+# 先整段原子添加（重叠网段交给内核合并），失败再逐条回退
+wl_add_to_set() {
+    local table="$1" set="$2" file="$3"
+    [ -s "$file" ] || return 0
+    local ef="/tmp/netmanager_wl_${set}_elem.nft" ok=1 l okr=0
+    rm -f "$ef" 2>/dev/null
+    {
+        printf 'add element inet %s %s { ' "$table" "$set"
+        awk 'NF && $1 !~ /^#/ {printf "%s%s", (c++ ? ", " : ""), $1}' "$file"
+        printf ' }\n'
+    } > "$ef"
+    if ! nft -f "$ef" 2>/dev/null; then
+        ok=0
+        while IFS= read -r l; do
+            l=$(echo "$l" | tr -d '\r ')
+            case "$l" in ""|"#"*) continue ;; esac
+            nft "add element inet $table $set { $l }" 2>/dev/null && okr=$((okr + 1))
+        done < "$file"
+        [ "$okr" -gt 0 ] && ok=1
+    fi
+    rm -f "$ef" 2>/dev/null
+    [ "$ok" = "1" ] || { write_log "ERROR" "whitelist: 并入集合失败 table=$table set=$set file=$file"; return 1; }
+    return 0
+}
+
+# 应用白名单：重建已启用的中国IP规则（重建时会把白名单并入集合，删条目也随之移除）
+wl_apply_all() {
+    mkdir -p "$CHINA_LIST_DIR" 2>/dev/null
+    # 清理 v1.8.17 早期版本留下的独立表（改用集合注入方案后不再需要）
+    nft delete table inet netmanager_wl 2>/dev/null
+
+    local v4n v6n en4 en6 rc=0
+    v4n=$(wl_count_file "$WL_V4_FILE"); [ -z "$v4n" ] && v4n=0
+    v6n=$(wl_count_file "$WL_V6_FILE"); [ -z "$v6n" ] && v6n=0
+    en4=$(china_get_enable)
+    en6=$(china6_get_enable)
+
+    if [ "$en4" = "1" ] && [ -f "$CHINA_LIST_FILE" ]; then
+        china_apply_rules >/dev/null 2>&1 || rc=1
+    fi
+    if [ "$en6" = "1" ] && [ -f "$CHINA6_LIST_FILE" ]; then
+        china6_apply_rules >/dev/null 2>&1 || rc=1
+    fi
+
+    write_log "INFO" "whitelist apply: v4=$v4n v6=$v6n china4=$en4 china6=$en6"
+    if [ "$rc" != "0" ]; then
+        error "白名单应用失败：中国IP规则重应用出错（条目已保存，可稍后 whitelist apply 重试）"
+        return 1
+    fi
+    if [ "$en4" != "1" ] && [ "$en6" != "1" ]; then
+        info "白名单已保存（IPv4=$v4n / IPv6=$v6n），但中国IP限制未启用，规则暂不生效"
+    else
+        info "白名单已生效: IPv4=$v4n 条 IPv6=$v6n 条（已并入中国IP集合）"
+    fi
+    return 0
+}
+
+cmd_wl_list() {
+    local v4="" v6="" v4n=0 v6n=0 active=0
+    v4n=$(wl_count_file "$WL_V4_FILE"); [ -z "$v4n" ] && v4n=0
+    v6n=$(wl_count_file "$WL_V6_FILE"); [ -z "$v6n" ] && v6n=0
+    [ -f "$WL_V4_FILE" ] && { v4=$(grep -vE '^[[:space:]]*(#|$)' "$WL_V4_FILE" 2>/dev/null | tr '\n' ','); v4=${v4%,}; }
+    [ -f "$WL_V6_FILE" ] && { v6=$(grep -vE '^[[:space:]]*(#|$)' "$WL_V6_FILE" 2>/dev/null | tr '\n' ','); v6=${v6%,}; }
+    nft list set inet netmanager china_v4 >/dev/null 2>&1 && active=1
+    nft list set inet netmanager6 china_v6 >/dev/null 2>&1 && active=1
+    echo "===WHITELIST==="
+    echo "V4_COUNT=$v4n"
+    echo "V6_COUNT=$v6n"
+    echo "V4=$v4"
+    echo "V6=$v6"
+    echo "ACTIVE=$active"
+    echo "===END==="
+}
+
+cmd_wl_add() {
+    local entry=$(printf '%s' "$1" | tr -d ' \t\r\n')
+    [ -z "$entry" ] && { error "用法: netmanager whitelist add <IPv4/IPv6 地址或CIDR>"; exit 1; }
+    local fam file
+    case "$entry" in
+        *:*)
+            fam="v6"; file="$WL_V6_FILE"
+            ban_valid_v6 "$entry" || { error "非法 IPv6 地址/网段: $entry"; exit 1; }
+            ;;
+        *)
+            fam="v4"; file="$WL_V4_FILE"
+            ban_valid_v4 "$entry" || { error "非法 IPv4 地址/网段: $entry"; exit 1; }
+            ;;
+    esac
+    mkdir -p "$CHINA_LIST_DIR" 2>/dev/null
+    [ -f "$file" ] || touch "$file"
+    if grep -Fxq "$entry" "$file" 2>/dev/null; then
+        info "条目已存在: $entry"
+        return 0
+    fi
+    echo "$entry" >> "$file"
+    if ! wl_apply_all >/dev/null 2>&1; then
+        grep -Fxv "$entry" "$file" > "$file.tmp" 2>/dev/null
+        mv -f "$file.tmp" "$file" 2>/dev/null
+        wl_apply_all >/dev/null 2>&1
+        error "添加失败：nft 规则应用失败（请检查地址格式或 nft 版本）"
+        exit 1
+    fi
+    info "已加入白名单 $fam 条目: $entry"
+}
+
+cmd_wl_del() {
+    local entry=$(printf '%s' "$1" | tr -d ' \t\r\n')
+    [ -z "$entry" ] && { error "用法: netmanager whitelist del <IPv4/IPv6 地址或CIDR>"; exit 1; }
+    local file found=0
+    case "$entry" in
+        *:*) file="$WL_V6_FILE" ;;
+        *)   file="$WL_V4_FILE" ;;
+    esac
+    if [ -f "$file" ] && grep -Fxq "$entry" "$file" 2>/dev/null; then
+        grep -Fxv "$entry" "$file" > "$file.tmp" 2>/dev/null
+        mv -f "$file.tmp" "$file" 2>/dev/null
+        wl_apply_all >/dev/null 2>&1
+        found=1
+    fi
+    [ "$found" = "1" ] || { error "条目不存在: $entry"; exit 1; }
+    info "已移除白名单条目: $entry"
+}
+
+cmd_wl_clear() {
+    local target="${1:-all}"
+    mkdir -p "$CHINA_LIST_DIR" 2>/dev/null
+    case "$target" in
+        v4)  : > "$WL_V4_FILE" ;;
+        v6)  : > "$WL_V6_FILE" ;;
+        all) : > "$WL_V4_FILE"; : > "$WL_V6_FILE" ;;
+        *) error "用法: netmanager whitelist clear [v4|v6|all]"; exit 1 ;;
+    esac
+    wl_apply_all >/dev/null 2>&1
+    info "已清空白名单: $target"
+}
+
+cmd_whitelist() {
+    local sub="${1:-list}"
+    shift 2>/dev/null
+    case "$sub" in
+        list)            cmd_wl_list ;;
+        add)             cmd_wl_add "$@" ;;
+        del|remove)      cmd_wl_del "$@" ;;
+        clear)           cmd_wl_clear "$@" ;;
+        apply|boot)      wl_apply_all ;;
+        *) echo "用法: netmanager whitelist list|add <ip/cidr>|del <ip/cidr>|clear [v4|v6|all]|apply"; exit 1 ;;
+    esac
+}
+
+
 # ========== 16. 卸载插件 ==========
 # 用法: netmanager uninstall [full|keep]
 #   full = 全删（后端/LuCI/CBI模型/配置/CIDR/DNS配置与脚本/init/hotplug/缓存）
@@ -4238,6 +4427,7 @@ cmd_uninstall() {
     nft delete table inet netmanager 2>/dev/null
     nft delete table inet netmanager6 2>/dev/null
     nft delete table inet netmanager_ban 2>/dev/null
+    nft delete table inet netmanager_wl 2>/dev/null
     crontab -l 2>/dev/null | grep -v 'netmanager china_filter' | grep -v 'netmanager china6_filter' | crontab - 2>/dev/null
 
     # 2. 停止并禁用开机自启
@@ -4343,6 +4533,8 @@ usage() {
     echo "中国IPv4过滤: china_filter status | enable | disable | update | set_url <url> | set_cron <expr> | allow_wan on|off"
     echo "中国IPv6过滤: china6_filter status | enable | disable | update | set_url <url> | set_cron <expr>"
     echo "手动黑名单: blacklist list | add <ip/cidr> | del <ip/cidr> | clear [v4|v6|all] | apply"
+    echo "手动白名单: whitelist list | add <ip/cidr> | del <ip/cidr> | clear [v4|v6|all] | apply"
+    echo "手动白名单: whitelist list | add <ip/cidr> | del <ip/cidr> | clear [v4|v6|all] | apply   # 绕过中国IPv4/IPv6限制"
     echo "卸载: uninstall [full|keep]   # full=全删(默认) keep=保留配置与备份"
 }
 
@@ -4391,6 +4583,7 @@ case "$1" in
     china_filter)       shift; cmd_china_filter "$@" ;;
     china6_filter)      shift; cmd_china6_filter "$@" ;;
     blacklist)          shift; cmd_blacklist "$@" ;;
+    whitelist)          shift; cmd_whitelist "$@" ;;
     uninstall)          shift; cmd_uninstall "$@" ;;
     *)                  usage ;;
 esac
@@ -4990,7 +5183,7 @@ fi
 ### 5.4 files/usr/lib/lua/luci/controller/netmanager.lua
 
 - **用途**：LuCI 控制器：注册全部页面路由 + API 分发（action 到后端命令桥接）+ multipart 上传处理
-- **规模**：543 行
+- **规模**：554 行
 - **维护要点**：api_handler 强制 POST；所有拼命令参数必经 shell_escape；csrf_check 403；插件页加 no-store 头防旧 JS
 
 ```lua
@@ -5488,6 +5681,17 @@ function api_handler()
     elseif action == "blacklist_clear" then
         local family = luci.http.formvalue("family") or "all"
         cmd = string.format("/usr/sbin/netmanager blacklist clear %s", shell_escape(family))
+    elseif action == "whitelist_list" then
+        cmd = "/usr/sbin/netmanager whitelist list"
+    elseif action == "whitelist_add" then
+        local ip = luci.http.formvalue("ip") or ""
+        cmd = string.format("/usr/sbin/netmanager whitelist add %s", shell_escape(ip))
+    elseif action == "whitelist_del" then
+        local ip = luci.http.formvalue("ip") or ""
+        cmd = string.format("/usr/sbin/netmanager whitelist del %s", shell_escape(ip))
+    elseif action == "whitelist_clear" then
+        local family = luci.http.formvalue("family") or "all"
+        cmd = string.format("/usr/sbin/netmanager whitelist clear %s", shell_escape(family))
     elseif action == "update_check" then
         cmd = "/usr/sbin/netmanager update_check"
     elseif action == "update_apply" then
@@ -7129,7 +7333,7 @@ document.addEventListener('DOMContentLoaded', function () {
         </div>
         <div id="action_result" class="netmanager-result"></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.16</div>
+    <div class="footer-sign">网络管理插件 v1.8.17</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -7279,7 +7483,7 @@ setInterval(loadOverview, 30000);
         </table>
         <div id="action_result" class="netmanager-result"></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.16</div>
+    <div class="footer-sign">网络管理插件 v1.8.17</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -7599,7 +7803,7 @@ loadPortList();
         </div>
         <div id="action_result" class="netmanager-result"></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.16</div>
+    <div class="footer-sign">网络管理插件 v1.8.17</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -7789,7 +7993,7 @@ loadRuleList();
         <h3>失败登录记录</h3>
         <div class="netmanager-log" id="failed_log"><div class="text-muted">加载中...</div></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.16</div>
+    <div class="footer-sign">网络管理插件 v1.8.17</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -7911,7 +8115,7 @@ loadSshLog();
             <div id="bd_body" style="background:#ffffff;border:1px solid #e5e7eb;border-radius:6px;padding:4px;color:#1f2937;max-height:420px;overflow-y:auto;"></div>
         </div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.16</div>
+    <div class="footer-sign">网络管理插件 v1.8.17</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -8035,7 +8239,7 @@ loadAccessLog();
 ### 5.15 files/usr/lib/lua/luci/view/netmanager/settings.htm
 
 - **用途**：设置页（最复杂视图，1100 行）：默认目标 / 备份恢复 / 插件更新 / 在线更新 / 中国 IPv4·IPv6 过滤 / 黑名单 / 运行日志 / 卸载
-- **规模**：1131 行
+- **规模**：1243 行
 - **维护要点**：三个版本号登记处（L186/L305/L338）；备份列表与过滤状态均需 escapeHtml + 数组下标传参
 
 ```html
@@ -8207,6 +8411,35 @@ loadAccessLog();
             </div>
         </div>
 
+        <!-- 手动白名单（IPv4/IPv6，v1.8.17） -->
+        <h3>手动白名单（IPv4 / IPv6）</h3>
+        <div class="netmanager-form" style="border-left:3px solid #22c55e;">
+            <div style="margin-bottom:10px;">
+                <b>给中国IP限制开例外，放行指定 IP / IP段</b>
+                <span class="text-muted" style="margin-left:8px;">支持单个 IP 与 CIDR 网段（如 8.8.8.8、203.0.113.0/24、2001:db8::1、2001:db8::/32）；这些条目会被并入 china_v4 / china_v6 集合，等于给中国IP限制加了一份“人工允许列表”，不受订阅更新影响；仅在中国IP限制启用时生效</span>
+            </div>
+            <div class="netmanager-toolbar" style="margin-bottom:10px;">
+                <input type="text" id="wl_input" placeholder="输入 IP 或 CIDR，如 203.0.113.0/24 或 2001:db8::/32" style="width:45%;">
+                <button class="btn btn-success btn-sm" onclick="addWhitelistEntry()">添加放行</button>
+                <button class="btn btn-secondary btn-sm" onclick="loadWhitelist()">刷新</button>
+                <button class="btn btn-warning btn-sm" onclick="clearWhitelist('v4')">清空IPv4</button>
+                <button class="btn btn-warning btn-sm" onclick="clearWhitelist('v6')">清空IPv6</button>
+            </div>
+            <table class="netmanager-table">
+                <tr>
+                    <td width="22%">IPv4 白名单 (<span id="wl_v4_count">0</span>)</td>
+                    <td id="wl_v4_list"><span class="text-muted">—</span></td>
+                </tr>
+                <tr>
+                    <td>IPv6 白名单 (<span id="wl_v6_count">0</span>)</td>
+                    <td id="wl_v6_list"><span class="text-muted">—</span></td>
+                </tr>
+            </table>
+            <div class="text-muted" style="margin-top:6px;font-size:11px;">
+                规则状态: <span id="wl_active_cell">—</span> | 条目持久化于 <code>/etc/netmanager/whitelist_v4.list</code> / <code>whitelist_v6.list</code>，重启、WAN重连或 china 列表更新后自动重新并入
+            </div>
+        </div>
+
         <!-- 备份管理 -->
         <h3>备份管理</h3>
         <div class="netmanager-form" style="border-left:3px solid #10b981;">
@@ -8232,7 +8465,7 @@ loadAccessLog();
             <table class="netmanager-table" style="margin-bottom:10px;">
                 <tr>
                     <td width="30%">当前版本</td>
-                    <td><b id="online_cur_version">v1.8.16</b></td>
+                    <td><b id="online_cur_version">v1.8.17</b></td>
                 </tr>
                 <tr>
                     <td>最新版本</td>
@@ -8351,7 +8584,7 @@ loadAccessLog();
         <h3>关于插件</h3>
         <table class="netmanager-table">
             <tr><td width="30%">插件名称</td><td>网络管理 (luci-app-netmanager)</td></tr>
-            <tr><td>版本</td><td id="plugin_version">v1.8.16</td></tr>
+            <tr><td>版本</td><td id="plugin_version">v1.8.17</td></tr>
             <tr><td>作者</td><td><b>吾爱破解liyu0828</b></td></tr>
             <tr><td>仓库地址</td><td><a href="https://github.com/District1655/luci-app-netmanager" target="_blank" style="color:#2563eb;">https://github.com/District1655/luci-app-netmanager</a></td></tr>
             <tr><td>适配系统</td><td>iStoreOS / OpenWrt (fw4/nftables)</td></tr>
@@ -8384,7 +8617,7 @@ loadAccessLog();
             </div>
         </div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.16<br><span style="font-size:10px;">适配 iStoreOS / OpenWrt | 基于 fw4/nftables</span></div>
+    <div class="footer-sign">网络管理插件 v1.8.17<br><span style="font-size:10px;">适配 iStoreOS / OpenWrt | 基于 fw4/nftables</span></div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -8886,7 +9119,7 @@ function saveChinaUrl() {
     });
 }
 
-// v1.8.16：保存"放行 WAN 同网段来源"开关（上级光猫/网关访问）
+// v1.8.17：保存"放行 WAN 同网段来源"开关（上级光猫/网关访问）
 function saveChinaAllowWan() {
     const el = document.getElementById('china_allow_wan');
     const val = el && el.checked ? '1' : '0';
@@ -9130,6 +9363,88 @@ function clearBlacklist(family) {
     }).catch(e => alert('清空失败: ' + e.message));
 }
 
+// ========== 手动白名单（IPv4 / IPv6，v1.8.17） ==========
+let _wlV4 = [], _wlV6 = [];
+
+function renderWlList(family) {
+    const list = (family === 'v4') ? _wlV4 : _wlV6;
+    const el = document.getElementById(family === 'v4' ? 'wl_v4_list' : 'wl_v6_list');
+    if (!el) return;
+    if (!list.length) { el.innerHTML = '<span class="text-muted">（空）</span>'; return; }
+    let html = '';
+    list.forEach((entry, i) => {
+        html += '<span class="badge badge-gray" style="display:inline-block;margin:2px 4px 2px 0;padding:3px 8px;font-family:monospace;">'
+             + escapeHtml(entry)
+             + ' <a href="javascript:void(0)" style="color:#dc2626;text-decoration:none;margin-left:4px;font-weight:bold;" '
+             + 'onclick="deleteWhitelistEntry(\'' + family + '\',' + i + ')" title="删除">×</a></span>';
+    });
+    el.innerHTML = html;
+}
+
+function loadWhitelist() {
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=whitelist_list'})
+    .then(r => r.text()).then(data => {
+        let v4='', v6='', v4n='0', v6n='0', active='0';
+        data.split('\n').forEach(line => {
+            const idx = line.indexOf('=');
+            if (idx > 0) {
+                const k = line.substring(0, idx), v = line.substring(idx + 1);
+                if (k === 'V4') v4 = v;
+                else if (k === 'V6') v6 = v;
+                else if (k === 'V4_COUNT') v4n = v;
+                else if (k === 'V6_COUNT') v6n = v;
+                else if (k === 'ACTIVE') active = v;
+            }
+        });
+        _wlV4 = v4 ? v4.split(',') : [];
+        _wlV6 = v6 ? v6.split(',') : [];
+        const c4 = document.getElementById('wl_v4_count'), c6 = document.getElementById('wl_v6_count');
+        if (c4) c4.textContent = v4n;
+        if (c6) c6.textContent = v6n;
+        const ac = document.getElementById('wl_active_cell');
+        if (ac) ac.innerHTML = active === '1'
+            ? '<span class="text-success">规则生效中（白名单来源已放行）</span>'
+            : '<span class="text-muted">未生效（无条目或未应用）</span>';
+        renderWlList('v4');
+        renderWlList('v6');
+    }).catch(e => {
+        const el = document.getElementById('wl_v4_list');
+        if (el) el.innerHTML = '<span class="text-danger">加载失败: ' + escapeHtml(e.message) + '</span>';
+    });
+}
+
+function addWhitelistEntry() {
+    const ip = document.getElementById('wl_input').value.trim();
+    if (!ip) { alert('请输入 IP 或 CIDR 网段'); return; }
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=whitelist_add&ip=' + encodeURIComponent(ip)})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        if (data.indexOf('已加入白名单') >= 0) document.getElementById('wl_input').value = '';
+        setTimeout(loadWhitelist, 300);
+    }).catch(e => alert('添加失败: ' + e.message));
+}
+
+function deleteWhitelistEntry(family, idx) {
+    const list = (family === 'v4') ? _wlV4 : _wlV6;
+    const entry = list[idx];
+    if (!entry) return;
+    if (!confirm('确定从白名单移除该条目吗？\n\n' + entry)) return;
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=whitelist_del&ip=' + encodeURIComponent(entry)})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        setTimeout(loadWhitelist, 300);
+    }).catch(e => alert('删除失败: ' + e.message));
+}
+
+function clearWhitelist(family) {
+    if (!confirm('确定清空 ' + (family === 'v4' ? 'IPv4' : 'IPv6') + ' 白名单吗？此操作不可撤销。')) return;
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=whitelist_clear&family=' + encodeURIComponent(family)})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        setTimeout(loadWhitelist, 300);
+    }).catch(e => alert('清空失败: ' + e.message));
+}
+
 // ========== 卸载插件 ==========
 function uninstallPlugin() {
     const keep = document.getElementById('uninstall_keep_config').checked ? '1' : '0';
@@ -9168,6 +9483,7 @@ loadSettings();
 listBackups();
 loadChina6Status();
 loadBlacklist();
+loadWhitelist();
 </script>
 <%+footer%>
 
@@ -9395,12 +9711,12 @@ exit 0
 ```bash
 #!/bin/ash
 # ============================================================
-# 网络管理插件 (luci-app-netmanager) - 一键安装脚本 v1.8.16
+# 网络管理插件 (luci-app-netmanager) - 一键安装脚本 v1.8.17
 # 由 luci-app-fwmanager (防火墙管理) 与 luci-app-dnssettings (DNS设置) 合并而成
 # ============================================================
 
 echo "============================================"
-echo "  网络管理插件 (luci-app-netmanager) v1.8.16"
+echo "  网络管理插件 (luci-app-netmanager) v1.8.17"
 echo "  防火墙管理 + DNS设置 一体化"
 echo "============================================"
 echo ""
@@ -10916,7 +11232,7 @@ if __name__ == "__main__":
 ### 5.31 docs/CHANGELOG.md
 
 - **用途**：全部历史版本记录（v1.8.14 → v1.4.0 → 继承 fwmanager v1.3.33），GitHub Release body 的来源
-- **规模**：395 行
+- **规模**：403 行
 - **维护要点**：段落标题必须保持 `### vX.Y.Z (日期)`（build.yml 的 awk 按此匹配）；每版在顶部新增小节
 
 ```markdown
@@ -10928,6 +11244,14 @@ if __name__ == "__main__":
 > `README.md` 只保留「最近一版要点 + 指向本文件的链接」。
 
 > **2026-11-26 工程更新（版本号不变，交付形态与 CI 变更）**：新增 ipk/apk 双格式打包（`tools/`）、iStore 软件中心上架元数据（`istore/app-meta/`）、Release 后自动构建并提 PR 到 `istoreos/istore-repo` 与 `istoreos/openwrt-app-meta` 的流水线（`.github/workflows/publish-istore.yml`）；README 安装章节按 apk/opkg 双体系重写。
+
+### v1.8.17 (2026-11-27)
+- **新增手动白名单（IPv4 / IPv6 双栈）**：`netmanager whitelist list|add|del|clear|apply`，支持单个 IP 与 CIDR 网段（`8.8.8.8`、`203.0.113.0/24`、`2001:db8::1`、`2001:db8::/32`）。实现方式是**把手动条目直接并进中国过滤的 `china_v4` / `china_v6` 集合**，等于给订阅列表加了一份“人工补充的允许列表”——这些来源不再命中 `ip saddr != @china_v4 drop`；条目不受 china.txt 订阅更新影响。
+- **为什么不用独立 accept 链**：netfilter 里 `accept` 只结束当前 base chain，同一个 hook 上的其它 base chain（中国过滤 -50）仍会继续执行。真机实测独立的 -60 `accept` 链：accept 计数在涨、drop 计数同时也在涨，包照样被丢；因此改为集合注入，行为可预期。
+- **持久化与自愈**：条目存 `/etc/netmanager/whitelist_v4.list` / `whitelist_v6.list`，重启、WAN 重连、china 列表更新或备份恢复后都会重新并入集合（`wl_apply_all` 重建规则）；删条目同样立刻从集合里消失。
+- **设置页新增「手动白名单」区块**：输入框 + 添加/删除/清空 + IPv4/IPv6 条目列表与规则状态，交互与「手动黑名单」一致；控制器新增 `whitelist_list/add/del/clear` 四个 action。
+- **与自动化配合**：v1.8.16 的「放行 WAN 同网段来源」解决“上级光猫恰好同段”的普遍场景；白名单用于逐条精确放行（境外 VPS、跨网段光猫、临时排障），两者互不冲突。注意：白名单只在中国IP限制启用时生效。
+- **真机验证（iStoreOS 25.12.6 / x86_64 / nft 1.1.6）**：`whitelist add 203.0.113.0/24`、`2001:db8::/32` 后集合内可见该条目；用 veth+netns 构造同构校验规则做 A/B——白名单在场时 drop 计数 0，`del` 后集合里消失；`clear all` 后 china_v4 回到 5570 条、china6 1719 条，规则正常。
 
 ### v1.8.16 (2026-11-27)
 - **修复：上级光猫/网关访问不到路由器（issue #1）**。此前白名单规则为「`iifname {WAN}` 且 `ip saddr != @china_v4` → drop」，而 `china.txt` 只收录**大陆公网**地址段；光猫拨号/桥接场景下 WAN 口落在私网段（如 `192.168.1.0/24`），光猫自身的私网 IP 不在集合里 → 被当成境外地址丢弃。现在规则解析出 **WAN 口自身所在网段**，在 drop 之前放行该网段来源（`get_wan_prefixes`，纯 shell 算 CIDR，不依赖 ipcalc；PPP 点对点接口按 `peer` 后的掩码解析）。只放行“与自己同段”的地址，**不是**把整个 RFC1918 灌进去，攻击面几乎不变。
@@ -11428,13 +11752,13 @@ dist/
 ### 5.35 README.md
 
 - **用途**：用户文档：功能 / 安装（apk·ipk·脚本三路）/ CLI / 配置说明 / 构建与发版 / 更新日志
-- **规模**：416 行
+- **规模**：415 行
 - **维护要点**：L3 版本号是 build.yml 的 tag 提取源（登记处 12）；更新日志已迁到 docs/CHANGELOG.md，本文件只留最近一版摘要
 
 ````markdown
 # 网络管理插件 (luci-app-netmanager)
 
-> 版本：v1.8.16
+> 版本：v1.8.17
 >
 > 适配：iStoreOS 25.12+（apk）/ iStoreOS 24.10 及 OpenWrt 23.05+（opkg / ipk），fw4 + nftables，Lua LuCI
 >
@@ -11836,14 +12160,13 @@ IPv4（每行一个 CIDR）：
 
 ## 更新日志
 
-完整历史版本记录（v1.8.16 → v1.4.0 → 继承 fwmanager v1.3.33）已归档到 **[`docs/CHANGELOG.md`](docs/CHANGELOG.md)**，`build.yml` 从那里提取当前版本段落作为 GitHub Release body。
+完整历史版本记录（v1.8.17 → v1.4.0 → 继承 fwmanager v1.3.33）已归档到 **[`docs/CHANGELOG.md`](docs/CHANGELOG.md)**，`build.yml` 从那里提取当前版本段落作为 GitHub Release body。
 
-**最近一版：v1.8.16（2026-11-27）**
+**最近一版：v1.8.17（2026-11-27）**
 
-- **修复上级光猫/网关访问不到路由器**：白名单只认 `china.txt` 里的大陆公网段，光猫在私网段（如 `192.168.1.0/24`）时会被当成境外地址丢弃；现在自动解析 WAN 口自身网段并在 drop 前放行（issue #1）
-- **新增「放行上级网关」开关**：设置页可勾选，`netmanager china_filter allow_wan on|off` 同效；状态里显示实际放行的网段
-- **IPv6 对称修复**：`fd00::/8`（ULA）与 WAN 口自身 `/64` 也在 drop 前放行
-- **真机验证**：veth + netns 复现，老规则全丢、新规则全过；PPPoE `/32`、IPv4/IPv6 链均正常
+- **新增手动白名单（IPv4/IPv6 双栈）**：`netmanager whitelist add 203.0.113.0/24` / `2001:db8::/32`，设置页同样有输入框与列表；实现是把条目并进 `china_v4` / `china_v6` 集合，等于给中国IP限制加一份人工允许列表（不受 china.txt 订阅更新影响）
+- **持久化自愈**：条目存 `/etc/netmanager/whitelist_v4.list`、`whitelist_v6.list`，重启/WAN 重连/china 列表更新/备份恢复后都会重新并入集合；删条目立刻从集合移除
+- **修复上级光猫/网关访问不到路由器**（v1.8.16 延续）：自动放行 WAN 口同网段来源，「放行上级网关」可在设置页开关
 
 ## 许可证
 

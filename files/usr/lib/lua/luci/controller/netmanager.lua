@@ -492,6 +492,17 @@ function api_handler()
     elseif action == "blacklist_clear" then
         local family = luci.http.formvalue("family") or "all"
         cmd = string.format("/usr/sbin/netmanager blacklist clear %s", shell_escape(family))
+    elseif action == "whitelist_list" then
+        cmd = "/usr/sbin/netmanager whitelist list"
+    elseif action == "whitelist_add" then
+        local ip = luci.http.formvalue("ip") or ""
+        cmd = string.format("/usr/sbin/netmanager whitelist add %s", shell_escape(ip))
+    elseif action == "whitelist_del" then
+        local ip = luci.http.formvalue("ip") or ""
+        cmd = string.format("/usr/sbin/netmanager whitelist del %s", shell_escape(ip))
+    elseif action == "whitelist_clear" then
+        local family = luci.http.formvalue("family") or "all"
+        cmd = string.format("/usr/sbin/netmanager whitelist clear %s", shell_escape(family))
     elseif action == "update_check" then
         cmd = "/usr/sbin/netmanager update_check"
     elseif action == "update_apply" then
