@@ -58,10 +58,17 @@ upstream_base() { # repo branch -> "<commit_sha> <tree_sha>"
 ensure_ref() { # repo branch sha
     local repo=$1 br=$2 sha=$3
     if [ "$DRY_RUN" = "1" ]; then say "DRY: ref $br -> $sha"; return 0; fi
-    api DELETE "/repos/$repo/git/refs/heads/$br" >/dev/null 2>&1 || true
-    api POST "/repos/$repo/git/refs" \
-        "$(jq -n --arg r "refs/heads/$br" --arg s "$sha" '{ref:$r,sha:$s}')" >/dev/null
-    say "==> 推送分支 $br"
+    # v1.8.20：先 PATCH 强推已有分支，不再 DELETE + POST。
+    # 之前删分支会让 GitHub 认为 PR 被关闭（#860/#861 都是这样自动 CLOSED），
+    # 每个版本换一个新 PR，等于「固定分支复用 PR」没生效。
+    if api PATCH "/repos/$repo/git/refs/heads/$br" \
+        "$(jq -n --arg s "$sha" '{sha:$s,force:true}')" >/dev/null 2>&1; then
+        say "==> 更新分支 $br（PR 保持不变）"
+    else
+        api POST "/repos/$repo/git/refs" \
+            "$(jq -n --arg r "refs/heads/$br" --arg s "$sha" '{ref:$r,sha:$s}')" >/dev/null
+        say "==> 新建分支 $br"
+    fi
 }
 
 pr_open() { # repo head base title body

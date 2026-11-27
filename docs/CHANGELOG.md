@@ -8,6 +8,7 @@
 > **2026-11-26 工程更新（版本号不变，交付形态与 CI 变更）**：新增 ipk/apk 双格式打包（`tools/`）、iStore 软件中心上架元数据（`istore/app-meta/`）、Release 后自动构建并提 PR 到 `istoreos/istore-repo` 与 `istoreos/openwrt-app-meta` 的流水线（`.github/workflows/publish-istore.yml`）；README 安装章节按 apk/opkg 双体系重写。
 
 ### v1.8.20 (2026-11-27)
+- **iStore 自动 PR 真正实现「固定分支复用」**：`ensure_ref` 原来先 `DELETE` 分支再 `POST` 建分支，GitHub 会因此把旧 PR 判定为已关闭（v1.8.18→v1.8.20 每版都自动 CLOSED 并新开一个）。改为 `PATCH git/refs/heads/<branch>` 带 `force:true` 强推，PR 不再被关；分支不存在时才新建。
 - **CBI 页面导航统一，修复「上网设置 / 静态IP分配」页顶部少一项**：这两个页面走 CBI 渲染，导航是 `cbi_nav.htm` 里另写的一份硬编码菜单，v1.8.19 加「IP过滤」时只改了自绘页面的 `nav.htm`，所以切到这两页时 IP过滤 入口会“消失”。现在 `cbi_nav.htm` 改为 `<%+netmanager/nav%>` 直接 include 同一份导航，菜单只有一处维护，两个页面的高亮与顺序也和其它页面一致。
 - **系统概览：WAN IPv6 显示完整地址且对口**。原来 `WAN_IPV6` 取「系统上第一个 scope global 地址」，PPPoE 下取到的是 br-lan 的 GUA（`...:20d0::1`，短地址、且不是 WAN），WAN 真实地址在 `pppoe-wan` 上。改为按 `get_wan_devs` 逐设备读 `inet6 ... scope global`，保留 `/前缀` 长度。
 - **系统概览：PD 前缀长度按 DHCPv6-PD 实际委派显示**。原来从 `ip -6 route show dev br-lan` 抓，拿到的是内核写的静态 `/64` 路由，与真实委派（`ip6assign=60`）不一致。改为优先读 `ubus call network.interface.wan6 status` 的 `ipv6-prefix[0].address/mask`，取不到才回落到「br-lan 路由 + `network.lan.ip6assign`」。真机实测 `PD_PREFIX=2408:820c:8f29:20d0::/60`，与 LAN 分发地址一致。
