@@ -7,6 +7,9 @@
 
 > **2026-11-26 工程更新（版本号不变，交付形态与 CI 变更）**：新增 ipk/apk 双格式打包（`tools/`）、iStore 软件中心上架元数据（`istore/app-meta/`）、Release 后自动构建并提 PR 到 `istoreos/istore-repo` 与 `istoreos/openwrt-app-meta` 的流水线（`.github/workflows/publish-istore.yml`）；README 安装章节按 apk/opkg 双体系重写。
 
+### v1.8.23 (2026-11-27)
+- **系统概览 IPv6 文案澄清（显示逻辑未改）**：`WAN IPv6（全局地址）` 改标为「WAN IPv6 地址（运营商 IA_NA /64）」，`PD 前缀` 改标为「PD 前缀（IA_PD 委派给内网）」，说明文字写明两者是运营商两套独立分配、前缀不同段属正常，本页显示的是接口真实地址、不由 PD 推算。真机核对：`pppoe-wan` 上 `inet6 .../64 scope global` 与 `ubus network.interface.wan6` 的 `ipv6-prefix`（/60，`assigned.lan` 同段）确实不同段，页面数值无误。
+
 ### v1.8.22 (2026-11-27)
 - **版本号不再写死在页面里**：新增 `view/netmanager/ver.htm`，运行时只读 `/usr/sbin/netmanager` 头部 40 行取 `PLUGIN_VERSION`；7 个页面的页脚、设置页「当前版本 / 插件版本」全部改成引用它。之前升到 1.8.21 后设置页还显示 1.8.19，就是因为 `settings.htm` 里写死的版本号没跟着改。
 - **`install.sh` 横幅版本改为运行时读取**：从随包的 `files/usr/sbin/netmanager` 里 sed 出 `PLUGIN_VERSION`，脚本自身不再写死版本。

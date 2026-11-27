@@ -391,11 +391,11 @@ dnssettings-apply.sh 执行流程：
 | §5.30 | `tools/ensure_changelog.py` | 146 行 | 发布兜底：docs/CHANGELOG.md 缺当前版本段落时，按 git log 自动补一节（已存在则不动） | CI 在 syntax gate 后调用；自动补的提交带 `[skip ci]`，避免二次触发发版；纯 docs/ci 提交默认不进 body |
 | §5.31 | `istore/app-meta/Makefile` | 17 行 | 软件中心卡片元数据模板：META_TITLE/DESCRIPTION/AUTHOR/DEPENDS/TAGS/LUCI_ENTRY/WEBSITE + PKG_VERSION/PKG_RELEASE | PKG_VERSION/PKG_RELEASE 由 publish 脚本 sed 注入，勿写死；末尾 include ../../meta.mk |
 | §5.32 | `docs/gen_source_part.py` | 316 行 | 文档生成器：写 docs/source-full.md 源码全录 + PROJECT.md 第 5 章索引与第 9 章行号表 | 新增受控文件时在 FILES 列表补一条；第 9 章行号自动抓取，无需手改 |
-| §5.33 | `docs/CHANGELOG.md` | 434 行 | 全部历史版本记录（v1.8.14 → v1.4.0 → 继承 fwmanager v1.3.33），GitHub Release body 的来源 | 段落标题必须保持 `### vX.Y.Z (日期)`（build.yml 的 awk 按此匹配）；每版在顶部新增小节 |
+| §5.33 | `docs/CHANGELOG.md` | 437 行 | 全部历史版本记录（v1.8.14 → v1.4.0 → 继承 fwmanager v1.3.33），GitHub Release body 的来源 | 段落标题必须保持 `### vX.Y.Z (日期)`（build.yml 的 awk 按此匹配）；每版在顶部新增小节 |
 | §5.34 | `docs/istore-publish.md` | 51 行 | iStore 上架与自动发版说明：一次性 Secret 配置、日常发版流程、本地出包、常见问题 | 与 README「构建与发版」章节互补，改动流水线时两边同步 |
 | §5.35 | `.gitattributes` | 15 行 | git 属性：强制文本文件 LF（路由器 BusyBox ash 不能吃 CRLF） | 二进制文件单独标注；CRLF 警告可忽略 |
 | §5.36 | `.gitignore` | 7 行 | 忽略构建产物（dist/、ipk/apk、临时 tar.gz）；docs/source-full.md 需要入库，别加进来 | 新增构建输出目录时同步补一条 |
-| §5.37 | `README.md` | 444 行 | 用户文档：功能 / 安装（apk·ipk·脚本三路）/ CLI / 配置说明 / 构建与发版 / 更新日志 | L3 版本号是 build.yml 的 tag 提取源（登记处 12）；更新日志已迁到 docs/CHANGELOG.md，本文件只留最近一版摘要 |
+| §5.37 | `README.md` | 448 行 | 用户文档：功能 / 安装（apk·ipk·脚本三路）/ CLI / 配置说明 / 构建与发版 / 更新日志 | L3 版本号是 build.yml 的 tag 提取源（登记处 12）；更新日志已迁到 docs/CHANGELOG.md，本文件只留最近一版摘要 |
 
 > 需要看某个文件的完整内容或某段实现，直接翻 [`docs/source-full.md`](source-full.md) 对应 §5.x 小节；
 > 想知道命令/函数在源码里的行号，见第 9 章（同样是自动抓取）。

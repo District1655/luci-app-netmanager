@@ -26,7 +26,7 @@ LOG_FILE="$LOG_DIR/run.log"
 LOG_ENABLED=0
 
 # 在线更新配置：版本号与 GitHub 仓库（发版时同步修改 PLUGIN_VERSION）
-PLUGIN_VERSION="1.8.22"
+PLUGIN_VERSION="1.8.23"
 REPO_OWNER="District1655"
 REPO_NAME="luci-app-netmanager"
 REPO_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
@@ -7449,13 +7449,13 @@ document.addEventListener('DOMContentLoaded', function () {
         <h3>IPv6 状态</h3>
         <table class="netmanager-table">
             <tr><td width="30%">IPv6 出口</td><td id="ipv6_status">--</td></tr>
-            <tr><td>WAN IPv6（全局地址）</td><td id="wan_ipv6" style="word-break:break-all;">--</td></tr>
-            <tr><td>PD 前缀</td><td id="pd_prefix">--</td></tr>
+            <tr><td>WAN IPv6 地址（运营商 IA_NA /64）</td><td id="wan_ipv6" style="word-break:break-all;">--</td></tr>
+            <tr><td>PD 前缀（IA_PD 委派给内网）</td><td id="pd_prefix">--</td></tr>
             <tr><td>LAN 分发地址</td><td id="lan_ipv6">--</td></tr>
             <tr><td>IPv6 默认路由</td><td id="ipv6_gw">--</td></tr>
         </table>
         <div class="text-muted" style="margin-top:6px;font-size:12px;">
-            说明：WAN IPv6（/64）由运营商单独分配，PD 前缀是另外委派给内网使用的地址段，两者不在同一段属正常现象；PD 前缀长度以 DHCPv6-PD 委派结果为准。
+            说明：WAN 的 /64 是运营商通过 DHCPv6（IA_NA）单独分配给拨号接口的地址，PD（IA_PD）是运营商另外委派给内网使用的号段，两者本来就是两套分配，前缀不同段属正常；本页显示接口上的真实地址，不由 PD 推算。
         </div>
         <h3>DNS</h3>
         <table class="netmanager-table">
@@ -11479,7 +11479,7 @@ if __name__ == "__main__":
 ### 5.33 docs/CHANGELOG.md
 
 - **用途**：全部历史版本记录（v1.8.14 → v1.4.0 → 继承 fwmanager v1.3.33），GitHub Release body 的来源
-- **规模**：434 行
+- **规模**：437 行
 - **维护要点**：段落标题必须保持 `### vX.Y.Z (日期)`（build.yml 的 awk 按此匹配）；每版在顶部新增小节
 
 ```markdown
@@ -11491,6 +11491,9 @@ if __name__ == "__main__":
 > `README.md` 只保留「最近一版要点 + 指向本文件的链接」。
 
 > **2026-11-26 工程更新（版本号不变，交付形态与 CI 变更）**：新增 ipk/apk 双格式打包（`tools/`）、iStore 软件中心上架元数据（`istore/app-meta/`）、Release 后自动构建并提 PR 到 `istoreos/istore-repo` 与 `istoreos/openwrt-app-meta` 的流水线（`.github/workflows/publish-istore.yml`）；README 安装章节按 apk/opkg 双体系重写。
+
+### v1.8.23 (2026-11-27)
+- **系统概览 IPv6 文案澄清（显示逻辑未改）**：`WAN IPv6（全局地址）` 改标为「WAN IPv6 地址（运营商 IA_NA /64）」，`PD 前缀` 改标为「PD 前缀（IA_PD 委派给内网）」，说明文字写明两者是运营商两套独立分配、前缀不同段属正常，本页显示的是接口真实地址、不由 PD 推算。真机核对：`pppoe-wan` 上 `inet6 .../64 scope global` 与 `ubus network.interface.wan6` 的 `ipv6-prefix`（/60，`assigned.lan` 同段）确实不同段，页面数值无误。
 
 ### v1.8.22 (2026-11-27)
 - **版本号不再写死在页面里**：新增 `view/netmanager/ver.htm`，运行时只读 `/usr/sbin/netmanager` 头部 40 行取 `PLUGIN_VERSION`；7 个页面的页脚、设置页「当前版本 / 插件版本」全部改成引用它。之前升到 1.8.21 后设置页还显示 1.8.19，就是因为 `settings.htm` 里写死的版本号没跟着改。
@@ -12030,13 +12033,13 @@ dist/
 ### 5.37 README.md
 
 - **用途**：用户文档：功能 / 安装（apk·ipk·脚本三路）/ CLI / 配置说明 / 构建与发版 / 更新日志
-- **规模**：444 行
+- **规模**：448 行
 - **维护要点**：L3 版本号是 build.yml 的 tag 提取源（登记处 12）；更新日志已迁到 docs/CHANGELOG.md，本文件只留最近一版摘要
 
 ````markdown
 # 网络管理插件 (luci-app-netmanager)
 
-> 版本：v1.8.22
+> 版本：v1.8.23
 >
 > 适配：iStoreOS 25.12+（apk）/ iStoreOS 24.10 及 OpenWrt 23.05+（opkg / ipk），fw4 + nftables，Lua LuCI
 >
@@ -12450,7 +12453,11 @@ IPv4（每行一个 CIDR）：
 
 完整历史版本记录（v1.8.17 → v1.4.0 → 继承 fwmanager v1.3.33）已归档到 **[`docs/CHANGELOG.md`](docs/CHANGELOG.md)**，`build.yml` 从那里提取当前版本段落作为 GitHub Release body。
 
-**最近一版：v1.8.22（2026-11-27）**
+**最近一版：v1.8.23（2026-11-27）**
+
+- **概览 IPv6 文案澄清**：`WAN IPv6` 行改标为「运营商 IA_NA /64」，`PD 前缀` 行标注「IA_PD 委派给内网」，说明文字明确两者是运营商两套独立分配、不同段属正常，避免被误读成显示错误
+
+**v1.8.22（2026-11-27）**
 
 - **版本号去写死**：新增 `ver.htm`，页脚与设置页版本运行时从 `netmanager` 的 `PLUGIN_VERSION` 读取；`install.sh` 横幅、CI 打包也改成读同一个值，发版不再需要逐处改页面
 - **新增 `tools/bump_version.py`**：一条命令升版本（改 `PLUGIN_VERSION` + README 展示行 + 重生成源码全录），避免漏改

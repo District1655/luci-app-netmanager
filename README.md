@@ -1,6 +1,6 @@
 # 网络管理插件 (luci-app-netmanager)
 
-> 版本：v1.8.22
+> 版本：v1.8.23
 >
 > 适配：iStoreOS 25.12+（apk）/ iStoreOS 24.10 及 OpenWrt 23.05+（opkg / ipk），fw4 + nftables，Lua LuCI
 >
@@ -414,7 +414,11 @@ IPv4（每行一个 CIDR）：
 
 完整历史版本记录（v1.8.17 → v1.4.0 → 继承 fwmanager v1.3.33）已归档到 **[`docs/CHANGELOG.md`](docs/CHANGELOG.md)**，`build.yml` 从那里提取当前版本段落作为 GitHub Release body。
 
-**最近一版：v1.8.22（2026-11-27）**
+**最近一版：v1.8.23（2026-11-27）**
+
+- **概览 IPv6 文案澄清**：`WAN IPv6` 行改标为「运营商 IA_NA /64」，`PD 前缀` 行标注「IA_PD 委派给内网」，说明文字明确两者是运营商两套独立分配、不同段属正常，避免被误读成显示错误
+
+**v1.8.22（2026-11-27）**
 
 - **版本号去写死**：新增 `ver.htm`，页脚与设置页版本运行时从 `netmanager` 的 `PLUGIN_VERSION` 读取；`install.sh` 横幅、CI 打包也改成读同一个值，发版不再需要逐处改页面
 - **新增 `tools/bump_version.py`**：一条命令升版本（改 `PLUGIN_VERSION` + README 展示行 + 重生成源码全录），避免漏改

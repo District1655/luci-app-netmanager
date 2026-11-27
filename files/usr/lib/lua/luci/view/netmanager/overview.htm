@@ -51,13 +51,13 @@
         <h3>IPv6 状态</h3>
         <table class="netmanager-table">
             <tr><td width="30%">IPv6 出口</td><td id="ipv6_status">--</td></tr>
-            <tr><td>WAN IPv6（全局地址）</td><td id="wan_ipv6" style="word-break:break-all;">--</td></tr>
-            <tr><td>PD 前缀</td><td id="pd_prefix">--</td></tr>
+            <tr><td>WAN IPv6 地址（运营商 IA_NA /64）</td><td id="wan_ipv6" style="word-break:break-all;">--</td></tr>
+            <tr><td>PD 前缀（IA_PD 委派给内网）</td><td id="pd_prefix">--</td></tr>
             <tr><td>LAN 分发地址</td><td id="lan_ipv6">--</td></tr>
             <tr><td>IPv6 默认路由</td><td id="ipv6_gw">--</td></tr>
         </table>
         <div class="text-muted" style="margin-top:6px;font-size:12px;">
-            说明：WAN IPv6（/64）由运营商单独分配，PD 前缀是另外委派给内网使用的地址段，两者不在同一段属正常现象；PD 前缀长度以 DHCPv6-PD 委派结果为准。
+            说明：WAN 的 /64 是运营商通过 DHCPv6（IA_NA）单独分配给拨号接口的地址，PD（IA_PD）是运营商另外委派给内网使用的号段，两者本来就是两套分配，前缀不同段属正常；本页显示接口上的真实地址，不由 PD 推算。
         </div>
         <h3>DNS</h3>
         <table class="netmanager-table">
