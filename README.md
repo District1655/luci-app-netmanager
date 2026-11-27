@@ -1,6 +1,6 @@
 # 网络管理插件 (luci-app-netmanager)
 
-> 版本：v1.8.18
+> 版本：v1.8.19
 >
 > 适配：iStoreOS 25.12+（apk）/ iStoreOS 24.10 及 OpenWrt 23.05+（opkg / ipk），fw4 + nftables，Lua LuCI
 >
@@ -404,9 +404,10 @@ IPv4（每行一个 CIDR）：
 
 完整历史版本记录（v1.8.17 → v1.4.0 → 继承 fwmanager v1.3.33）已归档到 **[`docs/CHANGELOG.md`](docs/CHANGELOG.md)**，`build.yml` 从那里提取当前版本段落作为 GitHub Release body。
 
-**最近一版：v1.8.18（2026-11-27）**
+**最近一版：v1.8.19（2026-11-27）**
 
-- **设置页新增「过滤 / 名单」子菜单**：把中国IPv4访问限制、中国IPv6访问限制、手动黑名单、手动白名单收进 4 个页签，切换只显示当前区块，视觉与顶部导航保持一致（圆点颜色对应各区块边框色），刷新后记住上次所选页签
+- **新增「IP过滤」一级页面**：中国IPv4访问限制、中国IPv6访问限制、手动黑名单（IPv4/IPv6）、手动白名单（IPv4/IPv6）从设置页挪出，集中到顶部导航的「IP过滤」页，页内用 4 个子页签切换（样式与顶部导航一致，圆点颜色对应区块边框色），刷新后记住上次所在页签；设置页只保留工具类配置
+- **修复端口转发「命中数」恒为 0**：fw4 把 redirect 规则放在 `dstnat_wan` / `dstnat_lan` / `upnp_prerouting` 等子链，原来只读主链 `dstnat`（里面只有 jump），计数器一个都拿不到；现在整表读 `inet fw4` 并按 family + 协议匹配端口，同端口的 tcp/udp 规则命中数求和；IPv6 直连放行规则改按 fw4 规则名（`Allow-IPv6-<端口>-<协议>`）统计
 - **新增手动白名单（IPv4/IPv6 双栈）**：`netmanager whitelist add 203.0.113.0/24` / `2001:db8::/32`，设置页同样有输入框与列表；实现是把条目并进 `china_v4` / `china_v6` 集合，等于给中国IP限制加一份人工允许列表（不受 china.txt 订阅更新影响）
 - **持久化自愈**：条目存 `/etc/netmanager/whitelist_v4.list`、`whitelist_v6.list`，重启/WAN 重连/china 列表更新/备份恢复后都会重新并入集合；删条目立刻从集合移除
 - **修复上级光猫/网关访问不到路由器**（v1.8.16 延续）：自动放行 WAN 口同网段来源，「放行上级网关」可在设置页开关

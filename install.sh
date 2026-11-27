@@ -1,11 +1,11 @@
 #!/bin/ash
 # ============================================================
-# 网络管理插件 (luci-app-netmanager) - 一键安装脚本 v1.8.18
+# 网络管理插件 (luci-app-netmanager) - 一键安装脚本 v1.8.19
 # 由 luci-app-fwmanager (防火墙管理) 与 luci-app-dnssettings (DNS设置) 合并而成
 # ============================================================
 
 echo "============================================"
-echo "  网络管理插件 (luci-app-netmanager) v1.8.18"
+echo "  网络管理插件 (luci-app-netmanager) v1.8.19"
 echo "  防火墙管理 + DNS设置 一体化"
 echo "============================================"
 echo ""
@@ -52,7 +52,7 @@ echo "  ✓ model/cbi/netmanager/dns_staticv6.lua"
 echo "[4/7] 复制LuCI视图模板..."
 mkdir -p /usr/lib/lua/luci/view/netmanager
 cp -f "$FILES_DIR/usr/lib/lua/luci/view/netmanager/"*.htm /usr/lib/lua/luci/view/netmanager/
-echo "  ✓ view/netmanager/*.htm (9个文件)"
+echo "  ✓ view/netmanager/*.htm (10个文件)"
 
 echo "[5/7] 复制配置文件..."
 if [ ! -f "/etc/config/netmanager" ]; then

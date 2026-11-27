@@ -7,6 +7,13 @@
 
 > **2026-11-26 工程更新（版本号不变，交付形态与 CI 变更）**：新增 ipk/apk 双格式打包（`tools/`）、iStore 软件中心上架元数据（`istore/app-meta/`）、Release 后自动构建并提 PR 到 `istoreos/istore-repo` 与 `istoreos/openwrt-app-meta` 的流水线（`.github/workflows/publish-istore.yml`）；README 安装章节按 apk/opkg 双体系重写。
 
+### v1.8.19 (2026-11-27)
+- **新增一级页面「IP过滤」**：把「中国IPv4访问限制」「中国IPv6访问限制」「手动黑名单」「手动白名单」从设置页整体迁出，挂到顶部导航（`admin/netmanager/ip_filter`，位置在「设置」之前）。页内 4 个子页签切换内容，样式沿用顶部导航（白底圆角、选中蓝底白字，每项前有与区块左边框同色的小圆点），选择记在 `localStorage`，默认第一项；设置页只剩默认转发目标、系统工具、备份/在线更新/日志等工具类配置。
+- **取代 v1.8.18 的“设置页内子菜单”方案**：v1.8.18 把四个区块塞进设置页做成页签，层级仍挂在设置下；这一版改为独立页面，入口在主导航。
+- **修复端口转发「命中数」恒为 0**：根因是 `get_port_pkts` 只读 `nft list chain inet fw4 dstnat`，而 fw4 把真实 redirect 规则放在 `dstnat_wan`、`dstnat_lan`、`upnp_prerouting` 等子链里，主链只有 `jump` 语句、没有计数器。现在改为读整张 `inet fw4` 表（约 14KB，仍带 2 秒文件缓存），按 family（ipv4/ipv6）+ 协议匹配 dport，同一端口的 tcp/udp 多条规则命中数求和。
+- **IPv6 直连放行规则的命中数换口径**：这类 `Allow-IPv6-<端口>-<协议>` 是 filter 规则（在 `forward_lan`），不在 dstnat 里，改按 fw4 规则名 `comment "!fw4: <name>"` 统计。
+- **真机验证（iStoreOS 25.12.6 / nft 1.1.6）**：`netmanager port_list` 输出中 58443 命中 634、853 命中 10、55550 命中 57，IPv6 `Allow-IPv6-58443-tcp` 命中 349，与 `nft list table inet fw4` 计数器一致；原先全部为 0。
+
 ### v1.8.18 (2026-11-27)
 - **设置页新增「过滤 / 名单」子菜单**：把「中国IPv4访问限制」「中国IPv6访问限制」「手动黑名单」「手动白名单」收进一排 4 个页签，点击只显示当前区块，其余隐藏；样式沿用顶部导航（白底圆角、选中蓝底白字，字号略收），每项前有与对应区块左边框同色的小圆点。页签选择记在 `localStorage`，刷新后回到上次所在页签，默认第一项。
 - 顺带去掉 4 个区块重复的 `h3` 标题（页签本身即标题），避免“页签文字 + 标题文字”连着出现两遍。

@@ -18,7 +18,9 @@ function index()
     -- 上网设置（CBI 标准表单，绑定 network + dhcp + dnssettings）
     entry({"admin", "netmanager", "dns"}, cbi("netmanager/dns_settings"), _("上网设置"), 6)
     entry({"admin", "netmanager", "dns_staticv6"}, cbi("netmanager/dns_staticv6"), _("静态IP分配"), 7)
-    entry({"admin", "netmanager", "settings"}, template("netmanager/settings"), _("设置"), 8)
+    -- v1.8.19：中国IPv4/IPv6访问限制 + 手动黑/白名单集中到「IP过滤」页（子页签切换）
+    entry({"admin", "netmanager", "ip_filter"}, template("netmanager/ip_filter"), _("IP过滤"), 8)
+    entry({"admin", "netmanager", "settings"}, template("netmanager/settings"), _("设置"), 9)
     entry({"admin", "netmanager", "api"}, call("api_handler"))
     -- 【v1.4.6】dns_apply / dns_backup 原 GET 路由已改为 api_handler 内 POST action
     -- 【v1.4.7】保留两个兼容路由重定向到 DNS 设置页（v1.4.5 的书签/浏览器缓存仍

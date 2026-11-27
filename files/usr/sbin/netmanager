@@ -12,7 +12,7 @@ LOG_FILE="$LOG_DIR/run.log"
 LOG_ENABLED=0
 
 # 在线更新配置：版本号与 GitHub 仓库（发版时同步修改 PLUGIN_VERSION）
-PLUGIN_VERSION="1.8.18"
+PLUGIN_VERSION="1.8.19"
 REPO_OWNER="District1655"
 REPO_NAME="luci-app-netmanager"
 REPO_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
@@ -276,10 +276,13 @@ cmd_port_list() {
     echo "DEFAULT_TARGET=$DEFAULT_TARGET"
     
     # 性能优化：nft list ruleset 全量查询在规则多时需 1~3 秒，
-    # 改为只查 DNAT 链（输出量减少 90%），并加 2 秒文件缓存避免重复调用。
-    # cmd_overview / port_list 共享同一缓存文件，2 秒内复用。
-    NFT_CACHE_FILE="/tmp/.netmanager_nft_dstnat"
-    NFT_TS_FILE="/tmp/.netmanager_nft_dstnat.ts"
+    # 改为只查 fw4 表（14KB 左右，十几毫秒），并加 2 秒文件缓存避免重复调用。
+    # v1.8.19 修复：原来是只查 chain dstnat —— 而 fw4 把真实 redirect 规则放在
+    # dstnat_wan / dstnat_lan / upnp_prerouting 等子链，主链只有 jump 语句，
+    # 计数器一个都读不到，导致端口转发页面「命中数」恒为 0。
+    # 现在整表导出（含 dstnat_*、forward_lan 里的 Allow-IPv6 规则），一处缓存两用。
+    NFT_CACHE_FILE="/tmp/.netmanager_nft_fw4"
+    NFT_TS_FILE="/tmp/.netmanager_nft_fw4.ts"
     get_nft_dstnat() {
         local now mtime age out
         now=$(date +%s)
@@ -291,22 +294,41 @@ cmd_port_list() {
             cat "$NFT_CACHE_FILE" 2>/dev/null
             return
         fi
-        out=$(nft list chain inet fw4 dstnat 2>/dev/null)
+        out=$(nft list table inet fw4 2>/dev/null)
         printf '%s' "$out" > "$NFT_CACHE_FILE" 2>/dev/null
         echo "$now" > "$NFT_TS_FILE" 2>/dev/null
         printf '%s' "$out"
     }
     nft_cache=$(get_nft_dstnat)
     
-    # 从nft缓存中提取指定端口的计数器
+    # 从 fw4 表缓存里统计某个外部端口的命中数（DNAT 规则上的计数器）
+    # $1=外部端口 $2=family（ipv4/ipv6） $3=协议（tcp/udp/tcp udp）
+    # 同端口可能对应多条 nft 规则（tcp+udp、多目标），这里求和
     get_port_pkts() {
-        local dport="$1"
-        local result=""
-        result=$(echo "$nft_cache" | grep -E "dport[[:space:]]+${dport}[[:space:]]" | grep -o 'packets [0-9]*' | head -1 | awk '{print $2}')
-        if [ -z "$result" ]; then
-            result=$(echo "$nft_cache" | grep -E "sport[[:space:]]+${dport}[[:space:]]" | grep -o 'packets [0-9]*' | head -1 | awk '{print $2}')
+        local dport="$1" fam="$2" proto="$3" pf lines sum
+        [ -z "$dport" ] && { echo 0; return; }
+        case "$proto" in
+            *tcp*udp*|*udp*tcp*) pf='(tcp|udp)' ;;
+            udp*) pf='udp' ;;
+            tcp*) pf='tcp' ;;
+            *) pf='(tcp|udp|icmp|icmpv6|sctp)' ;;
+        esac
+        if [ "$fam" = "ipv6" ]; then
+            lines=$(echo "$nft_cache" | grep -E 'dnat ip6')
+        else
+            lines=$(echo "$nft_cache" | grep -E 'dnat ip (to )?[0-9]')
         fi
-        [ -n "$result" ] && echo "$result" || echo "0"
+        sum=$(echo "$lines" | grep -E "${pf}[[:space:]]+dport[[:space:]]+${dport}[[:space:]]" \
+            | grep -o 'packets [0-9]*' | awk '{s += $2} END {print s + 0}')
+        [ -n "$sum" ] && echo "$sum" || echo 0
+    }
+    
+    # 按 fw4 规则名（comment "!fw4: <name>"）统计命中数：IPv6 直连放行规则用这个口径
+    get_rule_pkts() {
+        local name="$1"
+        [ -z "$name" ] && { echo 0; return; }
+        echo "$nft_cache" | grep -F "!fw4: $name" \
+            | grep -o 'packets [0-9]*' | awk '{s += $2} END {print s + 0}'
     }
     
     # 用 uci show 一次性读取所有防火墙配置
@@ -361,7 +383,7 @@ cmd_port_list() {
     while IFS='|' read -r idx name proto sp dip dp en; do
         [ -z "$name" ] && continue
         pkts="0"
-        [ -n "$sp" ] && pkts=$(get_port_pkts "$sp")
+        [ -n "$sp" ] && pkts=$(get_port_pkts "$sp" ipv4 "$proto")
         echo "$idx|$name|$proto|$sp|$dip|$dp|$en|$pkts"
     done < /tmp/fwm_pv4.txt
     rm -f /tmp/fwm_pv4.txt
@@ -416,7 +438,8 @@ cmd_port_list() {
 
     while IFS='|' read -r idx name proto dp en dip; do
         [ -z "$name" ] && continue
-        pkts=$(get_port_pkts "$dp")
+        # v1.8.19：IPv6 直连放行规则按 fw4 规则名取计数器（之前拿 dstnat 端口匹配，恒为 0）
+        pkts=$(get_rule_pkts "Allow-IPv6-${dp}-${proto}")
         anchor=$(echo "$track_data" | awk -v P="$dp" -v R="$proto" '
             /\.port=/ { v=$0; sub(/.*=/,"",v); gsub(/\047/,"",v); cur_p=v }
             /\.proto=/ { v=$0; sub(/.*=/,"",v); gsub(/\047/,"",v); cur_r=v }
@@ -473,7 +496,7 @@ cmd_port_list() {
 
     while IFS='|' read -r idx name proto sp dip dp en; do
         [ -z "$name" ] && continue
-        pkts=$(get_port_pkts "$sp")
+        pkts=$(get_port_pkts "$sp" ipv6 "$proto")
         anchor=$(echo "$track_data" | awk -v P="$sp" -v R="$proto" '
             /\.port=/ { v=$0; sub(/.*=/,"",v); gsub(/\047/,"",v); cur_p=v }
             /\.proto=/ { v=$0; sub(/.*=/,"",v); gsub(/\047/,"",v); cur_r=v }
@@ -689,7 +712,7 @@ cmd_port_add() {
     rm -f /tmp/.uci/firewall 2>/dev/null
     /etc/init.d/firewall reload > /dev/null 2>&1
     # 清除 nft 命中数缓存，确保下次 port_list 拿到最新数据
-    rm -f /tmp/.netmanager_nft_dstnat /tmp/.netmanager_nft_dstnat.ts 2>/dev/null
+    rm -f /tmp/.netmanager_nft_fw4 /tmp/.netmanager_nft_fw4.ts /tmp/.netmanager_nft_dstnat /tmp/.netmanager_nft_dstnat.ts 2>/dev/null
     info "完成！"
 }
 
@@ -817,7 +840,7 @@ cmd_port_edit() {
     rm -f /tmp/.uci/firewall 2>/dev/null
     /etc/init.d/firewall reload > /dev/null 2>&1
     # 清除 nft 命中数缓存，确保下次 port_list 拿到最新数据
-    rm -f /tmp/.netmanager_nft_dstnat /tmp/.netmanager_nft_dstnat.ts 2>/dev/null
+    rm -f /tmp/.netmanager_nft_fw4 /tmp/.netmanager_nft_fw4.ts /tmp/.netmanager_nft_dstnat /tmp/.netmanager_nft_dstnat.ts 2>/dev/null
     info "端口转发已更新"
 }
 
@@ -910,7 +933,7 @@ cmd_port_del() {
     rm -f /tmp/.uci/firewall 2>/dev/null
     /etc/init.d/firewall reload > /dev/null 2>&1
     # 清除 nft 命中数缓存，确保下次 port_list 拿到最新数据
-    rm -f /tmp/.netmanager_nft_dstnat /tmp/.netmanager_nft_dstnat.ts 2>/dev/null
+    rm -f /tmp/.netmanager_nft_fw4 /tmp/.netmanager_nft_fw4.ts /tmp/.netmanager_nft_dstnat /tmp/.netmanager_nft_dstnat.ts 2>/dev/null
     info "完成！"
 }
 
@@ -1208,7 +1231,7 @@ cmd_port_sync_v6() {
         uci commit firewall
         rm -f /tmp/.uci/firewall 2>/dev/null
         /etc/init.d/firewall reload >/dev/null 2>&1
-        rm -f /tmp/.netmanager_nft_dstnat /tmp/.netmanager_nft_dstnat.ts 2>/dev/null
+        rm -f /tmp/.netmanager_nft_fw4 /tmp/.netmanager_nft_fw4.ts /tmp/.netmanager_nft_dstnat /tmp/.netmanager_nft_dstnat.ts 2>/dev/null
         write_log "INFO" "port_sync_v6: 前缀 ${prefix}:/64，更新 $changed 条 IPv6 转发目标"
         [ $quiet -eq 0 ] && info "已更新 $changed 条规则并重载防火墙"
     else
@@ -4455,7 +4478,7 @@ cmd_uninstall() {
     # 6. 清理临时文件与缓存
     echo "[6/8] 清理临时文件与缓存..."
     rm -f /bin/netmanager 2>/dev/null
-    rm -f /tmp/.netmanager_nft_dstnat 2>/dev/null
+    rm -f /tmp/.netmanager_nft_fw4 /tmp/.netmanager_nft_fw4.ts /tmp/.netmanager_nft_dstnat /tmp/.netmanager_nft_dstnat.ts 2>/dev/null
     rm -rf /tmp/netmanager 2>/dev/null
     rm -rf /tmp/netmanager_upload 2>/dev/null
     rm -rf /tmp/luci-indexcache /tmp/luci-modulecache 2>/dev/null

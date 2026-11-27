@@ -8,7 +8,7 @@
 ### 5.1 files/usr/sbin/netmanager
 
 - **用途**：后端核心脚本：全部 CLI 子命令（概览/端口转发/规则/日志/备份/上传/在线更新/中国 IPv4·IPv6 过滤/黑名单/卸载）
-- **规模**：4575 行
+- **规模**：4598 行
 - **维护要点**：单文件约 4200 行，v1.5+ 模块化拆分对象。PLUGIN_VERSION 在 L15（唯一权威源）；命令入口行号见 9.1
 
 ```bash
@@ -26,7 +26,7 @@ LOG_FILE="$LOG_DIR/run.log"
 LOG_ENABLED=0
 
 # 在线更新配置：版本号与 GitHub 仓库（发版时同步修改 PLUGIN_VERSION）
-PLUGIN_VERSION="1.8.18"
+PLUGIN_VERSION="1.8.19"
 REPO_OWNER="District1655"
 REPO_NAME="luci-app-netmanager"
 REPO_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
@@ -290,10 +290,13 @@ cmd_port_list() {
     echo "DEFAULT_TARGET=$DEFAULT_TARGET"
     
     # 性能优化：nft list ruleset 全量查询在规则多时需 1~3 秒，
-    # 改为只查 DNAT 链（输出量减少 90%），并加 2 秒文件缓存避免重复调用。
-    # cmd_overview / port_list 共享同一缓存文件，2 秒内复用。
-    NFT_CACHE_FILE="/tmp/.netmanager_nft_dstnat"
-    NFT_TS_FILE="/tmp/.netmanager_nft_dstnat.ts"
+    # 改为只查 fw4 表（14KB 左右，十几毫秒），并加 2 秒文件缓存避免重复调用。
+    # v1.8.19 修复：原来是只查 chain dstnat —— 而 fw4 把真实 redirect 规则放在
+    # dstnat_wan / dstnat_lan / upnp_prerouting 等子链，主链只有 jump 语句，
+    # 计数器一个都读不到，导致端口转发页面「命中数」恒为 0。
+    # 现在整表导出（含 dstnat_*、forward_lan 里的 Allow-IPv6 规则），一处缓存两用。
+    NFT_CACHE_FILE="/tmp/.netmanager_nft_fw4"
+    NFT_TS_FILE="/tmp/.netmanager_nft_fw4.ts"
     get_nft_dstnat() {
         local now mtime age out
         now=$(date +%s)
@@ -305,22 +308,41 @@ cmd_port_list() {
             cat "$NFT_CACHE_FILE" 2>/dev/null
             return
         fi
-        out=$(nft list chain inet fw4 dstnat 2>/dev/null)
+        out=$(nft list table inet fw4 2>/dev/null)
         printf '%s' "$out" > "$NFT_CACHE_FILE" 2>/dev/null
         echo "$now" > "$NFT_TS_FILE" 2>/dev/null
         printf '%s' "$out"
     }
     nft_cache=$(get_nft_dstnat)
     
-    # 从nft缓存中提取指定端口的计数器
+    # 从 fw4 表缓存里统计某个外部端口的命中数（DNAT 规则上的计数器）
+    # $1=外部端口 $2=family（ipv4/ipv6） $3=协议（tcp/udp/tcp udp）
+    # 同端口可能对应多条 nft 规则（tcp+udp、多目标），这里求和
     get_port_pkts() {
-        local dport="$1"
-        local result=""
-        result=$(echo "$nft_cache" | grep -E "dport[[:space:]]+${dport}[[:space:]]" | grep -o 'packets [0-9]*' | head -1 | awk '{print $2}')
-        if [ -z "$result" ]; then
-            result=$(echo "$nft_cache" | grep -E "sport[[:space:]]+${dport}[[:space:]]" | grep -o 'packets [0-9]*' | head -1 | awk '{print $2}')
+        local dport="$1" fam="$2" proto="$3" pf lines sum
+        [ -z "$dport" ] && { echo 0; return; }
+        case "$proto" in
+            *tcp*udp*|*udp*tcp*) pf='(tcp|udp)' ;;
+            udp*) pf='udp' ;;
+            tcp*) pf='tcp' ;;
+            *) pf='(tcp|udp|icmp|icmpv6|sctp)' ;;
+        esac
+        if [ "$fam" = "ipv6" ]; then
+            lines=$(echo "$nft_cache" | grep -E 'dnat ip6')
+        else
+            lines=$(echo "$nft_cache" | grep -E 'dnat ip (to )?[0-9]')
         fi
-        [ -n "$result" ] && echo "$result" || echo "0"
+        sum=$(echo "$lines" | grep -E "${pf}[[:space:]]+dport[[:space:]]+${dport}[[:space:]]" \
+            | grep -o 'packets [0-9]*' | awk '{s += $2} END {print s + 0}')
+        [ -n "$sum" ] && echo "$sum" || echo 0
+    }
+    
+    # 按 fw4 规则名（comment "!fw4: <name>"）统计命中数：IPv6 直连放行规则用这个口径
+    get_rule_pkts() {
+        local name="$1"
+        [ -z "$name" ] && { echo 0; return; }
+        echo "$nft_cache" | grep -F "!fw4: $name" \
+            | grep -o 'packets [0-9]*' | awk '{s += $2} END {print s + 0}'
     }
     
     # 用 uci show 一次性读取所有防火墙配置
@@ -375,7 +397,7 @@ cmd_port_list() {
     while IFS='|' read -r idx name proto sp dip dp en; do
         [ -z "$name" ] && continue
         pkts="0"
-        [ -n "$sp" ] && pkts=$(get_port_pkts "$sp")
+        [ -n "$sp" ] && pkts=$(get_port_pkts "$sp" ipv4 "$proto")
         echo "$idx|$name|$proto|$sp|$dip|$dp|$en|$pkts"
     done < /tmp/fwm_pv4.txt
     rm -f /tmp/fwm_pv4.txt
@@ -430,7 +452,8 @@ cmd_port_list() {
 
     while IFS='|' read -r idx name proto dp en dip; do
         [ -z "$name" ] && continue
-        pkts=$(get_port_pkts "$dp")
+        # v1.8.19：IPv6 直连放行规则按 fw4 规则名取计数器（之前拿 dstnat 端口匹配，恒为 0）
+        pkts=$(get_rule_pkts "Allow-IPv6-${dp}-${proto}")
         anchor=$(echo "$track_data" | awk -v P="$dp" -v R="$proto" '
             /\.port=/ { v=$0; sub(/.*=/,"",v); gsub(/\047/,"",v); cur_p=v }
             /\.proto=/ { v=$0; sub(/.*=/,"",v); gsub(/\047/,"",v); cur_r=v }
@@ -487,7 +510,7 @@ cmd_port_list() {
 
     while IFS='|' read -r idx name proto sp dip dp en; do
         [ -z "$name" ] && continue
-        pkts=$(get_port_pkts "$sp")
+        pkts=$(get_port_pkts "$sp" ipv6 "$proto")
         anchor=$(echo "$track_data" | awk -v P="$sp" -v R="$proto" '
             /\.port=/ { v=$0; sub(/.*=/,"",v); gsub(/\047/,"",v); cur_p=v }
             /\.proto=/ { v=$0; sub(/.*=/,"",v); gsub(/\047/,"",v); cur_r=v }
@@ -703,7 +726,7 @@ cmd_port_add() {
     rm -f /tmp/.uci/firewall 2>/dev/null
     /etc/init.d/firewall reload > /dev/null 2>&1
     # 清除 nft 命中数缓存，确保下次 port_list 拿到最新数据
-    rm -f /tmp/.netmanager_nft_dstnat /tmp/.netmanager_nft_dstnat.ts 2>/dev/null
+    rm -f /tmp/.netmanager_nft_fw4 /tmp/.netmanager_nft_fw4.ts /tmp/.netmanager_nft_dstnat /tmp/.netmanager_nft_dstnat.ts 2>/dev/null
     info "完成！"
 }
 
@@ -831,7 +854,7 @@ cmd_port_edit() {
     rm -f /tmp/.uci/firewall 2>/dev/null
     /etc/init.d/firewall reload > /dev/null 2>&1
     # 清除 nft 命中数缓存，确保下次 port_list 拿到最新数据
-    rm -f /tmp/.netmanager_nft_dstnat /tmp/.netmanager_nft_dstnat.ts 2>/dev/null
+    rm -f /tmp/.netmanager_nft_fw4 /tmp/.netmanager_nft_fw4.ts /tmp/.netmanager_nft_dstnat /tmp/.netmanager_nft_dstnat.ts 2>/dev/null
     info "端口转发已更新"
 }
 
@@ -924,7 +947,7 @@ cmd_port_del() {
     rm -f /tmp/.uci/firewall 2>/dev/null
     /etc/init.d/firewall reload > /dev/null 2>&1
     # 清除 nft 命中数缓存，确保下次 port_list 拿到最新数据
-    rm -f /tmp/.netmanager_nft_dstnat /tmp/.netmanager_nft_dstnat.ts 2>/dev/null
+    rm -f /tmp/.netmanager_nft_fw4 /tmp/.netmanager_nft_fw4.ts /tmp/.netmanager_nft_dstnat /tmp/.netmanager_nft_dstnat.ts 2>/dev/null
     info "完成！"
 }
 
@@ -1222,7 +1245,7 @@ cmd_port_sync_v6() {
         uci commit firewall
         rm -f /tmp/.uci/firewall 2>/dev/null
         /etc/init.d/firewall reload >/dev/null 2>&1
-        rm -f /tmp/.netmanager_nft_dstnat /tmp/.netmanager_nft_dstnat.ts 2>/dev/null
+        rm -f /tmp/.netmanager_nft_fw4 /tmp/.netmanager_nft_fw4.ts /tmp/.netmanager_nft_dstnat /tmp/.netmanager_nft_dstnat.ts 2>/dev/null
         write_log "INFO" "port_sync_v6: 前缀 ${prefix}:/64，更新 $changed 条 IPv6 转发目标"
         [ $quiet -eq 0 ] && info "已更新 $changed 条规则并重载防火墙"
     else
@@ -4469,7 +4492,7 @@ cmd_uninstall() {
     # 6. 清理临时文件与缓存
     echo "[6/8] 清理临时文件与缓存..."
     rm -f /bin/netmanager 2>/dev/null
-    rm -f /tmp/.netmanager_nft_dstnat 2>/dev/null
+    rm -f /tmp/.netmanager_nft_fw4 /tmp/.netmanager_nft_fw4.ts /tmp/.netmanager_nft_dstnat /tmp/.netmanager_nft_dstnat.ts 2>/dev/null
     rm -rf /tmp/netmanager 2>/dev/null
     rm -rf /tmp/netmanager_upload 2>/dev/null
     rm -rf /tmp/luci-indexcache /tmp/luci-modulecache 2>/dev/null
@@ -5183,7 +5206,7 @@ fi
 ### 5.4 files/usr/lib/lua/luci/controller/netmanager.lua
 
 - **用途**：LuCI 控制器：注册全部页面路由 + API 分发（action 到后端命令桥接）+ multipart 上传处理
-- **规模**：554 行
+- **规模**：556 行
 - **维护要点**：api_handler 强制 POST；所有拼命令参数必经 shell_escape；csrf_check 403；插件页加 no-store 头防旧 JS
 
 ```lua
@@ -5207,7 +5230,9 @@ function index()
     -- 上网设置（CBI 标准表单，绑定 network + dhcp + dnssettings）
     entry({"admin", "netmanager", "dns"}, cbi("netmanager/dns_settings"), _("上网设置"), 6)
     entry({"admin", "netmanager", "dns_staticv6"}, cbi("netmanager/dns_staticv6"), _("静态IP分配"), 7)
-    entry({"admin", "netmanager", "settings"}, template("netmanager/settings"), _("设置"), 8)
+    -- v1.8.19：中国IPv4/IPv6访问限制 + 手动黑/白名单集中到「IP过滤」页（子页签切换）
+    entry({"admin", "netmanager", "ip_filter"}, template("netmanager/ip_filter"), _("IP过滤"), 8)
+    entry({"admin", "netmanager", "settings"}, template("netmanager/settings"), _("设置"), 9)
     entry({"admin", "netmanager", "api"}, call("api_handler"))
     -- 【v1.4.6】dns_apply / dns_backup 原 GET 路由已改为 api_handler 内 POST action
     -- 【v1.4.7】保留两个兼容路由重定向到 DNS 设置页（v1.4.5 的书签/浏览器缓存仍
@@ -7119,7 +7144,7 @@ function withBusy(btn, fn) {
 ### 5.8 files/usr/lib/lua/luci/view/netmanager/nav.htm
 
 - **用途**：页内导航条：防火墙 6 页 + 上网设置 / 静态 IP 两个 CBI 入口
-- **规模**：10 行
+- **规模**：11 行
 - **维护要点**：与 controller 菜单双维护，新增页面两处同步
 
 ```html
@@ -7131,6 +7156,7 @@ function withBusy(btn, fn) {
     <a href="<%=luci.dispatcher.build_url("admin/netmanager/access_log")%>" class="<% if luci.dispatcher.context.requestpath[3] == 'access_log' then %>active<% end %>">🌐 端口访问日志</a>
     <a href="<%=luci.dispatcher.build_url("admin/netmanager/dns")%>" class="<% if luci.dispatcher.context.requestpath[3] == 'dns' then %>active<% end %>">🌐 上网设置</a>
     <a href="<%=luci.dispatcher.build_url("admin/netmanager/dns_staticv6")%>" class="<% if luci.dispatcher.context.requestpath[3] == 'dns_staticv6' then %>active<% end %>">📮 静态IP分配</a>
+    <a href="<%=luci.dispatcher.build_url("admin/netmanager/ip_filter")%>" class="<% if luci.dispatcher.context.requestpath[3] == 'ip_filter' then %>active<% end %>">🛡️ IP过滤</a>
     <a href="<%=luci.dispatcher.build_url("admin/netmanager/settings")%>" class="<% if luci.dispatcher.context.requestpath[3] == 'settings' then %>active<% end %>">⚙️ 设置</a>
 </div>
 
@@ -7341,7 +7367,7 @@ document.addEventListener('DOMContentLoaded', function () {
         </div>
         <div id="action_result" class="netmanager-result"></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.18</div>
+    <div class="footer-sign">网络管理插件 v1.8.19</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -7491,7 +7517,7 @@ setInterval(loadOverview, 30000);
         </table>
         <div id="action_result" class="netmanager-result"></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.18</div>
+    <div class="footer-sign">网络管理插件 v1.8.19</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -7811,7 +7837,7 @@ loadPortList();
         </div>
         <div id="action_result" class="netmanager-result"></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.18</div>
+    <div class="footer-sign">网络管理插件 v1.8.19</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -8001,7 +8027,7 @@ loadRuleList();
         <h3>失败登录记录</h3>
         <div class="netmanager-log" id="failed_log"><div class="text-muted">加载中...</div></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.18</div>
+    <div class="footer-sign">网络管理插件 v1.8.19</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -8123,7 +8149,7 @@ loadSshLog();
             <div id="bd_body" style="background:#ffffff;border:1px solid #e5e7eb;border-radius:6px;padding:4px;color:#1f2937;max-height:420px;overflow-y:auto;"></div>
         </div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.18</div>
+    <div class="footer-sign">网络管理插件 v1.8.19</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -8244,11 +8270,11 @@ loadAccessLog();
 
 ```
 
-### 5.15 files/usr/lib/lua/luci/view/netmanager/settings.htm
+### 5.15 files/usr/lib/lua/luci/view/netmanager/ip_filter.htm
 
-- **用途**：设置页（最复杂视图，1100 行）：默认目标 / 备份恢复 / 插件更新 / 在线更新 / 中国 IPv4·IPv6 过滤 / 黑名单 / 运行日志 / 卸载
-- **规模**：1278 行
-- **维护要点**：三个版本号登记处（L186/L305/L338）；备份列表与过滤状态均需 escapeHtml + 数组下标传参
+- **用途**：IP过滤页（v1.8.19 新增）：中国 IPv4 / IPv6 访问限制 + 手动黑名单 / 白名单，四个子页签切换
+- **规模**：622 行
+- **维护要点**：四个页签由 nmSwitchPane/nmInitPanes 控制（localStorage 记忆）；四块内容从 settings.htm 迁入，JS 同步迁入本页
 
 ```html
 <%+header%>
@@ -8260,26 +8286,7 @@ loadAccessLog();
     </div>
     <%+netmanager/nav%>
     <div class="netmanager-content">
-        <h2>插件设置</h2>
-        <h3>默认转发目标</h3>
-        <table class="netmanager-table">
-            <tr>
-                <td width="35%">默认目标IP</td>
-                <td>
-                    <input type="text" id="default_target" style="width:170px;" placeholder="如 192.168.31.196">
-                    <button class="btn btn-primary btn-sm" onclick="saveDefaultTarget()">保存</button>
-                    <span class="text-muted" style="margin-left:8px;">添加端口转发时留空目标IP将使用此地址</span>
-                </td>
-            </tr>
-        </table>
-        <h3>系统工具</h3>
-        <div class="netmanager-toolbar">
-            <button class="btn btn-primary btn-sm" onclick="runAction('reload')">重载防火墙</button>
-            <button class="btn btn-warning btn-sm" onclick="runAction('restart')">重启防火墙</button>
-            <button class="btn btn-success btn-sm" onclick="doBackup()">备份配置</button>
-            <button class="btn btn-secondary btn-sm" onclick="loadSettings()">刷新</button>
-        </div>
-
+        <h2>IP过滤</h2>
         <!-- v1.8.18：过滤/名单子菜单（4 个页签，样式与顶部导航一致） -->
         <div class="nm-subnav" id="nm_subnav">
             <button type="button" class="active" data-pane="china4" onclick="nmSwitchPane('china4')"><span class="nm-dot" style="background:#f97316;"></span>中国IPv4访问限制</button>
@@ -8459,6 +8466,478 @@ loadAccessLog();
             </div>
         </div>
         </div><!-- /nm_pane_white -->
+    </div>
+    <div class="footer-sign">网络管理插件 v1.8.19</div>
+</div>
+<script>
+// ========== 中国IPv4访问限制 ==========
+function loadChinaStatus() {
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_status'})
+    .then(r => r.text()).then(data => {
+        let en='0', url='', cron='', lu='', cnt='0', devs='', active='0', peers='1', peersList='-';
+        data.split('\n').forEach(line => {
+            const idx = line.indexOf('=');
+            if (idx > 0) {
+                const k = line.substring(0, idx), v = line.substring(idx + 1);
+                if (k === 'CHINA_FILTER_ENABLED') en = v;
+                else if (k === 'URL') url = v;
+                else if (k === 'CRON') cron = v;
+                else if (k === 'LAST_UPDATE') lu = v;
+                else if (k === 'COUNT') cnt = v;
+                else if (k === 'WAN_DEVS') devs = v;
+                else if (k === 'RULE_ACTIVE') active = v;
+                else if (k === 'ALLOW_WAN_PEERS') peers = v;
+                else if (k === 'WAN_PEERS') peersList = v;
+            }
+        });
+        const ruleBadge = active === '1'
+            ? ' <span class="badge badge-blue">规则已加载</span>'
+            : (en === '1' ? ' <span class="badge badge-gray" style="background:#94a3b8;color:#fff;">规则未加载</span>' : '');
+        const statusBadge = en === '1' ? '<span class="badge badge-green">已启用</span>' + ruleBadge : '<span class="badge badge-gray">已关闭</span>';
+        document.getElementById('china_status_cell').innerHTML = statusBadge;
+        document.getElementById('china_url').value = url;
+        const aw = document.getElementById('china_allow_wan');
+        if (aw) aw.checked = (peers === '1');
+        // 【安全 v1.4.7】lu/cnt/devs 来自后端命令输出（WAN_DEVS 含接口名），写入前必须转义
+        document.getElementById('china_update_cell').innerHTML = '上次更新: ' + escapeHtml(lu || '未更新') + ' | CIDR条数: <b>' + escapeHtml(cnt) + '</b>';
+        document.getElementById('china_wan_cell').innerHTML = 'WAN设备: <code>' + escapeHtml(devs || '(未探测到)') + '</code> | 规则: ' + (active === '1' ? '<span class="text-success">生效中</span>' : '<span class="text-muted">未生效</span>')
+            + ' | 放行同段: ' + (peers === '1' ? '<code>' + escapeHtml(peersList && peersList !== '-' ? peersList : '无') + '</code>' : '<span class="text-muted">已关闭</span>');
+        // cron 预设回填
+        const sel = document.getElementById('china_cron_preset');
+        const customInput = document.getElementById('china_cron_custom');
+        let matched = false;
+        for (let i = 0; i < sel.options.length; i++) {
+            if (sel.options[i].value === cron && sel.options[i].value !== '__custom__') { sel.selectedIndex = i; matched = true; break; }
+        }
+        if (!matched) {
+            sel.value = '__custom__';
+            customInput.value = cron;
+            customInput.style.display = '';
+        } else {
+            customInput.value = '';
+            customInput.style.display = 'none';
+        }
+    }).catch(e => {
+        document.getElementById('china_status_cell').innerHTML = '<span class="text-danger">加载失败: ' + escapeHtml(e.message) + '</span>';
+    });
+}
+
+function onCronPresetChangeFor(presetId, customId) {
+    const sel = document.getElementById(presetId);
+    const customInput = document.getElementById(customId);
+    if (sel.value === '__custom__') { customInput.style.display = ''; }
+    else { customInput.style.display = 'none'; customInput.value = ''; }
+}
+
+function onCronPresetChange() {
+    onCronPresetChangeFor('china_cron_preset', 'china_cron_custom');
+}
+
+function saveChinaUrl() {
+    const url = document.getElementById('china_url').value.trim();
+    if (!url) { alert('请输入订阅链接'); return; }
+    if (!/^https?:\/\//.test(url)) { alert('链接必须以 http:// 或 https:// 开头'); return; }
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_set_url&url=' + encodeURIComponent(url)})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+    });
+}
+
+// v1.8.16：保存"放行 WAN 同网段来源"开关（上级光猫/网关访问）
+function saveChinaAllowWan() {
+    const el = document.getElementById('china_allow_wan');
+    const val = el && el.checked ? '1' : '0';
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_set_allow_wan&value=' + val})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        loadChinaStatus();
+    });
+}
+
+function saveChinaCron() {
+    const sel = document.getElementById('china_cron_preset');
+    let cron = sel.value;
+    if (cron === '__custom__') {
+        cron = document.getElementById('china_cron_custom').value.trim();
+        if (!cron) { alert('请输入自定义cron表达式(5段: 分 时 日 月 周)'); return; }
+    }
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_set_cron&cron=' + encodeURIComponent(cron)})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        setTimeout(loadChinaStatus, 300);
+    });
+}
+
+function setChinaBtns(enabled) {
+    ['btn_china_enable','btn_china_disable','btn_china_update'].forEach(id => {
+        const b = document.getElementById(id);
+        if (b) b.disabled = !enabled;
+    });
+}
+
+function enableChinaFilter() {
+    if (!confirm('确定开启中国IPv4访问限制吗？\n\n开启后仅中国大陆IPv4可访问已开放端口（端口转发与路由器本地放行端口），境外IPv4新建连接将被丢弃。')) return;
+    setChinaBtns(false);
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_enable'})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        setTimeout(() => { loadChinaStatus(); setChinaBtns(true); }, 600);
+    }).catch(e => { setChinaBtns(true); alert('启用失败: ' + e.message); });
+}
+
+function disableChinaFilter() {
+    if (!confirm('确定关闭中国IPv4访问限制吗？\n\n关闭后境外IPv4可恢复访问已开放端口。')) return;
+    setChinaBtns(false);
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_disable'})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        setTimeout(() => { loadChinaStatus(); setChinaBtns(true); }, 400);
+    }).catch(e => { setChinaBtns(true); alert('关闭失败: ' + e.message); });
+}
+
+function updateChinaFilter() {
+    setChinaBtns(false);
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_update'})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        setTimeout(() => { loadChinaStatus(); setChinaBtns(true); }, 600);
+    }).catch(e => { setChinaBtns(true); alert('更新失败: ' + e.message); });
+}
+
+// ========== 中国IPv6访问限制 ==========
+function loadChina6Status() {
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china6_filter_status'})
+    .then(r => r.text()).then(data => {
+        let en='0', url='', cron='', lu='', cnt='0', devs='', active='0';
+        data.split('\n').forEach(line => {
+            const idx = line.indexOf('=');
+            if (idx > 0) {
+                const k = line.substring(0, idx), v = line.substring(idx + 1);
+                if (k === 'CHINA6_FILTER_ENABLED') en = v;
+                else if (k === 'URL') url = v;
+                else if (k === 'CRON') cron = v;
+                else if (k === 'LAST_UPDATE') lu = v;
+                else if (k === 'COUNT') cnt = v;
+                else if (k === 'WAN_DEVS') devs = v;
+                else if (k === 'RULE_ACTIVE') active = v;
+            }
+        });
+        const ruleBadge = active === '1'
+            ? ' <span class="badge badge-blue">规则已加载</span>'
+            : (en === '1' ? ' <span class="badge badge-gray" style="background:#94a3b8;color:#fff;">规则未加载</span>' : '');
+        document.getElementById('china6_status_cell').innerHTML = (en === '1' ? '<span class="badge badge-purple">已启用</span>' + ruleBadge : '<span class="badge badge-gray">已关闭</span>');
+        document.getElementById('china6_url').value = url;
+        document.getElementById('china6_update_cell').innerHTML = '上次更新: ' + escapeHtml(lu || '未更新') + ' | IPv6 CIDR条数: <b>' + escapeHtml(cnt) + '</b>';
+        document.getElementById('china6_wan_cell').innerHTML = 'WAN设备: <code>' + escapeHtml(devs || '(未探测到)') + '</code> | 规则: ' + (active === '1' ? '<span class="text-success">生效中</span>' : '<span class="text-muted">未生效</span>');
+        const sel = document.getElementById('china6_cron_preset');
+        const customInput = document.getElementById('china6_cron_custom');
+        let matched = false;
+        for (let i = 0; i < sel.options.length; i++) {
+            if (sel.options[i].value === cron && sel.options[i].value !== '__custom__') { sel.selectedIndex = i; matched = true; break; }
+        }
+        if (!matched) {
+            sel.value = '__custom__';
+            customInput.value = cron;
+            customInput.style.display = '';
+        } else {
+            customInput.value = '';
+            customInput.style.display = 'none';
+        }
+    }).catch(e => {
+        document.getElementById('china6_status_cell').innerHTML = '<span class="text-danger">加载失败: ' + escapeHtml(e.message) + '</span>';
+    });
+}
+
+function saveChina6Url() {
+    const url = document.getElementById('china6_url').value.trim();
+    if (!url) { alert('请输入订阅链接'); return; }
+    if (!/^https?:\/\//.test(url)) { alert('链接必须以 http:// 或 https:// 开头'); return; }
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china6_filter_set_url&url=' + encodeURIComponent(url)})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+    });
+}
+
+function saveChina6Cron() {
+    const sel = document.getElementById('china6_cron_preset');
+    let cron = sel.value;
+    if (cron === '__custom__') {
+        cron = document.getElementById('china6_cron_custom').value.trim();
+        if (!cron) { alert('请输入自定义cron表达式(5段: 分 时 日 月 周)'); return; }
+    }
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china6_filter_set_cron&cron=' + encodeURIComponent(cron)})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        setTimeout(loadChina6Status, 300);
+    });
+}
+
+function setChina6Btns(enabled) {
+    ['btn_china6_enable','btn_china6_disable','btn_china6_update'].forEach(id => {
+        const b = document.getElementById(id);
+        if (b) b.disabled = !enabled;
+    });
+}
+
+function enableChina6Filter() {
+    if (!confirm('确定开启中国IPv6访问限制吗？\n\n开启后仅中国大陆IPv6可访问已开放端口，境外IPv6新建连接将被丢弃。')) return;
+    setChina6Btns(false);
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china6_filter_enable'})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        setTimeout(() => { loadChina6Status(); setChina6Btns(true); }, 600);
+    }).catch(e => { setChina6Btns(true); alert('启用失败: ' + e.message); });
+}
+
+function disableChina6Filter() {
+    if (!confirm('确定关闭中国IPv6访问限制吗？\n\n关闭后境外IPv6可恢复访问已开放端口。')) return;
+    setChina6Btns(false);
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china6_filter_disable'})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        setTimeout(() => { loadChina6Status(); setChina6Btns(true); }, 400);
+    }).catch(e => { setChina6Btns(true); alert('关闭失败: ' + e.message); });
+}
+
+function updateChina6Filter() {
+    setChina6Btns(false);
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china6_filter_update'})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        setTimeout(() => { loadChina6Status(); setChina6Btns(true); }, 600);
+    }).catch(e => { setChina6Btns(true); alert('更新失败: ' + e.message); });
+}
+
+// ========== 手动黑名单（IPv4 / IPv6） ==========
+let _banV4 = [], _banV6 = [];
+
+function renderBanList(family) {
+    const list = (family === 'v4') ? _banV4 : _banV6;
+    const el = document.getElementById(family === 'v4' ? 'ban_v4_list' : 'ban_v6_list');
+    if (!el) return;
+    if (!list.length) { el.innerHTML = '<span class="text-muted">（空）</span>'; return; }
+    let html = '';
+    list.forEach((entry, i) => {
+        html += '<span class="badge badge-gray" style="display:inline-block;margin:2px 4px 2px 0;padding:3px 8px;font-family:monospace;">'
+             + escapeHtml(entry)
+             + ' <a href="javascript:void(0)" style="color:#dc2626;text-decoration:none;margin-left:4px;font-weight:bold;" '
+             + 'onclick="deleteBlacklistEntry(\'' + family + '\',' + i + ')" title="删除">×</a></span>';
+    });
+    el.innerHTML = html;
+}
+
+function loadBlacklist() {
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=blacklist_list'})
+    .then(r => r.text()).then(data => {
+        let v4='', v6='', v4n='0', v6n='0', active='0';
+        data.split('\n').forEach(line => {
+            const idx = line.indexOf('=');
+            if (idx > 0) {
+                const k = line.substring(0, idx), v = line.substring(idx + 1);
+                if (k === 'V4') v4 = v;
+                else if (k === 'V6') v6 = v;
+                else if (k === 'V4_COUNT') v4n = v;
+                else if (k === 'V6_COUNT') v6n = v;
+                else if (k === 'ACTIVE') active = v;
+            }
+        });
+        _banV4 = v4 ? v4.split(',') : [];
+        _banV6 = v6 ? v6.split(',') : [];
+        document.getElementById('ban_v4_count').textContent = v4n;
+        document.getElementById('ban_v6_count').textContent = v6n;
+        document.getElementById('ban_active_cell').innerHTML = active === '1'
+            ? '<span class="text-success">规则生效中</span>'
+            : '<span class="text-muted">未生效（无条目或未应用）</span>';
+        renderBanList('v4');
+        renderBanList('v6');
+    }).catch(e => {
+        document.getElementById('ban_v4_list').innerHTML = '<span class="text-danger">加载失败: ' + escapeHtml(e.message) + '</span>';
+    });
+}
+
+function addBlacklistEntry() {
+    const ip = document.getElementById('ban_input').value.trim();
+    if (!ip) { alert('请输入 IP 或 CIDR 网段'); return; }
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=blacklist_add&ip=' + encodeURIComponent(ip)})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        if (data.indexOf('已拉黑') >= 0) document.getElementById('ban_input').value = '';
+        setTimeout(loadBlacklist, 300);
+    }).catch(e => alert('添加失败: ' + e.message));
+}
+
+function deleteBlacklistEntry(family, idx) {
+    const list = (family === 'v4') ? _banV4 : _banV6;
+    const entry = list[idx];
+    if (!entry) return;
+    if (!confirm('确定从黑名单移除该条目吗？\n\n' + entry)) return;
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=blacklist_del&ip=' + encodeURIComponent(entry)})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        setTimeout(loadBlacklist, 300);
+    }).catch(e => alert('删除失败: ' + e.message));
+}
+
+function clearBlacklist(family) {
+    if (!confirm('确定清空 ' + (family === 'v4' ? 'IPv4' : 'IPv6') + ' 黑名单吗？此操作不可撤销。')) return;
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=blacklist_clear&family=' + encodeURIComponent(family)})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        setTimeout(loadBlacklist, 300);
+    }).catch(e => alert('清空失败: ' + e.message));
+}
+
+// ========== 过滤/名单子菜单（v1.8.18）：4 个页签切换 ==========
+function nmSwitchPane(name) {
+    var panes = ['china4', 'china6', 'black', 'white'];
+    if (panes.indexOf(name) < 0) name = 'china4';
+    panes.forEach(function (n) {
+        var el = document.getElementById('nm_pane_' + n);
+        if (el) el.style.display = (n === name) ? '' : 'none';
+    });
+    var nav = document.getElementById('nm_subnav');
+    if (nav) {
+        Array.prototype.forEach.call(nav.querySelectorAll('button'), function (b) {
+            b.className = (b.getAttribute('data-pane') === name) ? 'active' : '';
+        });
+    }
+    try { localStorage.setItem('nm_settings_pane', name); } catch (e) { }
+}
+function nmInitPanes() {
+    var saved = '';
+    try { saved = localStorage.getItem('nm_settings_pane') || ''; } catch (e) { }
+    nmSwitchPane(saved || 'china4');
+}
+
+// ========== 手动白名单（IPv4 / IPv6，v1.8.17） ==========
+let _wlV4 = [], _wlV6 = [];
+
+function renderWlList(family) {
+    const list = (family === 'v4') ? _wlV4 : _wlV6;
+    const el = document.getElementById(family === 'v4' ? 'wl_v4_list' : 'wl_v6_list');
+    if (!el) return;
+    if (!list.length) { el.innerHTML = '<span class="text-muted">（空）</span>'; return; }
+    let html = '';
+    list.forEach((entry, i) => {
+        html += '<span class="badge badge-gray" style="display:inline-block;margin:2px 4px 2px 0;padding:3px 8px;font-family:monospace;">'
+             + escapeHtml(entry)
+             + ' <a href="javascript:void(0)" style="color:#dc2626;text-decoration:none;margin-left:4px;font-weight:bold;" '
+             + 'onclick="deleteWhitelistEntry(\'' + family + '\',' + i + ')" title="删除">×</a></span>';
+    });
+    el.innerHTML = html;
+}
+
+function loadWhitelist() {
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=whitelist_list'})
+    .then(r => r.text()).then(data => {
+        let v4='', v6='', v4n='0', v6n='0', active='0';
+        data.split('\n').forEach(line => {
+            const idx = line.indexOf('=');
+            if (idx > 0) {
+                const k = line.substring(0, idx), v = line.substring(idx + 1);
+                if (k === 'V4') v4 = v;
+                else if (k === 'V6') v6 = v;
+                else if (k === 'V4_COUNT') v4n = v;
+                else if (k === 'V6_COUNT') v6n = v;
+                else if (k === 'ACTIVE') active = v;
+            }
+        });
+        _wlV4 = v4 ? v4.split(',') : [];
+        _wlV6 = v6 ? v6.split(',') : [];
+        const c4 = document.getElementById('wl_v4_count'), c6 = document.getElementById('wl_v6_count');
+        if (c4) c4.textContent = v4n;
+        if (c6) c6.textContent = v6n;
+        const ac = document.getElementById('wl_active_cell');
+        if (ac) ac.innerHTML = active === '1'
+            ? '<span class="text-success">规则生效中（白名单来源已放行）</span>'
+            : '<span class="text-muted">未生效（无条目或未应用）</span>';
+        renderWlList('v4');
+        renderWlList('v6');
+    }).catch(e => {
+        const el = document.getElementById('wl_v4_list');
+        if (el) el.innerHTML = '<span class="text-danger">加载失败: ' + escapeHtml(e.message) + '</span>';
+    });
+}
+
+function addWhitelistEntry() {
+    const ip = document.getElementById('wl_input').value.trim();
+    if (!ip) { alert('请输入 IP 或 CIDR 网段'); return; }
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=whitelist_add&ip=' + encodeURIComponent(ip)})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        if (data.indexOf('已加入白名单') >= 0) document.getElementById('wl_input').value = '';
+        setTimeout(loadWhitelist, 300);
+    }).catch(e => alert('添加失败: ' + e.message));
+}
+
+function deleteWhitelistEntry(family, idx) {
+    const list = (family === 'v4') ? _wlV4 : _wlV6;
+    const entry = list[idx];
+    if (!entry) return;
+    if (!confirm('确定从白名单移除该条目吗？\n\n' + entry)) return;
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=whitelist_del&ip=' + encodeURIComponent(entry)})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        setTimeout(loadWhitelist, 300);
+    }).catch(e => alert('删除失败: ' + e.message));
+}
+
+function clearWhitelist(family) {
+    if (!confirm('确定清空 ' + (family === 'v4' ? 'IPv4' : 'IPv6') + ' 白名单吗？此操作不可撤销。')) return;
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=whitelist_clear&family=' + encodeURIComponent(family)})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        setTimeout(loadWhitelist, 300);
+    }).catch(e => alert('清空失败: ' + e.message));
+}
+
+// 初始化
+nmInitPanes();
+loadChinaStatus();
+loadChina6Status();
+loadBlacklist();
+loadWhitelist();
+</script>
+<%+footer%>
+
+
+```
+
+### 5.16 files/usr/lib/lua/luci/view/netmanager/settings.htm
+
+- **用途**：设置页：默认转发目标 / 系统工具 / 备份恢复 / 在线更新 / 插件更新 / 运行日志 / 卸载
+- **规模**：673 行
+- **维护要点**：三个版本号登记处（online_cur_version / plugin_version / footer）；v1.8.19 起过滤与名单已迁到 ip_filter.htm
+
+```html
+<%+header%>
+<%+netmanager/common_head%>
+<div class="netmanager-container">
+    <div class="netmanager-header">
+        <h1>网络管理</h1>
+        <span class="netmanager-author">吾爱破解liyu0828</span>
+    </div>
+    <%+netmanager/nav%>
+    <div class="netmanager-content">
+        <h2>插件设置</h2>
+        <h3>默认转发目标</h3>
+        <table class="netmanager-table">
+            <tr>
+                <td width="35%">默认目标IP</td>
+                <td>
+                    <input type="text" id="default_target" style="width:170px;" placeholder="如 192.168.31.196">
+                    <button class="btn btn-primary btn-sm" onclick="saveDefaultTarget()">保存</button>
+                    <span class="text-muted" style="margin-left:8px;">添加端口转发时留空目标IP将使用此地址</span>
+                </td>
+            </tr>
+        </table>
+        <h3>系统工具</h3>
+        <div class="netmanager-toolbar">
+            <button class="btn btn-primary btn-sm" onclick="runAction('reload')">重载防火墙</button>
+            <button class="btn btn-warning btn-sm" onclick="runAction('restart')">重启防火墙</button>
+            <button class="btn btn-success btn-sm" onclick="doBackup()">备份配置</button>
+            <button class="btn btn-secondary btn-sm" onclick="loadSettings()">刷新</button>
+        </div>
 
         <!-- 备份管理 -->
         <h3>备份管理</h3>
@@ -8485,7 +8964,7 @@ loadAccessLog();
             <table class="netmanager-table" style="margin-bottom:10px;">
                 <tr>
                     <td width="30%">当前版本</td>
-                    <td><b id="online_cur_version">v1.8.18</b></td>
+                    <td><b id="online_cur_version">v1.8.19</b></td>
                 </tr>
                 <tr>
                     <td>最新版本</td>
@@ -8604,7 +9083,7 @@ loadAccessLog();
         <h3>关于插件</h3>
         <table class="netmanager-table">
             <tr><td width="30%">插件名称</td><td>网络管理 (luci-app-netmanager)</td></tr>
-            <tr><td>版本</td><td id="plugin_version">v1.8.18</td></tr>
+            <tr><td>版本</td><td id="plugin_version">v1.8.19</td></tr>
             <tr><td>作者</td><td><b>吾爱破解liyu0828</b></td></tr>
             <tr><td>仓库地址</td><td><a href="https://github.com/District1655/luci-app-netmanager" target="_blank" style="color:#2563eb;">https://github.com/District1655/luci-app-netmanager</a></td></tr>
             <tr><td>适配系统</td><td>iStoreOS / OpenWrt (fw4/nftables)</td></tr>
@@ -8637,7 +9116,7 @@ loadAccessLog();
             </div>
         </div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.18<br><span style="font-size:10px;">适配 iStoreOS / OpenWrt | 基于 fw4/nftables</span></div>
+    <div class="footer-sign">网络管理插件 v1.8.19<br><span style="font-size:10px;">适配 iStoreOS / OpenWrt | 基于 fw4/nftables</span></div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -9066,427 +9545,6 @@ function uploadPlugin() {
     });
 }
 
-// ========== 中国IPv4访问限制 ==========
-function loadChinaStatus() {
-    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_status'})
-    .then(r => r.text()).then(data => {
-        let en='0', url='', cron='', lu='', cnt='0', devs='', active='0', peers='1', peersList='-';
-        data.split('\n').forEach(line => {
-            const idx = line.indexOf('=');
-            if (idx > 0) {
-                const k = line.substring(0, idx), v = line.substring(idx + 1);
-                if (k === 'CHINA_FILTER_ENABLED') en = v;
-                else if (k === 'URL') url = v;
-                else if (k === 'CRON') cron = v;
-                else if (k === 'LAST_UPDATE') lu = v;
-                else if (k === 'COUNT') cnt = v;
-                else if (k === 'WAN_DEVS') devs = v;
-                else if (k === 'RULE_ACTIVE') active = v;
-                else if (k === 'ALLOW_WAN_PEERS') peers = v;
-                else if (k === 'WAN_PEERS') peersList = v;
-            }
-        });
-        const ruleBadge = active === '1'
-            ? ' <span class="badge badge-blue">规则已加载</span>'
-            : (en === '1' ? ' <span class="badge badge-gray" style="background:#94a3b8;color:#fff;">规则未加载</span>' : '');
-        const statusBadge = en === '1' ? '<span class="badge badge-green">已启用</span>' + ruleBadge : '<span class="badge badge-gray">已关闭</span>';
-        document.getElementById('china_status_cell').innerHTML = statusBadge;
-        document.getElementById('china_url').value = url;
-        const aw = document.getElementById('china_allow_wan');
-        if (aw) aw.checked = (peers === '1');
-        // 【安全 v1.4.7】lu/cnt/devs 来自后端命令输出（WAN_DEVS 含接口名），写入前必须转义
-        document.getElementById('china_update_cell').innerHTML = '上次更新: ' + escapeHtml(lu || '未更新') + ' | CIDR条数: <b>' + escapeHtml(cnt) + '</b>';
-        document.getElementById('china_wan_cell').innerHTML = 'WAN设备: <code>' + escapeHtml(devs || '(未探测到)') + '</code> | 规则: ' + (active === '1' ? '<span class="text-success">生效中</span>' : '<span class="text-muted">未生效</span>')
-            + ' | 放行同段: ' + (peers === '1' ? '<code>' + escapeHtml(peersList && peersList !== '-' ? peersList : '无') + '</code>' : '<span class="text-muted">已关闭</span>');
-        // cron 预设回填
-        const sel = document.getElementById('china_cron_preset');
-        const customInput = document.getElementById('china_cron_custom');
-        let matched = false;
-        for (let i = 0; i < sel.options.length; i++) {
-            if (sel.options[i].value === cron && sel.options[i].value !== '__custom__') { sel.selectedIndex = i; matched = true; break; }
-        }
-        if (!matched) {
-            sel.value = '__custom__';
-            customInput.value = cron;
-            customInput.style.display = '';
-        } else {
-            customInput.value = '';
-            customInput.style.display = 'none';
-        }
-    }).catch(e => {
-        document.getElementById('china_status_cell').innerHTML = '<span class="text-danger">加载失败: ' + escapeHtml(e.message) + '</span>';
-    });
-}
-
-function onCronPresetChangeFor(presetId, customId) {
-    const sel = document.getElementById(presetId);
-    const customInput = document.getElementById(customId);
-    if (sel.value === '__custom__') { customInput.style.display = ''; }
-    else { customInput.style.display = 'none'; customInput.value = ''; }
-}
-
-function onCronPresetChange() {
-    onCronPresetChangeFor('china_cron_preset', 'china_cron_custom');
-}
-
-function saveChinaUrl() {
-    const url = document.getElementById('china_url').value.trim();
-    if (!url) { alert('请输入订阅链接'); return; }
-    if (!/^https?:\/\//.test(url)) { alert('链接必须以 http:// 或 https:// 开头'); return; }
-    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_set_url&url=' + encodeURIComponent(url)})
-    .then(r => r.text()).then(data => {
-        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
-    });
-}
-
-// v1.8.16：保存"放行 WAN 同网段来源"开关（上级光猫/网关访问）
-function saveChinaAllowWan() {
-    const el = document.getElementById('china_allow_wan');
-    const val = el && el.checked ? '1' : '0';
-    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_set_allow_wan&value=' + val})
-    .then(r => r.text()).then(data => {
-        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
-        loadChinaStatus();
-    });
-}
-
-function saveChinaCron() {
-    const sel = document.getElementById('china_cron_preset');
-    let cron = sel.value;
-    if (cron === '__custom__') {
-        cron = document.getElementById('china_cron_custom').value.trim();
-        if (!cron) { alert('请输入自定义cron表达式(5段: 分 时 日 月 周)'); return; }
-    }
-    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_set_cron&cron=' + encodeURIComponent(cron)})
-    .then(r => r.text()).then(data => {
-        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
-        setTimeout(loadChinaStatus, 300);
-    });
-}
-
-function setChinaBtns(enabled) {
-    ['btn_china_enable','btn_china_disable','btn_china_update'].forEach(id => {
-        const b = document.getElementById(id);
-        if (b) b.disabled = !enabled;
-    });
-}
-
-function enableChinaFilter() {
-    if (!confirm('确定开启中国IPv4访问限制吗？\n\n开启后仅中国大陆IPv4可访问已开放端口（端口转发与路由器本地放行端口），境外IPv4新建连接将被丢弃。')) return;
-    setChinaBtns(false);
-    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_enable'})
-    .then(r => r.text()).then(data => {
-        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
-        setTimeout(() => { loadChinaStatus(); setChinaBtns(true); }, 600);
-    }).catch(e => { setChinaBtns(true); alert('启用失败: ' + e.message); });
-}
-
-function disableChinaFilter() {
-    if (!confirm('确定关闭中国IPv4访问限制吗？\n\n关闭后境外IPv4可恢复访问已开放端口。')) return;
-    setChinaBtns(false);
-    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_disable'})
-    .then(r => r.text()).then(data => {
-        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
-        setTimeout(() => { loadChinaStatus(); setChinaBtns(true); }, 400);
-    }).catch(e => { setChinaBtns(true); alert('关闭失败: ' + e.message); });
-}
-
-function updateChinaFilter() {
-    setChinaBtns(false);
-    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_update'})
-    .then(r => r.text()).then(data => {
-        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
-        setTimeout(() => { loadChinaStatus(); setChinaBtns(true); }, 600);
-    }).catch(e => { setChinaBtns(true); alert('更新失败: ' + e.message); });
-}
-
-// ========== 中国IPv6访问限制 ==========
-function loadChina6Status() {
-    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china6_filter_status'})
-    .then(r => r.text()).then(data => {
-        let en='0', url='', cron='', lu='', cnt='0', devs='', active='0';
-        data.split('\n').forEach(line => {
-            const idx = line.indexOf('=');
-            if (idx > 0) {
-                const k = line.substring(0, idx), v = line.substring(idx + 1);
-                if (k === 'CHINA6_FILTER_ENABLED') en = v;
-                else if (k === 'URL') url = v;
-                else if (k === 'CRON') cron = v;
-                else if (k === 'LAST_UPDATE') lu = v;
-                else if (k === 'COUNT') cnt = v;
-                else if (k === 'WAN_DEVS') devs = v;
-                else if (k === 'RULE_ACTIVE') active = v;
-            }
-        });
-        const ruleBadge = active === '1'
-            ? ' <span class="badge badge-blue">规则已加载</span>'
-            : (en === '1' ? ' <span class="badge badge-gray" style="background:#94a3b8;color:#fff;">规则未加载</span>' : '');
-        document.getElementById('china6_status_cell').innerHTML = (en === '1' ? '<span class="badge badge-purple">已启用</span>' + ruleBadge : '<span class="badge badge-gray">已关闭</span>');
-        document.getElementById('china6_url').value = url;
-        document.getElementById('china6_update_cell').innerHTML = '上次更新: ' + escapeHtml(lu || '未更新') + ' | IPv6 CIDR条数: <b>' + escapeHtml(cnt) + '</b>';
-        document.getElementById('china6_wan_cell').innerHTML = 'WAN设备: <code>' + escapeHtml(devs || '(未探测到)') + '</code> | 规则: ' + (active === '1' ? '<span class="text-success">生效中</span>' : '<span class="text-muted">未生效</span>');
-        const sel = document.getElementById('china6_cron_preset');
-        const customInput = document.getElementById('china6_cron_custom');
-        let matched = false;
-        for (let i = 0; i < sel.options.length; i++) {
-            if (sel.options[i].value === cron && sel.options[i].value !== '__custom__') { sel.selectedIndex = i; matched = true; break; }
-        }
-        if (!matched) {
-            sel.value = '__custom__';
-            customInput.value = cron;
-            customInput.style.display = '';
-        } else {
-            customInput.value = '';
-            customInput.style.display = 'none';
-        }
-    }).catch(e => {
-        document.getElementById('china6_status_cell').innerHTML = '<span class="text-danger">加载失败: ' + escapeHtml(e.message) + '</span>';
-    });
-}
-
-function saveChina6Url() {
-    const url = document.getElementById('china6_url').value.trim();
-    if (!url) { alert('请输入订阅链接'); return; }
-    if (!/^https?:\/\//.test(url)) { alert('链接必须以 http:// 或 https:// 开头'); return; }
-    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china6_filter_set_url&url=' + encodeURIComponent(url)})
-    .then(r => r.text()).then(data => {
-        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
-    });
-}
-
-function saveChina6Cron() {
-    const sel = document.getElementById('china6_cron_preset');
-    let cron = sel.value;
-    if (cron === '__custom__') {
-        cron = document.getElementById('china6_cron_custom').value.trim();
-        if (!cron) { alert('请输入自定义cron表达式(5段: 分 时 日 月 周)'); return; }
-    }
-    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china6_filter_set_cron&cron=' + encodeURIComponent(cron)})
-    .then(r => r.text()).then(data => {
-        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
-        setTimeout(loadChina6Status, 300);
-    });
-}
-
-function setChina6Btns(enabled) {
-    ['btn_china6_enable','btn_china6_disable','btn_china6_update'].forEach(id => {
-        const b = document.getElementById(id);
-        if (b) b.disabled = !enabled;
-    });
-}
-
-function enableChina6Filter() {
-    if (!confirm('确定开启中国IPv6访问限制吗？\n\n开启后仅中国大陆IPv6可访问已开放端口，境外IPv6新建连接将被丢弃。')) return;
-    setChina6Btns(false);
-    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china6_filter_enable'})
-    .then(r => r.text()).then(data => {
-        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
-        setTimeout(() => { loadChina6Status(); setChina6Btns(true); }, 600);
-    }).catch(e => { setChina6Btns(true); alert('启用失败: ' + e.message); });
-}
-
-function disableChina6Filter() {
-    if (!confirm('确定关闭中国IPv6访问限制吗？\n\n关闭后境外IPv6可恢复访问已开放端口。')) return;
-    setChina6Btns(false);
-    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china6_filter_disable'})
-    .then(r => r.text()).then(data => {
-        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
-        setTimeout(() => { loadChina6Status(); setChina6Btns(true); }, 400);
-    }).catch(e => { setChina6Btns(true); alert('关闭失败: ' + e.message); });
-}
-
-function updateChina6Filter() {
-    setChina6Btns(false);
-    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china6_filter_update'})
-    .then(r => r.text()).then(data => {
-        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
-        setTimeout(() => { loadChina6Status(); setChina6Btns(true); }, 600);
-    }).catch(e => { setChina6Btns(true); alert('更新失败: ' + e.message); });
-}
-
-// ========== 手动黑名单（IPv4 / IPv6） ==========
-let _banV4 = [], _banV6 = [];
-
-function renderBanList(family) {
-    const list = (family === 'v4') ? _banV4 : _banV6;
-    const el = document.getElementById(family === 'v4' ? 'ban_v4_list' : 'ban_v6_list');
-    if (!el) return;
-    if (!list.length) { el.innerHTML = '<span class="text-muted">（空）</span>'; return; }
-    let html = '';
-    list.forEach((entry, i) => {
-        html += '<span class="badge badge-gray" style="display:inline-block;margin:2px 4px 2px 0;padding:3px 8px;font-family:monospace;">'
-             + escapeHtml(entry)
-             + ' <a href="javascript:void(0)" style="color:#dc2626;text-decoration:none;margin-left:4px;font-weight:bold;" '
-             + 'onclick="deleteBlacklistEntry(\'' + family + '\',' + i + ')" title="删除">×</a></span>';
-    });
-    el.innerHTML = html;
-}
-
-function loadBlacklist() {
-    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=blacklist_list'})
-    .then(r => r.text()).then(data => {
-        let v4='', v6='', v4n='0', v6n='0', active='0';
-        data.split('\n').forEach(line => {
-            const idx = line.indexOf('=');
-            if (idx > 0) {
-                const k = line.substring(0, idx), v = line.substring(idx + 1);
-                if (k === 'V4') v4 = v;
-                else if (k === 'V6') v6 = v;
-                else if (k === 'V4_COUNT') v4n = v;
-                else if (k === 'V6_COUNT') v6n = v;
-                else if (k === 'ACTIVE') active = v;
-            }
-        });
-        _banV4 = v4 ? v4.split(',') : [];
-        _banV6 = v6 ? v6.split(',') : [];
-        document.getElementById('ban_v4_count').textContent = v4n;
-        document.getElementById('ban_v6_count').textContent = v6n;
-        document.getElementById('ban_active_cell').innerHTML = active === '1'
-            ? '<span class="text-success">规则生效中</span>'
-            : '<span class="text-muted">未生效（无条目或未应用）</span>';
-        renderBanList('v4');
-        renderBanList('v6');
-    }).catch(e => {
-        document.getElementById('ban_v4_list').innerHTML = '<span class="text-danger">加载失败: ' + escapeHtml(e.message) + '</span>';
-    });
-}
-
-function addBlacklistEntry() {
-    const ip = document.getElementById('ban_input').value.trim();
-    if (!ip) { alert('请输入 IP 或 CIDR 网段'); return; }
-    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=blacklist_add&ip=' + encodeURIComponent(ip)})
-    .then(r => r.text()).then(data => {
-        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
-        if (data.indexOf('已拉黑') >= 0) document.getElementById('ban_input').value = '';
-        setTimeout(loadBlacklist, 300);
-    }).catch(e => alert('添加失败: ' + e.message));
-}
-
-function deleteBlacklistEntry(family, idx) {
-    const list = (family === 'v4') ? _banV4 : _banV6;
-    const entry = list[idx];
-    if (!entry) return;
-    if (!confirm('确定从黑名单移除该条目吗？\n\n' + entry)) return;
-    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=blacklist_del&ip=' + encodeURIComponent(entry)})
-    .then(r => r.text()).then(data => {
-        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
-        setTimeout(loadBlacklist, 300);
-    }).catch(e => alert('删除失败: ' + e.message));
-}
-
-function clearBlacklist(family) {
-    if (!confirm('确定清空 ' + (family === 'v4' ? 'IPv4' : 'IPv6') + ' 黑名单吗？此操作不可撤销。')) return;
-    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=blacklist_clear&family=' + encodeURIComponent(family)})
-    .then(r => r.text()).then(data => {
-        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
-        setTimeout(loadBlacklist, 300);
-    }).catch(e => alert('清空失败: ' + e.message));
-}
-
-// ========== 过滤/名单子菜单（v1.8.18）：4 个页签切换 ==========
-function nmSwitchPane(name) {
-    var panes = ['china4', 'china6', 'black', 'white'];
-    if (panes.indexOf(name) < 0) name = 'china4';
-    panes.forEach(function (n) {
-        var el = document.getElementById('nm_pane_' + n);
-        if (el) el.style.display = (n === name) ? '' : 'none';
-    });
-    var nav = document.getElementById('nm_subnav');
-    if (nav) {
-        Array.prototype.forEach.call(nav.querySelectorAll('button'), function (b) {
-            b.className = (b.getAttribute('data-pane') === name) ? 'active' : '';
-        });
-    }
-    try { localStorage.setItem('nm_settings_pane', name); } catch (e) { }
-}
-function nmInitPanes() {
-    var saved = '';
-    try { saved = localStorage.getItem('nm_settings_pane') || ''; } catch (e) { }
-    nmSwitchPane(saved || 'china4');
-}
-
-// ========== 手动白名单（IPv4 / IPv6，v1.8.17） ==========
-let _wlV4 = [], _wlV6 = [];
-
-function renderWlList(family) {
-    const list = (family === 'v4') ? _wlV4 : _wlV6;
-    const el = document.getElementById(family === 'v4' ? 'wl_v4_list' : 'wl_v6_list');
-    if (!el) return;
-    if (!list.length) { el.innerHTML = '<span class="text-muted">（空）</span>'; return; }
-    let html = '';
-    list.forEach((entry, i) => {
-        html += '<span class="badge badge-gray" style="display:inline-block;margin:2px 4px 2px 0;padding:3px 8px;font-family:monospace;">'
-             + escapeHtml(entry)
-             + ' <a href="javascript:void(0)" style="color:#dc2626;text-decoration:none;margin-left:4px;font-weight:bold;" '
-             + 'onclick="deleteWhitelistEntry(\'' + family + '\',' + i + ')" title="删除">×</a></span>';
-    });
-    el.innerHTML = html;
-}
-
-function loadWhitelist() {
-    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=whitelist_list'})
-    .then(r => r.text()).then(data => {
-        let v4='', v6='', v4n='0', v6n='0', active='0';
-        data.split('\n').forEach(line => {
-            const idx = line.indexOf('=');
-            if (idx > 0) {
-                const k = line.substring(0, idx), v = line.substring(idx + 1);
-                if (k === 'V4') v4 = v;
-                else if (k === 'V6') v6 = v;
-                else if (k === 'V4_COUNT') v4n = v;
-                else if (k === 'V6_COUNT') v6n = v;
-                else if (k === 'ACTIVE') active = v;
-            }
-        });
-        _wlV4 = v4 ? v4.split(',') : [];
-        _wlV6 = v6 ? v6.split(',') : [];
-        const c4 = document.getElementById('wl_v4_count'), c6 = document.getElementById('wl_v6_count');
-        if (c4) c4.textContent = v4n;
-        if (c6) c6.textContent = v6n;
-        const ac = document.getElementById('wl_active_cell');
-        if (ac) ac.innerHTML = active === '1'
-            ? '<span class="text-success">规则生效中（白名单来源已放行）</span>'
-            : '<span class="text-muted">未生效（无条目或未应用）</span>';
-        renderWlList('v4');
-        renderWlList('v6');
-    }).catch(e => {
-        const el = document.getElementById('wl_v4_list');
-        if (el) el.innerHTML = '<span class="text-danger">加载失败: ' + escapeHtml(e.message) + '</span>';
-    });
-}
-
-function addWhitelistEntry() {
-    const ip = document.getElementById('wl_input').value.trim();
-    if (!ip) { alert('请输入 IP 或 CIDR 网段'); return; }
-    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=whitelist_add&ip=' + encodeURIComponent(ip)})
-    .then(r => r.text()).then(data => {
-        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
-        if (data.indexOf('已加入白名单') >= 0) document.getElementById('wl_input').value = '';
-        setTimeout(loadWhitelist, 300);
-    }).catch(e => alert('添加失败: ' + e.message));
-}
-
-function deleteWhitelistEntry(family, idx) {
-    const list = (family === 'v4') ? _wlV4 : _wlV6;
-    const entry = list[idx];
-    if (!entry) return;
-    if (!confirm('确定从白名单移除该条目吗？\n\n' + entry)) return;
-    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=whitelist_del&ip=' + encodeURIComponent(entry)})
-    .then(r => r.text()).then(data => {
-        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
-        setTimeout(loadWhitelist, 300);
-    }).catch(e => alert('删除失败: ' + e.message));
-}
-
-function clearWhitelist(family) {
-    if (!confirm('确定清空 ' + (family === 'v4' ? 'IPv4' : 'IPv6') + ' 白名单吗？此操作不可撤销。')) return;
-    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=whitelist_clear&family=' + encodeURIComponent(family)})
-    .then(r => r.text()).then(data => {
-        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
-        setTimeout(loadWhitelist, 300);
-    }).catch(e => alert('清空失败: ' + e.message));
-}
-
 // ========== 卸载插件 ==========
 function uninstallPlugin() {
     const keep = document.getElementById('uninstall_keep_config').checked ? '1' : '0';
@@ -9521,19 +9579,15 @@ function uninstallPlugin() {
 }
 
 // 初始化
-nmInitPanes();
 loadSettings();
 listBackups();
-loadChina6Status();
-loadBlacklist();
-loadWhitelist();
 </script>
 <%+footer%>
 
 
 ```
 
-### 5.16 files/etc/config/netmanager
+### 5.17 files/etc/config/netmanager
 
 - **用途**：防火墙模块 UCI 配置：默认目标 IP / 日志开关 / 中国 IPv4·IPv6 过滤参数 / 更新镜像
 - **规模**：17 行
@@ -9561,7 +9615,7 @@ config netmanager 'settings'
 
 ```
 
-### 5.17 files/etc/config/dnssettings
+### 5.18 files/etc/config/dnssettings
 
 - **用途**：上网设置模块 UCI 配置：wan / lan / dnsmasq / actions 四节
 - **规模**：22 行
@@ -9594,7 +9648,7 @@ config actions 'actions'
 
 ```
 
-### 5.18 files/etc/init.d/netmanager-china
+### 5.19 files/etc/init.d/netmanager-china
 
 - **用途**：开机自启脚本：重建中国 IPv4/IPv6 过滤与黑名单 nft 规则
 - **规模**：26 行
@@ -9631,7 +9685,7 @@ restart() {
 
 ```
 
-### 5.19 files/etc/hotplug.d/iface/95-netmanager-china
+### 5.20 files/etc/hotplug.d/iface/95-netmanager-china
 
 - **用途**：WAN 上线热插拔：接口 up 时重应用过滤与黑名单（自愈）
 - **规模**：30 行
@@ -9672,7 +9726,7 @@ exit 0
 
 ```
 
-### 5.20 files/etc/hotplug.d/iface/96-netmanager-v6sync
+### 5.21 files/etc/hotplug.d/iface/96-netmanager-v6sync
 
 - **用途**：WAN 上线热插拔：同步 IPv6 转发目标（前缀变化跟随）
 - **规模**：62 行
@@ -9745,7 +9799,7 @@ exit 0
 
 ```
 
-### 5.21 install.sh
+### 5.22 install.sh
 
 - **用途**：一键安装脚本：7 步安装（复制文件/权限/符号链接/init/cron），支持 SKIP_UHTTPD_RESTART
 - **规模**：143 行
@@ -9754,12 +9808,12 @@ exit 0
 ```bash
 #!/bin/ash
 # ============================================================
-# 网络管理插件 (luci-app-netmanager) - 一键安装脚本 v1.8.18
+# 网络管理插件 (luci-app-netmanager) - 一键安装脚本 v1.8.19
 # 由 luci-app-fwmanager (防火墙管理) 与 luci-app-dnssettings (DNS设置) 合并而成
 # ============================================================
 
 echo "============================================"
-echo "  网络管理插件 (luci-app-netmanager) v1.8.18"
+echo "  网络管理插件 (luci-app-netmanager) v1.8.19"
 echo "  防火墙管理 + DNS设置 一体化"
 echo "============================================"
 echo ""
@@ -9806,7 +9860,7 @@ echo "  ✓ model/cbi/netmanager/dns_staticv6.lua"
 echo "[4/7] 复制LuCI视图模板..."
 mkdir -p /usr/lib/lua/luci/view/netmanager
 cp -f "$FILES_DIR/usr/lib/lua/luci/view/netmanager/"*.htm /usr/lib/lua/luci/view/netmanager/
-echo "  ✓ view/netmanager/*.htm (9个文件)"
+echo "  ✓ view/netmanager/*.htm (10个文件)"
 
 echo "[5/7] 复制配置文件..."
 if [ ! -f "/etc/config/netmanager" ]; then
@@ -9899,7 +9953,7 @@ echo "============================================"
 
 ```
 
-### 5.22 .github/workflows/build.yml
+### 5.23 .github/workflows/build.yml
 
 - **用途**：CI：push main 时从 README 提版本 → 语法门禁 → 打 tar.gz → 打 tag → 发 Release（body 取自更新日志）
 - **规模**：276 行
@@ -10186,7 +10240,7 @@ jobs:
 
 ````
 
-### 5.23 .github/workflows/publish-istore.yml
+### 5.24 .github/workflows/publish-istore.yml
 
 - **用途**：CI：Release 发布后构建 ipk/apk、上传 Release 资产、自动向 istoreos/istore-repo（pending）与 openwrt-app-meta（main）提 PR
 - **规模**：118 行
@@ -10315,7 +10369,7 @@ jobs:
 
 ```
 
-### 5.24 .github/workflows/extract_changelog.awk
+### 5.25 .github/workflows/extract_changelog.awk
 
 - **用途**：Release body 提取脚本：从 docs/CHANGELOG.md 取出指定版本段落
 - **规模**：18 行
@@ -10344,7 +10398,7 @@ found {
 
 ```
 
-### 5.25 tools/build_ipk.py
+### 5.26 tools/build_ipk.py
 
 - **用途**：打 ipk 工具：固定 mtime、目录 755/文件 644、脚本可执行位，产出 tar.gz 外壳的 _all.ipk
 - **规模**：152 行
@@ -10507,7 +10561,7 @@ if __name__ == "__main__":
 
 ```
 
-### 5.26 tools/build_apk.sh
+### 5.27 tools/build_apk.sh
 
 - **用途**：打 apk 工具：缓存 openwrt-sdk-mini，chmod 规范化后调 apk mkpkg，再用 adbdump 自检
 - **规模**：77 行
@@ -10595,7 +10649,7 @@ ls -lh "$OUTFILE"
 
 ```
 
-### 5.27 tools/publish_istore.sh
+### 5.28 tools/publish_istore.sh
 
 - **用途**：上架 PR 工具：blob→tree(base_tree 取上游 pending/main)→commit→ref→PR，幂等（同 head 有 open PR 则跳过）
 - **规模**：180 行
@@ -10786,7 +10840,7 @@ fi
 
 ```
 
-### 5.28 tools/ensure_changelog.py
+### 5.29 tools/ensure_changelog.py
 
 - **用途**：发布兜底：docs/CHANGELOG.md 缺当前版本段落时，按 git log 自动补一节（已存在则不动）
 - **规模**：146 行
@@ -10943,7 +10997,7 @@ if __name__ == "__main__":
 
 ```
 
-### 5.29 istore/app-meta/Makefile
+### 5.30 istore/app-meta/Makefile
 
 - **用途**：软件中心卡片元数据模板：META_TITLE/DESCRIPTION/AUTHOR/DEPENDS/TAGS/LUCI_ENTRY/WEBSITE + PKG_VERSION/PKG_RELEASE
 - **规模**：17 行
@@ -10971,10 +11025,10 @@ include ../../meta.mk
 
 ```
 
-### 5.30 docs/gen_source_part.py
+### 5.31 docs/gen_source_part.py
 
 - **用途**：文档生成器：写 docs/source-full.md 源码全录 + PROJECT.md 第 5 章索引与第 9 章行号表
-- **规模**：310 行
+- **规模**：313 行
 - **维护要点**：新增受控文件时在 FILES 列表补一条；第 9 章行号自动抓取，无需手改
 
 ````python
@@ -11046,9 +11100,12 @@ FILES = [
     ("files/usr/lib/lua/luci/view/netmanager/access_log.htm", "html",
      "端口访问日志页：活跃连接 / 入站出站计数 / 拦截统计",
      "统一走 nmFetch；footer 版本号（登记处 5）"),
+    ("files/usr/lib/lua/luci/view/netmanager/ip_filter.htm", "html",
+     "IP过滤页（v1.8.19 新增）：中国 IPv4 / IPv6 访问限制 + 手动黑名单 / 白名单，四个子页签切换",
+     "四个页签由 nmSwitchPane/nmInitPanes 控制（localStorage 记忆）；四块内容从 settings.htm 迁入，JS 同步迁入本页"),
     ("files/usr/lib/lua/luci/view/netmanager/settings.htm", "html",
-     "设置页（最复杂视图，1100 行）：默认目标 / 备份恢复 / 插件更新 / 在线更新 / 中国 IPv4·IPv6 过滤 / 黑名单 / 运行日志 / 卸载",
-     "三个版本号登记处（L186/L305/L338）；备份列表与过滤状态均需 escapeHtml + 数组下标传参"),
+     "设置页：默认转发目标 / 系统工具 / 备份恢复 / 在线更新 / 插件更新 / 运行日志 / 卸载",
+     "三个版本号登记处（online_cur_version / plugin_version / footer）；v1.8.19 起过滤与名单已迁到 ip_filter.htm"),
     ("files/etc/config/netmanager", "uci",
      "防火墙模块 UCI 配置：默认目标 IP / 日志开关 / 中国 IPv4·IPv6 过滤参数 / 更新镜像",
      "china_filter_url/cron 与 china6_filter_url/cron 默认值即官方订阅源"),
@@ -11292,10 +11349,10 @@ if __name__ == "__main__":
 
 ````
 
-### 5.31 docs/CHANGELOG.md
+### 5.32 docs/CHANGELOG.md
 
 - **用途**：全部历史版本记录（v1.8.14 → v1.4.0 → 继承 fwmanager v1.3.33），GitHub Release body 的来源
-- **规模**：408 行
+- **规模**：415 行
 - **维护要点**：段落标题必须保持 `### vX.Y.Z (日期)`（build.yml 的 awk 按此匹配）；每版在顶部新增小节
 
 ```markdown
@@ -11307,6 +11364,13 @@ if __name__ == "__main__":
 > `README.md` 只保留「最近一版要点 + 指向本文件的链接」。
 
 > **2026-11-26 工程更新（版本号不变，交付形态与 CI 变更）**：新增 ipk/apk 双格式打包（`tools/`）、iStore 软件中心上架元数据（`istore/app-meta/`）、Release 后自动构建并提 PR 到 `istoreos/istore-repo` 与 `istoreos/openwrt-app-meta` 的流水线（`.github/workflows/publish-istore.yml`）；README 安装章节按 apk/opkg 双体系重写。
+
+### v1.8.19 (2026-11-27)
+- **新增一级页面「IP过滤」**：把「中国IPv4访问限制」「中国IPv6访问限制」「手动黑名单」「手动白名单」从设置页整体迁出，挂到顶部导航（`admin/netmanager/ip_filter`，位置在「设置」之前）。页内 4 个子页签切换内容，样式沿用顶部导航（白底圆角、选中蓝底白字，每项前有与区块左边框同色的小圆点），选择记在 `localStorage`，默认第一项；设置页只剩默认转发目标、系统工具、备份/在线更新/日志等工具类配置。
+- **取代 v1.8.18 的“设置页内子菜单”方案**：v1.8.18 把四个区块塞进设置页做成页签，层级仍挂在设置下；这一版改为独立页面，入口在主导航。
+- **修复端口转发「命中数」恒为 0**：根因是 `get_port_pkts` 只读 `nft list chain inet fw4 dstnat`，而 fw4 把真实 redirect 规则放在 `dstnat_wan`、`dstnat_lan`、`upnp_prerouting` 等子链里，主链只有 `jump` 语句、没有计数器。现在改为读整张 `inet fw4` 表（约 14KB，仍带 2 秒文件缓存），按 family（ipv4/ipv6）+ 协议匹配 dport，同一端口的 tcp/udp 多条规则命中数求和。
+- **IPv6 直连放行规则的命中数换口径**：这类 `Allow-IPv6-<端口>-<协议>` 是 filter 规则（在 `forward_lan`），不在 dstnat 里，改按 fw4 规则名 `comment "!fw4: <name>"` 统计。
+- **真机验证（iStoreOS 25.12.6 / nft 1.1.6）**：`netmanager port_list` 输出中 58443 命中 634、853 命中 10、55550 命中 57，IPv6 `Allow-IPv6-58443-tcp` 命中 349，与 `nft list table inet fw4` 计数器一致；原先全部为 0。
 
 ### v1.8.18 (2026-11-27)
 - **设置页新增「过滤 / 名单」子菜单**：把「中国IPv4访问限制」「中国IPv6访问限制」「手动黑名单」「手动白名单」收进一排 4 个页签，点击只显示当前区块，其余隐藏；样式沿用顶部导航（白底圆角、选中蓝底白字，字号略收），每项前有与对应区块左边框同色的小圆点。页签选择记在 `localStorage`，刷新后回到上次所在页签，默认第一项。
@@ -11711,7 +11775,7 @@ if __name__ == "__main__":
 
 ```
 
-### 5.32 docs/istore-publish.md
+### 5.33 docs/istore-publish.md
 
 - **用途**：iStore 上架与自动发版说明：一次性 Secret 配置、日常发版流程、本地出包、常见问题
 - **规模**：51 行
@@ -11773,7 +11837,7 @@ VERSION=1.8.14 RELEASE=1 OUT=dist bash tools/build_apk.sh
 
 ````
 
-### 5.33 .gitattributes
+### 5.34 .gitattributes
 
 - **用途**：git 属性：强制文本文件 LF（路由器 BusyBox ash 不能吃 CRLF）
 - **规模**：15 行
@@ -11799,7 +11863,7 @@ VERSION=1.8.14 RELEASE=1 OUT=dist bash tools/build_apk.sh
 
 ```
 
-### 5.34 .gitignore
+### 5.35 .gitignore
 
 - **用途**：忽略构建产物（dist/、ipk/apk、临时 tar.gz）；docs/source-full.md 需要入库，别加进来
 - **规模**：7 行
@@ -11817,16 +11881,16 @@ dist/
 
 ```
 
-### 5.35 README.md
+### 5.36 README.md
 
 - **用途**：用户文档：功能 / 安装（apk·ipk·脚本三路）/ CLI / 配置说明 / 构建与发版 / 更新日志
-- **规模**：416 行
+- **规模**：417 行
 - **维护要点**：L3 版本号是 build.yml 的 tag 提取源（登记处 12）；更新日志已迁到 docs/CHANGELOG.md，本文件只留最近一版摘要
 
 ````markdown
 # 网络管理插件 (luci-app-netmanager)
 
-> 版本：v1.8.18
+> 版本：v1.8.19
 >
 > 适配：iStoreOS 25.12+（apk）/ iStoreOS 24.10 及 OpenWrt 23.05+（opkg / ipk），fw4 + nftables，Lua LuCI
 >
@@ -12230,9 +12294,10 @@ IPv4（每行一个 CIDR）：
 
 完整历史版本记录（v1.8.17 → v1.4.0 → 继承 fwmanager v1.3.33）已归档到 **[`docs/CHANGELOG.md`](docs/CHANGELOG.md)**，`build.yml` 从那里提取当前版本段落作为 GitHub Release body。
 
-**最近一版：v1.8.18（2026-11-27）**
+**最近一版：v1.8.19（2026-11-27）**
 
-- **设置页新增「过滤 / 名单」子菜单**：把中国IPv4访问限制、中国IPv6访问限制、手动黑名单、手动白名单收进 4 个页签，切换只显示当前区块，视觉与顶部导航保持一致（圆点颜色对应各区块边框色），刷新后记住上次所选页签
+- **新增「IP过滤」一级页面**：中国IPv4访问限制、中国IPv6访问限制、手动黑名单（IPv4/IPv6）、手动白名单（IPv4/IPv6）从设置页挪出，集中到顶部导航的「IP过滤」页，页内用 4 个子页签切换（样式与顶部导航一致，圆点颜色对应区块边框色），刷新后记住上次所在页签；设置页只保留工具类配置
+- **修复端口转发「命中数」恒为 0**：fw4 把 redirect 规则放在 `dstnat_wan` / `dstnat_lan` / `upnp_prerouting` 等子链，原来只读主链 `dstnat`（里面只有 jump），计数器一个都拿不到；现在整表读 `inet fw4` 并按 family + 协议匹配端口，同端口的 tcp/udp 规则命中数求和；IPv6 直连放行规则改按 fw4 规则名（`Allow-IPv6-<端口>-<协议>`）统计
 - **新增手动白名单（IPv4/IPv6 双栈）**：`netmanager whitelist add 203.0.113.0/24` / `2001:db8::/32`，设置页同样有输入框与列表；实现是把条目并进 `china_v4` / `china_v6` 集合，等于给中国IP限制加一份人工允许列表（不受 china.txt 订阅更新影响）
 - **持久化自愈**：条目存 `/etc/netmanager/whitelist_v4.list`、`whitelist_v6.list`，重启/WAN 重连/china 列表更新/备份恢复后都会重新并入集合；删条目立刻从集合移除
 - **修复上级光猫/网关访问不到路由器**（v1.8.16 延续）：自动放行 WAN 口同网段来源，「放行上级网关」可在设置页开关
