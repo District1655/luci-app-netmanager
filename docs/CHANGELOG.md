@@ -7,6 +7,13 @@
 
 > **2026-11-26 工程更新（版本号不变，交付形态与 CI 变更）**：新增 ipk/apk 双格式打包（`tools/`）、iStore 软件中心上架元数据（`istore/app-meta/`）、Release 后自动构建并提 PR 到 `istoreos/istore-repo` 与 `istoreos/openwrt-app-meta` 的流水线（`.github/workflows/publish-istore.yml`）；README 安装章节按 apk/opkg 双体系重写。
 
+### v1.8.16 (2026-11-27)
+- **修复：上级光猫/网关访问不到路由器（issue #1）**。此前白名单规则为「`iifname {WAN}` 且 `ip saddr != @china_v4` → drop」，而 `china.txt` 只收录**大陆公网**地址段；光猫拨号/桥接场景下 WAN 口落在私网段（如 `192.168.1.0/24`），光猫自身的私网 IP 不在集合里 → 被当成境外地址丢弃。现在规则解析出 **WAN 口自身所在网段**，在 drop 之前放行该网段来源（`get_wan_prefixes`，纯 shell 算 CIDR，不依赖 ipcalc；PPP 点对点接口按 `peer` 后的掩码解析）。只放行“与自己同段”的地址，**不是**把整个 RFC1918 灌进去，攻击面几乎不变。
+- **新增开关「放行上级网关」**：`uci netmanager.settings.china_filter_allow_wan_peers`（默认 1），设置页中国 IPv4 区块新增勾选框与保存按钮（`china_filter_set_allow_wan`），命令行 `netmanager china_filter allow_wan on|off|status`；`china_filter status` 增加 `ALLOW_WAN_PEERS` / `WAN_PEERS` 两行，设置页「生效WAN口 / 规则」一行同时显示放行网段。
+- **IPv6 侧对称修复**：`china6` 链在 drop 前放行 `fd00::/8`（ULA）与 WAN 口自身 `/64`（此前只放行 `fe80::/10`、`ff00::/8` 与 DHCPv6），避免光猫用私网 IPv6 访问时被误杀。
+- **调试钩子（不改变正常行为）**：`NM_WAN_DEVS_OVERRIDE` 可临时指定 WAN 设备列表、`NM_RULES_ONLY=1` 只打印生成的 nft 规则不落盘，供真机复现与排查。
+- **真机验证（iStoreOS 25.12.6 / x86_64 / nft 1.1.6）**：用 veth + netns 构造「同段邻居」场景，老规则 4 个 SYN 全部命中 drop；新规则 24 个 SYN 全部命中 accept、drop 计数为 0；本机 PPPoE（`/32`）场景解析为 `223.167.209.134/32`，规则与 IPv4/IPv6 链均正常重建，drop 计数继续增长（境外扫描仍被拦）。
+
 ### v1.8.15 (2026-11-26)
 - **新增 ipk / apk 双格式安装包（随 Release 自动产出）**：iStoreOS 25.12+（apk-tools，系统内无 opkg）装 `luci-app-netmanager-<版本>-r<rel>.apk`；iStoreOS 24.10 / OpenWrt 23.05–24.10 装 `luci-app-netmanager_<版本>-r<rel>_all.ipk`；`tar.gz + install.sh` 保留为未适配架构与开发态的兜底路径。产物由 `tools/build_ipk.py`、`tools/build_apk.sh` 生成（固定 mtime、目录 755 / 文件 644、conffiles 与 postinst/prerm 钩子）。
 - **iStore 软件中心上架材料**：新增 `istore/app-meta/`（META_TITLE/DESCRIPTION/AUTHOR/DEPENDS/TAGS/LUCI_ENTRY/WEBSITE + 256×256 图标），按官方目录规范（`all/nas_luci`）出包；`.github/workflows/publish-istore.yml` 在 Release 发布后自动向 `istoreos/istore-repo`（base `pending`）与 `istoreos/openwrt-app-meta`（base `main`）提收录 PR。

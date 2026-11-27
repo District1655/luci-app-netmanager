@@ -192,7 +192,7 @@ jobs:
             - **DNS设置（v1.4.0 新增）**：WAN口上游DNS / LAN口设备下发DNS / dnsmasq全局转发，IPv4+IPv6双栈，一键应用与配置备份
             - **静态IPv6分配（v1.4.0 新增）**：基于MAC绑定 hostid/ip6/DUID，自动合并重复条目与 hostid 冲突检测
             - 设置（默认目标IP/安全建议/系统工具/配置备份/插件在线更新/运行日志排错）
-            - **中国IPv4访问限制（继承自 v1.3.33）**：仅允许中国大陆 IPv4 访问已开放端口（DNAT+路由器本地开放端口），境外 IPv4 新建连接丢弃；默认订阅 `https://metowolf.github.io/iplist/data/special/china.txt`，支持自定义订阅链接与自定义 cron 更新计划；开机 init + WAN hotplug 自愈；**旧版 nft 自动降级兼容**（modern `flags interval, auto-merge` 分片加载 / compat `flags interval` 单次原子加载 + 逐行回退）
+            - **中国IPv4访问限制（继承自 v1.3.33）**：仅允许中国大陆 IPv4 访问已开放端口（DNAT+路由器本地开放端口），境外 IPv4 新建连接丢弃；默认订阅 `https://metowolf.github.io/iplist/data/special/china.txt`，支持自定义订阅链接与自定义 cron 更新计划；开机 init + WAN hotplug 自愈；**旧版 nft 自动降级兼容**（modern `flags interval, auto-merge` 分片加载 / compat `flags interval` 单次原子加载 + 逐行回退）；**v1.8.16 起自动放行 WAN 口同网段来源**（上级光猫/网关在私网段时不再被误杀，可用 `china_filter allow_wan off` 关闭）
             - **中国IPv6访问限制（v1.7.0 新增）**：与 IPv4 对称，独立 nft 表 `inet netmanager6`，仅允许中国大陆 IPv6 访问已开放端口；默认订阅 `https://ispip.clang.cn/all_cn_ipv6.txt`，订阅与 cron 可自定义；开机/WAN hotplug 自愈
             - **手动黑名单（v1.7.0 新增）**：IPv4/IPv6 单 IP 与 CIDR 网段拉黑，独立 nft 表 `inet netmanager_ban`，条目持久化并自动恢复
 

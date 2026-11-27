@@ -8,7 +8,7 @@
 ### 5.1 files/usr/sbin/netmanager
 
 - **用途**：后端核心脚本：全部 CLI 子命令（概览/端口转发/规则/日志/备份/上传/在线更新/中国 IPv4·IPv6 过滤/黑名单/卸载）
-- **规模**：4226 行
+- **规模**：4382 行
 - **维护要点**：单文件约 4200 行，v1.5+ 模块化拆分对象。PLUGIN_VERSION 在 L15（唯一权威源）；命令入口行号见 9.1
 
 ```bash
@@ -26,7 +26,7 @@ LOG_FILE="$LOG_DIR/run.log"
 LOG_ENABLED=0
 
 # 在线更新配置：版本号与 GitHub 仓库（发版时同步修改 PLUGIN_VERSION）
-PLUGIN_VERSION="1.8.15"
+PLUGIN_VERSION="1.8.16"
 REPO_OWNER="District1655"
 REPO_NAME="luci-app-netmanager"
 REPO_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
@@ -121,6 +121,12 @@ load_config() {
         uci set netmanager.settings.china_filter_cron='0 3 * * 0'
         uci set netmanager.settings.china_filter_last_update=''
         uci set netmanager.settings.china_filter_count='0'
+        uci commit netmanager 2>/dev/null
+    fi
+    # v1.8.16：放行 WAN 口同网段来源（上级光猫/网关等私网邻居）
+    # 默认开启；选项缺失时补写，不覆盖用户已有设置
+    if [ -z "$(uci get netmanager.settings.china_filter_allow_wan_peers 2>/dev/null)" ]; then
+        uci set netmanager.settings.china_filter_allow_wan_peers='1'
         uci commit netmanager 2>/dev/null
     fi
     # 补齐中国IPv6过滤相关默认值（仅在选项缺失时写入，不覆盖用户已自定义值）
@@ -2819,6 +2825,7 @@ cmd_settings() {
     echo "CHINA_FILTER_CRON=$(uci get netmanager.settings.china_filter_cron 2>/dev/null || echo '0 3 * * 0')"
     echo "CHINA_FILTER_LAST_UPDATE=$(uci get netmanager.settings.china_filter_last_update 2>/dev/null)"
     echo "CHINA_FILTER_COUNT=$(uci get netmanager.settings.china_filter_count 2>/dev/null || echo 0)"
+    echo "CHINA_FILTER_ALLOW_WAN_PEERS=$(uci get netmanager.settings.china_filter_allow_wan_peers 2>/dev/null || echo 1)"
     echo "CHINA6_FILTER_ENABLED=$(uci get netmanager.settings.china6_filter_enable 2>/dev/null || echo 0)"
     echo "CHINA6_FILTER_URL=$(uci get netmanager.settings.china6_filter_url 2>/dev/null || echo 'https://ispip.clang.cn/all_cn_ipv6.txt')"
     echo "CHINA6_FILTER_CRON=$(uci get netmanager.settings.china6_filter_cron 2>/dev/null || echo '0 3 * * 0')"
@@ -2865,6 +2872,11 @@ china_get_enable() {
 # 探测 WAN 设备名（去重、空格分隔），用于 iifname 匹配
 get_wan_devs() {
     local devs="" d nd val zn net
+    # 0) 调试/测试钩子：直接指定设备列表（真机复现与 CI 用，正常运行时为空）
+    if [ -n "${NM_WAN_DEVS_OVERRIDE:-}" ]; then
+        echo "$NM_WAN_DEVS_OVERRIDE" | tr ' ' '\n' | grep -E '^[a-zA-Z0-9._@-]+$' | sort -u | tr '\n' ' '
+        return 0
+    fi
     # 1) 默认路由设备（IPv4/IPv6 双栈都纳入，避免仅 v6 有默认路由时探测失败）
     d=$(ip -4 route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
     [ -n "$d" ] && devs="$d"
@@ -2896,6 +2908,69 @@ get_wan_devs() {
     done
     # 去重 + 仅保留合法接口名
     echo "$devs" | tr ' ' '\n' | grep -E '^[a-zA-Z0-9._@-]+$' | sort -u | grep -v '^$' | tr '\n' ' '
+}
+
+# IPv4 地址 + 前缀长度 → 网段 CIDR（如 192.168.1.5/24 → 192.168.1.0/24）
+# 纯 shell 实现，不依赖 ipcalc（OpenWrt 默认没有）
+cidr_of_addr() {
+    local ip="$1" p="$2" a b c d oct i=0 rem size out=""
+    set -- $(echo "$ip" | tr '.' ' ')
+    a=$1; b=$2; c=$3; d=$4
+    for oct in "$a" "$b" "$c" "$d"; do
+        rem=$(( p - i * 8 ))
+        if [ "$rem" -le 0 ]; then
+            oct=0
+        elif [ "$rem" -ge 8 ]; then
+            oct=$oct
+        else
+            size=$(( 1 << (8 - rem) ))
+            oct=$(( oct - oct % size ))
+        fi
+        out="${out}${out:+.}${oct}"
+        i=$(( i + 1 ))
+    done
+    echo "${out}/${p}"
+}
+
+# 探测 WAN 口自身所在的 IPv4 网段（上级光猫/网关通常就在这段里）
+# 只放行"与自己同段"的来源，比直接放行整个 RFC1918 精确得多
+get_wan_prefixes() {
+    local devs="${1:-}" dev addr out="" parsed a b
+    for dev in $devs; do
+        # 注意 PPP 点对点接口的 `ip -o addr` 输出是 "inet 223.x.x.x peer 223.x.x.1/32"
+        # 只有 /32 掩码信息在 peer 后面，必须单独解析，否则拿不到前缀
+        parsed=$(ip -4 -o addr show dev "$dev" 2>/dev/null | awk '{
+            ip=""; p="32";
+            for (i=1;i<=NF;i++) {
+                if ($i=="inet") { v=$(i+1); if (v ~ /\//) { split(v,z,"/"); ip=z[1]; p=z[2] } else { ip=v } }
+                else if ($i=="peer") { v=$(i+1); if (v ~ /\//) { split(v,z,"/"); p=z[2] } }
+            }
+            if (ip!="") print ip, p
+        }')
+        set -- $parsed
+        while [ $# -gt 0 ]; do
+            a=$1; b=${2:-32}; shift 2
+            [ -n "$a" ] && out="$out $(cidr_of_addr "$a" "$b")"
+        done
+    done
+    echo "$out" | tr ' ' '\n' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$' | sort -u | tr '\n' ' '
+}
+
+# 探测 WAN 口自身所在的 IPv6 网段（按 /64 取前 4 组；链路本地 fe80 已单独放行，不重复加）
+get_wan_prefixes6() {
+    local devs="${1:-}" dev addr out=""
+    for dev in $devs; do
+        for addr in $(ip -6 -o addr show dev "$dev" 2>/dev/null | awk '{print $4}'); do
+            case "$addr" in
+                *fe80*) continue ;;
+            esac
+            # 只处理标准 8 组写法，压缩写法（::）交给集合兜底
+            local groups
+            groups=$(echo "$addr" | cut -d/ -f1 | awk -F: 'NF>=8{print $1":"$2":"$3":"$4"::/64"}')
+            [ -n "$groups" ] && out="$out $groups"
+        done
+    done
+    echo "$out" | tr ' ' '\n' | grep -E '^[0-9a-fA-F:]+::/64$' | sort -u | tr '\n' ' '
 }
 
 # 创建 china_v4 集合（兼容旧版 nft：先尝试 interval,auto-merge；失败则降级仅 interval）
@@ -3088,6 +3163,16 @@ china_apply_rules() {
     local ifname_set
     ifname_set=$(echo "$devs" | awk '{for(i=1;i<=NF;i++){if(i>1)printf ", ";printf "\"%s\"",$i}}')
 
+    # v1.8.16：放行 WAN 口自身所在网段的来源。
+    # 典型场景：光猫拨号/桥接时，光猫管理 IP 与路由器 WAN 同处一个私网段（如 192.168.1.1），
+    # 该 IP 不在 china.txt（公网库）里 → 会被「saddr != @china_v4 drop」误杀，导致上级光猫访问不到路由器。
+    # 只放行"与自己同段"的地址，比放行整个 RFC1918 精确得多。
+    local allow_peers wan_prefixes
+    allow_peers=$(uci get netmanager.settings.china_filter_allow_wan_peers 2>/dev/null)
+    [ -z "$allow_peers" ] && allow_peers=1
+    wan_prefixes=""
+    [ "$allow_peers" = "1" ] && wan_prefixes=$(get_wan_prefixes "$devs")
+
     # 删除旧链（幂等）
     nft delete chain inet netmanager china_input 2>/dev/null
     nft delete chain inet netmanager china_forward 2>/dev/null
@@ -3105,10 +3190,24 @@ china_apply_rules() {
         # 「ip saddr != @china_v4 drop」误判为境外 IPv4 直接丢弃，导致租约续不上。
         printf 'add rule inet netmanager china_forward iifname { %s } udp sport 67 udp dport 68 counter accept\n' "$ifname_set"
         printf 'add rule inet netmanager china_forward iifname { %s } ip saddr 169.254.0.0/16 counter accept\n' "$ifname_set"
+        # v1.8.16：WAN 同网段来源（上级光猫/网关）在两条链上都要放行，且在 drop 之前
+        local pfx
+        for pfx in $wan_prefixes; do
+            printf 'add rule inet netmanager china_input iifname { %s } ip saddr %s counter accept\n' "$ifname_set" "$pfx"
+            printf 'add rule inet netmanager china_forward iifname { %s } ip saddr %s counter accept\n' "$ifname_set" "$pfx"
+        done
         printf 'add rule inet netmanager china_forward iifname { %s } ct state new meta l4proto { tcp, udp } ip saddr != @china_v4 counter drop\n' "$ifname_set"
         printf 'add rule inet netmanager china_input iifname { %s } ct state new meta l4proto { tcp, udp } ip saddr != @china_v4 limit rate 10/minute burst 20 packets log prefix "NM_DROP4: " level warn\n' "$ifname_set"
         printf 'add rule inet netmanager china_input iifname { %s } ct state new meta l4proto { tcp, udp } ip saddr != @china_v4 counter drop\n' "$ifname_set"
     } > "$rf"
+    # 调试钩子：只打印生成的规则不落盘应用（真机排查 / CI 用）
+    if [ -n "${NM_RULES_ONLY:-}" ] || [ "${NM_RULES_ONLY:-0}" = "1" ]; then
+        echo "=== 生成的 nft 规则（NM_RULES_ONLY）==="
+        cat "$rf"
+        echo "=== WAN 设备: $devs | 放行同段: ${wan_prefixes:-无} ==="
+        rm -f "$rf"
+        return 0
+    fi
     if ! nft -f "$rf" 2>/tmp/netmanager_china_rules.err; then
         write_log "ERROR" "china_filter: 规则链安装失败: $(cat /tmp/netmanager_china_rules.err 2>/dev/null | tr '\n' ' ')"
         rm -f "$rf" /tmp/netmanager_china_rules.err 2>/dev/null
@@ -3119,8 +3218,8 @@ china_apply_rules() {
 
     uci set netmanager.settings.china_filter_count="$count"
     uci commit netmanager 2>/dev/null
-    info "中国IPv4过滤规则已应用: 条数=$count WAN设备=[$(echo $devs)]"
-    write_log "INFO" "china_filter apply: count=$count devs=$devs"
+    info "中国IPv4过滤规则已应用: 条数=$count WAN设备=[$(echo $devs)] 放行同段=[${wan_prefixes:-无}]"
+    write_log "INFO" "china_filter apply: count=$count devs=$devs allow_wan_peers=$allow_peers peers=${wan_prefixes:-none}"
     return 0
 }
 
@@ -3226,6 +3325,12 @@ cmd_china_status() {
     echo "COUNT=$cnt"
     echo "WAN_DEVS=$devs"
     echo "RULE_ACTIVE=$active"
+    local awp=$(uci get netmanager.settings.china_filter_allow_wan_peers 2>/dev/null)
+    [ -z "$awp" ] && awp=1
+    local peers="-"
+    [ "$awp" = "1" ] && peers=$(get_wan_prefixes "$devs")
+    echo "ALLOW_WAN_PEERS=$awp"
+    echo "WAN_PEERS=${peers:--}"
     echo "LIST_FILE=$CHINA_LIST_FILE"
     echo "===END==="
 }
@@ -3354,9 +3459,42 @@ cmd_china_filter() {
         update)   cmd_china_update ;;
         set_url)  cmd_china_set_url "$@" ;;
         set_cron) cmd_china_set_cron "$@" ;;
+        allow_wan) cmd_china_allow_wan "$@" ;;
         boot)     cmd_china_boot ;;
-        *) echo "用法: netmanager china_filter status|enable|disable|update|set_url <url>|set_cron <expr>"; exit 1 ;;
+        *) echo "用法: netmanager china_filter status|enable|disable|update|set_url <url>|set_cron <expr>|allow_wan on|off"; exit 1 ;;
     esac
+}
+
+# v1.8.16：是否放行 WAN 口同网段来源（上级光猫/网关等私网邻居）
+# 用法: netmanager china_filter allow_wan on|off|status
+cmd_china_allow_wan() {
+    local v="$1"
+    case "$v" in
+        on|1|enable)
+            uci set netmanager.settings.china_filter_allow_wan_peers='1'
+            uci commit netmanager
+            info "已开启：放行 WAN 同网段来源（上级光猫/网关可访问）"
+            ;;
+        off|0|disable)
+            uci set netmanager.settings.china_filter_allow_wan_peers='0'
+            uci commit netmanager
+            info "已关闭：WAN 同网段来源不再放行（严格白名单模式）"
+            ;;
+        status|'')
+            local awp=$(uci get netmanager.settings.china_filter_allow_wan_peers 2>/dev/null)
+            [ -z "$awp" ] && awp=1
+            echo "ALLOW_WAN_PEERS=$awp"
+            echo "WAN_PEERS=$(get_wan_prefixes "$(get_wan_devs)")"
+            return 0
+            ;;
+        *) echo "用法: netmanager china_filter allow_wan on|off|status"; exit 1 ;;
+    esac
+    # 改完设置后，若规则已启用则立即重应用（要求本地列表存在）
+    if [ "$(china_get_enable)" = "1" ] && [ -f "$CHINA_LIST_FILE" ]; then
+        china_apply_rules || return 1
+        info "规则已重新应用"
+    fi
+    return 0
 }
 
 # ========== 14. 中国IPv6访问限制（v1.7.0 新增） ==========
@@ -3552,6 +3690,14 @@ china6_apply_rules() {
     local ifname_set
     ifname_set=$(echo "$devs" | awk '{for(i=1;i<=NF;i++){if(i>1)printf ", ";printf "\"%s\"",$i}}')
 
+    # v1.8.16：与 IPv4 对称——放行 WAN 口自身网段与 ULA(fd00::/8) 来源，
+    # 避免上级光猫用私网 IPv6（ULA）访问时被当成“境外地址”丢弃
+    local allow_peers wan_prefixes6
+    allow_peers=$(uci get netmanager.settings.china_filter_allow_wan_peers 2>/dev/null)
+    [ -z "$allow_peers" ] && allow_peers=1
+    wan_prefixes6=""
+    [ "$allow_peers" = "1" ] && wan_prefixes6=$(get_wan_prefixes6 "$devs")
+
     nft delete chain inet netmanager6 china6_input 2>/dev/null
     nft delete chain inet netmanager6 china6_forward 2>/dev/null
 
@@ -3572,6 +3718,16 @@ china6_apply_rules() {
         printf 'add rule inet netmanager6 china6_forward iifname { %s } ip6 saddr fe80::/10 counter accept\n' "$ifname_set"
         printf 'add rule inet netmanager6 china6_forward iifname { %s } ip6 saddr ff00::/8 counter accept\n' "$ifname_set"
         printf 'add rule inet netmanager6 china6_forward iifname { %s } udp sport 547 udp dport 546 counter accept\n' "$ifname_set"
+        # v1.8.16：WAN 同网段 / ULA 来源放行（须在 drop 之前）
+        if [ "$allow_peers" = "1" ]; then
+            local pfx6
+            printf 'add rule inet netmanager6 china6_input iifname { %s } ip6 saddr fd00::/8 counter accept\n' "$ifname_set"
+            printf 'add rule inet netmanager6 china6_forward iifname { %s } ip6 saddr fd00::/8 counter accept\n' "$ifname_set"
+            for pfx6 in $wan_prefixes6; do
+                printf 'add rule inet netmanager6 china6_input iifname { %s } ip6 saddr %s counter accept\n' "$ifname_set" "$pfx6"
+                printf 'add rule inet netmanager6 china6_forward iifname { %s } ip6 saddr %s counter accept\n' "$ifname_set" "$pfx6"
+            done
+        fi
         printf 'add rule inet netmanager6 china6_forward iifname { %s } ct state new meta l4proto { tcp, udp } ip6 saddr != @china_v6 counter drop\n' "$ifname_set"
         printf 'add rule inet netmanager6 china6_input iifname { %s } ct state new meta l4proto { tcp, udp } ip6 saddr != @china_v6 limit rate 10/minute burst 20 packets log prefix "NM_DROP6: " level warn\n' "$ifname_set"
         printf 'add rule inet netmanager6 china6_input iifname { %s } ct state new meta l4proto { tcp, udp } ip6 saddr != @china_v6 counter drop\n' "$ifname_set"
@@ -4184,7 +4340,7 @@ usage() {
     echo "备份: backup | backup_list | backup_restore <文件> | backup_delete <文件> | backup_import <文件> | backup_prune [保留数]"
     echo "插件: upload_file <文件名> <b64文件> | plugin_update <文件> | plugin_version <文件> | cleanup_uploads"
     echo "在线更新: update_check | update_apply | set_update_mirror <url|''>"
-    echo "中国IPv4过滤: china_filter status | enable | disable | update | set_url <url> | set_cron <expr>"
+    echo "中国IPv4过滤: china_filter status | enable | disable | update | set_url <url> | set_cron <expr> | allow_wan on|off"
     echo "中国IPv6过滤: china6_filter status | enable | disable | update | set_url <url> | set_cron <expr>"
     echo "手动黑名单: blacklist list | add <ip/cidr> | del <ip/cidr> | clear [v4|v6|all] | apply"
     echo "卸载: uninstall [full|keep]   # full=全删(默认) keep=保留配置与备份"
@@ -4834,7 +4990,7 @@ fi
 ### 5.4 files/usr/lib/lua/luci/controller/netmanager.lua
 
 - **用途**：LuCI 控制器：注册全部页面路由 + API 分发（action 到后端命令桥接）+ multipart 上传处理
-- **规模**：537 行
+- **规模**：543 行
 - **维护要点**：api_handler 强制 POST；所有拼命令参数必经 shell_escape；csrf_check 403；插件页加 no-store 头防旧 JS
 
 ```lua
@@ -5301,6 +5457,12 @@ function api_handler()
     elseif action == "china_filter_set_cron" then
         local cron = luci.http.formvalue("cron") or ""
         cmd = string.format("/usr/sbin/netmanager china_filter set_cron %s", shell_escape(cron))
+    elseif action == "china_filter_set_allow_wan" then
+        -- v1.8.16：放行 WAN 同网段来源开关（上级光猫/网关访问）
+        local v = luci.http.formvalue("value") or "1"
+        if v ~= "1" and v ~= "0" then v = "1" end
+        cmd = string.format("/usr/sbin/netmanager china_filter allow_wan %s",
+            v == "1" and "on" or "off")
     elseif action == "china6_filter_status" then
         cmd = "/usr/sbin/netmanager china6_filter status"
     elseif action == "china6_filter_enable" then
@@ -6967,7 +7129,7 @@ document.addEventListener('DOMContentLoaded', function () {
         </div>
         <div id="action_result" class="netmanager-result"></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.15</div>
+    <div class="footer-sign">网络管理插件 v1.8.16</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -7117,7 +7279,7 @@ setInterval(loadOverview, 30000);
         </table>
         <div id="action_result" class="netmanager-result"></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.15</div>
+    <div class="footer-sign">网络管理插件 v1.8.16</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -7437,7 +7599,7 @@ loadPortList();
         </div>
         <div id="action_result" class="netmanager-result"></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.15</div>
+    <div class="footer-sign">网络管理插件 v1.8.16</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -7627,7 +7789,7 @@ loadRuleList();
         <h3>失败登录记录</h3>
         <div class="netmanager-log" id="failed_log"><div class="text-muted">加载中...</div></div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.15</div>
+    <div class="footer-sign">网络管理插件 v1.8.16</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -7749,7 +7911,7 @@ loadSshLog();
             <div id="bd_body" style="background:#ffffff;border:1px solid #e5e7eb;border-radius:6px;padding:4px;color:#1f2937;max-height:420px;overflow-y:auto;"></div>
         </div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.15</div>
+    <div class="footer-sign">网络管理插件 v1.8.16</div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -7873,7 +8035,7 @@ loadAccessLog();
 ### 5.15 files/usr/lib/lua/luci/view/netmanager/settings.htm
 
 - **用途**：设置页（最复杂视图，1100 行）：默认目标 / 备份恢复 / 插件更新 / 在线更新 / 中国 IPv4·IPv6 过滤 / 黑名单 / 运行日志 / 卸载
-- **规模**：1107 行
+- **规模**：1131 行
 - **维护要点**：三个版本号登记处（L186/L305/L338）；备份列表与过滤状态均需 escapeHtml + 数组下标传参
 
 ```html
@@ -7938,6 +8100,14 @@ loadAccessLog();
                         <input type="text" id="china_cron_custom" placeholder="5段cron: 分 时 日 月 周" style="width:200px; display:none; margin-left:8px;">
                         <button class="btn btn-secondary btn-sm" onclick="saveChinaCron()">保存计划</button>
                         <span class="text-muted" style="margin-left:8px; font-size:12px;">仅允许 0-9 * / , - 字符</span>
+                    </td>
+                </tr>
+                <tr>
+                    <td>放行上级网关</td>
+                    <td>
+                        <label style="margin-right:8px;"><input type="checkbox" id="china_allow_wan"> 放行 WAN 同网段来源</label>
+                        <button class="btn btn-secondary btn-sm" onclick="saveChinaAllowWan()">保存</button>
+                        <span class="text-muted" style="margin-left:8px; font-size:12px;">光猫拨号/桥接时，上级光猫的私网地址不在 china.txt 里；开启后只放行“与本机 WAN 同网段”的地址</span>
                     </td>
                 </tr>
                 <tr>
@@ -8062,7 +8232,7 @@ loadAccessLog();
             <table class="netmanager-table" style="margin-bottom:10px;">
                 <tr>
                     <td width="30%">当前版本</td>
-                    <td><b id="online_cur_version">v1.8.15</b></td>
+                    <td><b id="online_cur_version">v1.8.16</b></td>
                 </tr>
                 <tr>
                     <td>最新版本</td>
@@ -8181,7 +8351,7 @@ loadAccessLog();
         <h3>关于插件</h3>
         <table class="netmanager-table">
             <tr><td width="30%">插件名称</td><td>网络管理 (luci-app-netmanager)</td></tr>
-            <tr><td>版本</td><td id="plugin_version">v1.8.15</td></tr>
+            <tr><td>版本</td><td id="plugin_version">v1.8.16</td></tr>
             <tr><td>作者</td><td><b>吾爱破解liyu0828</b></td></tr>
             <tr><td>仓库地址</td><td><a href="https://github.com/District1655/luci-app-netmanager" target="_blank" style="color:#2563eb;">https://github.com/District1655/luci-app-netmanager</a></td></tr>
             <tr><td>适配系统</td><td>iStoreOS / OpenWrt (fw4/nftables)</td></tr>
@@ -8214,7 +8384,7 @@ loadAccessLog();
             </div>
         </div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.15<br><span style="font-size:10px;">适配 iStoreOS / OpenWrt | 基于 fw4/nftables</span></div>
+    <div class="footer-sign">网络管理插件 v1.8.16<br><span style="font-size:10px;">适配 iStoreOS / OpenWrt | 基于 fw4/nftables</span></div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -8647,7 +8817,7 @@ function uploadPlugin() {
 function loadChinaStatus() {
     nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_status'})
     .then(r => r.text()).then(data => {
-        let en='0', url='', cron='', lu='', cnt='0', devs='', active='0';
+        let en='0', url='', cron='', lu='', cnt='0', devs='', active='0', peers='1', peersList='-';
         data.split('\n').forEach(line => {
             const idx = line.indexOf('=');
             if (idx > 0) {
@@ -8659,6 +8829,8 @@ function loadChinaStatus() {
                 else if (k === 'COUNT') cnt = v;
                 else if (k === 'WAN_DEVS') devs = v;
                 else if (k === 'RULE_ACTIVE') active = v;
+                else if (k === 'ALLOW_WAN_PEERS') peers = v;
+                else if (k === 'WAN_PEERS') peersList = v;
             }
         });
         const ruleBadge = active === '1'
@@ -8667,9 +8839,12 @@ function loadChinaStatus() {
         const statusBadge = en === '1' ? '<span class="badge badge-green">已启用</span>' + ruleBadge : '<span class="badge badge-gray">已关闭</span>';
         document.getElementById('china_status_cell').innerHTML = statusBadge;
         document.getElementById('china_url').value = url;
+        const aw = document.getElementById('china_allow_wan');
+        if (aw) aw.checked = (peers === '1');
         // 【安全 v1.4.7】lu/cnt/devs 来自后端命令输出（WAN_DEVS 含接口名），写入前必须转义
         document.getElementById('china_update_cell').innerHTML = '上次更新: ' + escapeHtml(lu || '未更新') + ' | CIDR条数: <b>' + escapeHtml(cnt) + '</b>';
-        document.getElementById('china_wan_cell').innerHTML = 'WAN设备: <code>' + escapeHtml(devs || '(未探测到)') + '</code> | 规则: ' + (active === '1' ? '<span class="text-success">生效中</span>' : '<span class="text-muted">未生效</span>');
+        document.getElementById('china_wan_cell').innerHTML = 'WAN设备: <code>' + escapeHtml(devs || '(未探测到)') + '</code> | 规则: ' + (active === '1' ? '<span class="text-success">生效中</span>' : '<span class="text-muted">未生效</span>')
+            + ' | 放行同段: ' + (peers === '1' ? '<code>' + escapeHtml(peersList && peersList !== '-' ? peersList : '无') + '</code>' : '<span class="text-muted">已关闭</span>');
         // cron 预设回填
         const sel = document.getElementById('china_cron_preset');
         const customInput = document.getElementById('china_cron_custom');
@@ -8708,6 +8883,17 @@ function saveChinaUrl() {
     nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_set_url&url=' + encodeURIComponent(url)})
     .then(r => r.text()).then(data => {
         document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+    });
+}
+
+// v1.8.16：保存"放行 WAN 同网段来源"开关（上级光猫/网关访问）
+function saveChinaAllowWan() {
+    const el = document.getElementById('china_allow_wan');
+    const val = el && el.checked ? '1' : '0';
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_set_allow_wan&value=' + val})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        loadChinaStatus();
     });
 }
 
@@ -9209,12 +9395,12 @@ exit 0
 ```bash
 #!/bin/ash
 # ============================================================
-# 网络管理插件 (luci-app-netmanager) - 一键安装脚本 v1.8.15
+# 网络管理插件 (luci-app-netmanager) - 一键安装脚本 v1.8.16
 # 由 luci-app-fwmanager (防火墙管理) 与 luci-app-dnssettings (DNS设置) 合并而成
 # ============================================================
 
 echo "============================================"
-echo "  网络管理插件 (luci-app-netmanager) v1.8.15"
+echo "  网络管理插件 (luci-app-netmanager) v1.8.16"
 echo "  防火墙管理 + DNS设置 一体化"
 echo "============================================"
 echo ""
@@ -9357,7 +9543,7 @@ echo "============================================"
 ### 5.22 .github/workflows/build.yml
 
 - **用途**：CI：push main 时从 README 提版本 → 语法门禁 → 打 tar.gz → 打 tag → 发 Release（body 取自更新日志）
-- **规模**：252 行
+- **规模**：276 行
 - **维护要点**：tag 已存在则整条跳过；重发同版本用 workflow_dispatch 勾 force
 
 ````yaml
@@ -9379,6 +9565,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # 用于触发 publish-istore.yml（GITHUB_TOKEN 不能触发 release 事件，但可以调 workflow_dispatch）
+      actions: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -9553,7 +9741,7 @@ jobs:
             - **DNS设置（v1.4.0 新增）**：WAN口上游DNS / LAN口设备下发DNS / dnsmasq全局转发，IPv4+IPv6双栈，一键应用与配置备份
             - **静态IPv6分配（v1.4.0 新增）**：基于MAC绑定 hostid/ip6/DUID，自动合并重复条目与 hostid 冲突检测
             - 设置（默认目标IP/安全建议/系统工具/配置备份/插件在线更新/运行日志排错）
-            - **中国IPv4访问限制（继承自 v1.3.33）**：仅允许中国大陆 IPv4 访问已开放端口（DNAT+路由器本地开放端口），境外 IPv4 新建连接丢弃；默认订阅 `https://metowolf.github.io/iplist/data/special/china.txt`，支持自定义订阅链接与自定义 cron 更新计划；开机 init + WAN hotplug 自愈；**旧版 nft 自动降级兼容**（modern `flags interval, auto-merge` 分片加载 / compat `flags interval` 单次原子加载 + 逐行回退）
+            - **中国IPv4访问限制（继承自 v1.3.33）**：仅允许中国大陆 IPv4 访问已开放端口（DNAT+路由器本地开放端口），境外 IPv4 新建连接丢弃；默认订阅 `https://metowolf.github.io/iplist/data/special/china.txt`，支持自定义订阅链接与自定义 cron 更新计划；开机 init + WAN hotplug 自愈；**旧版 nft 自动降级兼容**（modern `flags interval, auto-merge` 分片加载 / compat `flags interval` 单次原子加载 + 逐行回退）；**v1.8.16 起自动放行 WAN 口同网段来源**（上级光猫/网关在私网段时不再被误杀，可用 `china_filter allow_wan off` 关闭）
             - **中国IPv6访问限制（v1.7.0 新增）**：与 IPv4 对称，独立 nft 表 `inet netmanager6`，仅允许中国大陆 IPv6 访问已开放端口；默认订阅 `https://ispip.clang.cn/all_cn_ipv6.txt`，订阅与 cron 可自定义；开机/WAN hotplug 自愈
             - **手动黑名单（v1.7.0 新增）**：IPv4/IPv6 单 IP 与 CIDR 网段拉黑，独立 nft 表 `inet netmanager_ban`，条目持久化并自动恢复
 
@@ -9614,13 +9802,35 @@ jobs:
 
             > 也可在「设置」页面点击「一键卸载插件」按钮卸载（支持保留配置勾选）。卸载不影响用户在 /etc/config/firewall 中的端口转发与防火墙规则。
 
+      # 说明：GitHub 规定 GITHUB_TOKEN 产生的 release 事件不会递归触发其它 workflow，
+      #       所以这里显式触发 publish-istore.yml（workflow_dispatch 属于允许的例外），
+      #       否则 Release 里永远只有 tar.gz，没有 ipk/apk，也不会提上架 PR。
+      - name: Trigger istore publish workflow
+        if: steps.check.outputs.exists == 'false' || inputs.force == true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run publish-istore.yml \
+            -f version="${{ steps.version.outputs.version }}" \
+            -f release=1 \
+            --repo "${{ github.repository }}"
+          echo "已触发 Publish to iStore（version=${{ steps.version.outputs.version }} / release=1）"
+
+      # 版本历史只留最近 10 个：Tag 与 Release 同步清理，避免页面越堆越长
+      - name: Prune old releases & tags (keep latest 10)
+        if: steps.check.outputs.exists == 'false' || inputs.force == true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KEEP: '10'
+        run: bash tools/prune_history.sh
+
 
 ````
 
 ### 5.23 .github/workflows/publish-istore.yml
 
 - **用途**：CI：Release 发布后构建 ipk/apk、上传 Release 资产、自动向 istoreos/istore-repo（pending）与 openwrt-app-meta（main）提 PR
-- **规模**：107 行
+- **规模**：118 行
 - **维护要点**：依赖 ISTORE_TOKEN；未配置只构建不提 PR；支持 dry_run/version/release 三个手动入参
 
 ```yaml
@@ -9698,11 +9908,22 @@ jobs:
       - name: 产物清单
         run: ls -lh dist
 
+      # 两种触发方式都要能挂资产：release 事件用 event.release.tag_name，
+      # workflow_dispatch（含 build.yml 末尾显式触发）用计算出的 v<version>
       - name: 追加到 Release 资产
-        if: github.event_name == 'release'
+        if: inputs.dry_run != true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${{ github.event.release.tag_name }}" dist/* --clobber
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          [ -n "$TAG" ] || TAG="v${{ steps.ver.outputs.version }}"
+          echo "上传到 Release: $TAG"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+            gh release view "$TAG" --json assets --jq '.assets[]|"\(.name)  \(.size)"'
+          else
+            echo "::warning::Release $TAG 不存在，跳过上传（先让 build.yml 发版）"
+          fi
 
       - name: 检查是否配置了 ISTORE_TOKEN
         id: token
@@ -10695,7 +10916,7 @@ if __name__ == "__main__":
 ### 5.31 docs/CHANGELOG.md
 
 - **用途**：全部历史版本记录（v1.8.14 → v1.4.0 → 继承 fwmanager v1.3.33），GitHub Release body 的来源
-- **规模**：388 行
+- **规模**：395 行
 - **维护要点**：段落标题必须保持 `### vX.Y.Z (日期)`（build.yml 的 awk 按此匹配）；每版在顶部新增小节
 
 ```markdown
@@ -10707,6 +10928,13 @@ if __name__ == "__main__":
 > `README.md` 只保留「最近一版要点 + 指向本文件的链接」。
 
 > **2026-11-26 工程更新（版本号不变，交付形态与 CI 变更）**：新增 ipk/apk 双格式打包（`tools/`）、iStore 软件中心上架元数据（`istore/app-meta/`）、Release 后自动构建并提 PR 到 `istoreos/istore-repo` 与 `istoreos/openwrt-app-meta` 的流水线（`.github/workflows/publish-istore.yml`）；README 安装章节按 apk/opkg 双体系重写。
+
+### v1.8.16 (2026-11-27)
+- **修复：上级光猫/网关访问不到路由器（issue #1）**。此前白名单规则为「`iifname {WAN}` 且 `ip saddr != @china_v4` → drop」，而 `china.txt` 只收录**大陆公网**地址段；光猫拨号/桥接场景下 WAN 口落在私网段（如 `192.168.1.0/24`），光猫自身的私网 IP 不在集合里 → 被当成境外地址丢弃。现在规则解析出 **WAN 口自身所在网段**，在 drop 之前放行该网段来源（`get_wan_prefixes`，纯 shell 算 CIDR，不依赖 ipcalc；PPP 点对点接口按 `peer` 后的掩码解析）。只放行“与自己同段”的地址，**不是**把整个 RFC1918 灌进去，攻击面几乎不变。
+- **新增开关「放行上级网关」**：`uci netmanager.settings.china_filter_allow_wan_peers`（默认 1），设置页中国 IPv4 区块新增勾选框与保存按钮（`china_filter_set_allow_wan`），命令行 `netmanager china_filter allow_wan on|off|status`；`china_filter status` 增加 `ALLOW_WAN_PEERS` / `WAN_PEERS` 两行，设置页「生效WAN口 / 规则」一行同时显示放行网段。
+- **IPv6 侧对称修复**：`china6` 链在 drop 前放行 `fd00::/8`（ULA）与 WAN 口自身 `/64`（此前只放行 `fe80::/10`、`ff00::/8` 与 DHCPv6），避免光猫用私网 IPv6 访问时被误杀。
+- **调试钩子（不改变正常行为）**：`NM_WAN_DEVS_OVERRIDE` 可临时指定 WAN 设备列表、`NM_RULES_ONLY=1` 只打印生成的 nft 规则不落盘，供真机复现与排查。
+- **真机验证（iStoreOS 25.12.6 / x86_64 / nft 1.1.6）**：用 veth + netns 构造「同段邻居」场景，老规则 4 个 SYN 全部命中 drop；新规则 24 个 SYN 全部命中 accept、drop 计数为 0；本机 PPPoE（`/32`）场景解析为 `223.167.209.134/32`，规则与 IPv4/IPv6 链均正常重建，drop 计数继续增长（境外扫描仍被拦）。
 
 ### v1.8.15 (2026-11-26)
 - **新增 ipk / apk 双格式安装包（随 Release 自动产出）**：iStoreOS 25.12+（apk-tools，系统内无 opkg）装 `luci-app-netmanager-<版本>-r<rel>.apk`；iStoreOS 24.10 / OpenWrt 23.05–24.10 装 `luci-app-netmanager_<版本>-r<rel>_all.ipk`；`tar.gz + install.sh` 保留为未适配架构与开发态的兜底路径。产物由 `tools/build_ipk.py`、`tools/build_apk.sh` 生成（固定 mtime、目录 755 / 文件 644、conffiles 与 postinst/prerm 钩子）。
@@ -11200,13 +11428,13 @@ dist/
 ### 5.35 README.md
 
 - **用途**：用户文档：功能 / 安装（apk·ipk·脚本三路）/ CLI / 配置说明 / 构建与发版 / 更新日志
-- **规模**：399 行
+- **规模**：416 行
 - **维护要点**：L3 版本号是 build.yml 的 tag 提取源（登记处 12）；更新日志已迁到 docs/CHANGELOG.md，本文件只留最近一版摘要
 
 ````markdown
 # 网络管理插件 (luci-app-netmanager)
 
-> 版本：v1.8.15
+> 版本：v1.8.16
 >
 > 适配：iStoreOS 25.12+（apk）/ iStoreOS 24.10 及 OpenWrt 23.05+（opkg / ipk），fw4 + nftables，Lua LuCI
 >
@@ -11297,13 +11525,15 @@ luci-app-netmanager/
 ├── tools/
 │   ├── build_ipk.py                          # 打 ipk（opkg 系统，tar.gz 外壳，CI/本地通用）
 │   ├── build_apk.sh                          # 打 apk（iStoreOS 25.12+，用 openwrt-sdk-mini 的 apk mkpkg）
-│   └── publish_istore.sh                     # 向 istoreos/istore-repo、istoreos/openwrt-app-meta 提 PR
+│   ├── publish_istore.sh                     # 向 istoreos/istore-repo、istoreos/openwrt-app-meta 提 PR
+│   └── prune_history.sh                      # 只保留最近 10 个版本的 Tag/Release（KEEP/sort -V 可调）
 ├── istore/app-meta/
 │   ├── Makefile                              # 软件中心卡片元数据模板（PKG_VERSION/PKG_RELEASE 由脚本注入）
 │   └── logo.png                              # 软件中心图标（256×256，<50KB）
 ├── .github/workflows/
 │   ├── build.yml                             # 打 tag + 发 Release（tar.gz + changelog 提取）
 │   ├── publish-istore.yml                    # Release 后自动构建 ipk/apk + 提 PR 到 iStore 官方仓库
+│   ├── prune-history.yml                     # 手动清理历史版本（可改保留数量 / 预演）
 │   └── extract_changelog.awk                 # Release body 提取脚本
 ├── docs/
 │   ├── CHANGELOG.md                          # 全部历史版本记录（Release body 的来源）
@@ -11384,6 +11614,20 @@ VERSION=1.8.14 RELEASE=1 FILES=files OUT=dist bash tools/build_apk.sh
 4. `build.yml`：校验两处版本一致 → `sh -n` / `luac -p` 门禁 → 打 `tar.gz` → 打 tag → 发 Release（tag 已存在则整条跳过，可手动 `workflow_dispatch` 勾 `force`）
 5. `publish-istore.yml`（Release published 事件触发）：构建 `ipk` + `apk` → 上传为 Release 资产 → 自动向 `istoreos/istore-repo`（base `pending`）与 `istoreos/openwrt-app-meta`（base `main`）提 PR
 6. 官方合并 `pending` 后，上游 `ci-pending.yml` 会把包 cherry-pick 到 main、删同名旧包、刷新索引，软件中心即更新
+7. 发版末尾自动清理历史：`tools/prune_history.sh` 只保留版本号最高的 10 个 Tag 与 Release，更早的连 Release 带 tag 一起删（按版本号排序，不是按发布时间；`docs/CHANGELOG.md` 里的文字记录不受影响）
+
+### 版本历史保留策略
+
+仓库不无限堆历史版本：`build.yml` 每次发版后调用 `tools/prune_history.sh`，只留最近 10 个。想改数量或先看要删什么：
+
+```bash
+# 预演（不删任何东西）
+gh workflow run prune-history.yml -f keep=10 -f dry_run=true
+# 真删（如改成保留 20 个）
+gh workflow run prune-history.yml -f keep=20
+```
+
+本地同样可跑（需要 `gh` 已登录）：`KEEP=10 DRY_RUN=1 bash tools/prune_history.sh`。
 
 ### 一次性配置（已配好）
 
@@ -11478,6 +11722,7 @@ netmanager china_filter disable                # 关闭（清规则 + 移cron，
 netmanager china_filter update                 # 更新IP库并重应用规则
 netmanager china_filter set_url <url>          # 自定义订阅链接
 netmanager china_filter set_cron "0 4 * * *"   # 自定义更新计划cron
+netmanager china_filter allow_wan on|off       # 是否放行 WAN 同网段来源（上级光猫/网关），v1.8.16+
 
 # 中国IPv6访问限制（v1.7.0+）
 netmanager china6_filter status                # 查看状态
@@ -11591,14 +11836,14 @@ IPv4（每行一个 CIDR）：
 
 ## 更新日志
 
-完整历史版本记录（v1.8.15 → v1.4.0 → 继承 fwmanager v1.3.33）已归档到 **[`docs/CHANGELOG.md`](docs/CHANGELOG.md)**，`build.yml` 从那里提取当前版本段落作为 GitHub Release body。
+完整历史版本记录（v1.8.16 → v1.4.0 → 继承 fwmanager v1.3.33）已归档到 **[`docs/CHANGELOG.md`](docs/CHANGELOG.md)**，`build.yml` 从那里提取当前版本段落作为 GitHub Release body。
 
-**最近一版：v1.8.15（2026-11-26）**
+**最近一版：v1.8.16（2026-11-27）**
 
-- **Release 同时提供 `.apk` 与 `.ipk`**：25.12+ 用 apk，24.10 及更早用 ipk，`tar.gz` 保留兜底
-- **iStore 软件中心上架进行中**：`istore/app-meta/` 元数据 + 官方目录规范出包，发版后自动向 `istoreos/istore-repo`、`istoreos/openwrt-app-meta` 提 PR
-- **发版全自动**：Release 发布即构建 ipk/apk、上传资产、提 PR；忘写更新日志时 CI 自动按提交记录补一节
-- **修复**：install.sh 横幅与各页面页脚版本号统一到 1.8.15
+- **修复上级光猫/网关访问不到路由器**：白名单只认 `china.txt` 里的大陆公网段，光猫在私网段（如 `192.168.1.0/24`）时会被当成境外地址丢弃；现在自动解析 WAN 口自身网段并在 drop 前放行（issue #1）
+- **新增「放行上级网关」开关**：设置页可勾选，`netmanager china_filter allow_wan on|off` 同效；状态里显示实际放行的网段
+- **IPv6 对称修复**：`fd00::/8`（ULA）与 WAN 口自身 `/64` 也在 drop 前放行
+- **真机验证**：veth + netns 复现，老规则全丢、新规则全过；PPPoE `/32`、IPv4/IPv6 链均正常
 
 ## 许可证
 

@@ -461,6 +461,12 @@ function api_handler()
     elseif action == "china_filter_set_cron" then
         local cron = luci.http.formvalue("cron") or ""
         cmd = string.format("/usr/sbin/netmanager china_filter set_cron %s", shell_escape(cron))
+    elseif action == "china_filter_set_allow_wan" then
+        -- v1.8.16：放行 WAN 同网段来源开关（上级光猫/网关访问）
+        local v = luci.http.formvalue("value") or "1"
+        if v ~= "1" and v ~= "0" then v = "1" end
+        cmd = string.format("/usr/sbin/netmanager china_filter allow_wan %s",
+            v == "1" and "on" or "off")
     elseif action == "china6_filter_status" then
         cmd = "/usr/sbin/netmanager china6_filter status"
     elseif action == "china6_filter_enable" then

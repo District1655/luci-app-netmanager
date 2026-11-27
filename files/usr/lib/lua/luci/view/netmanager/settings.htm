@@ -62,6 +62,14 @@
                     </td>
                 </tr>
                 <tr>
+                    <td>放行上级网关</td>
+                    <td>
+                        <label style="margin-right:8px;"><input type="checkbox" id="china_allow_wan"> 放行 WAN 同网段来源</label>
+                        <button class="btn btn-secondary btn-sm" onclick="saveChinaAllowWan()">保存</button>
+                        <span class="text-muted" style="margin-left:8px; font-size:12px;">光猫拨号/桥接时，上级光猫的私网地址不在 china.txt 里；开启后只放行“与本机 WAN 同网段”的地址</span>
+                    </td>
+                </tr>
+                <tr>
                     <td>上次更新 / 条数</td>
                     <td id="china_update_cell"><span class="text-muted">—</span></td>
                 </tr>
@@ -183,7 +191,7 @@
             <table class="netmanager-table" style="margin-bottom:10px;">
                 <tr>
                     <td width="30%">当前版本</td>
-                    <td><b id="online_cur_version">v1.8.15</b></td>
+                    <td><b id="online_cur_version">v1.8.16</b></td>
                 </tr>
                 <tr>
                     <td>最新版本</td>
@@ -302,7 +310,7 @@
         <h3>关于插件</h3>
         <table class="netmanager-table">
             <tr><td width="30%">插件名称</td><td>网络管理 (luci-app-netmanager)</td></tr>
-            <tr><td>版本</td><td id="plugin_version">v1.8.15</td></tr>
+            <tr><td>版本</td><td id="plugin_version">v1.8.16</td></tr>
             <tr><td>作者</td><td><b>吾爱破解liyu0828</b></td></tr>
             <tr><td>仓库地址</td><td><a href="https://github.com/District1655/luci-app-netmanager" target="_blank" style="color:#2563eb;">https://github.com/District1655/luci-app-netmanager</a></td></tr>
             <tr><td>适配系统</td><td>iStoreOS / OpenWrt (fw4/nftables)</td></tr>
@@ -335,7 +343,7 @@
             </div>
         </div>
     </div>
-    <div class="footer-sign">网络管理插件 v1.8.15<br><span style="font-size:10px;">适配 iStoreOS / OpenWrt | 基于 fw4/nftables</span></div>
+    <div class="footer-sign">网络管理插件 v1.8.16<br><span style="font-size:10px;">适配 iStoreOS / OpenWrt | 基于 fw4/nftables</span></div>
 </div>
 <script>
 const API_URL = '<%=luci.dispatcher.build_url("admin/netmanager/api")%>';
@@ -768,7 +776,7 @@ function uploadPlugin() {
 function loadChinaStatus() {
     nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_status'})
     .then(r => r.text()).then(data => {
-        let en='0', url='', cron='', lu='', cnt='0', devs='', active='0';
+        let en='0', url='', cron='', lu='', cnt='0', devs='', active='0', peers='1', peersList='-';
         data.split('\n').forEach(line => {
             const idx = line.indexOf('=');
             if (idx > 0) {
@@ -780,6 +788,8 @@ function loadChinaStatus() {
                 else if (k === 'COUNT') cnt = v;
                 else if (k === 'WAN_DEVS') devs = v;
                 else if (k === 'RULE_ACTIVE') active = v;
+                else if (k === 'ALLOW_WAN_PEERS') peers = v;
+                else if (k === 'WAN_PEERS') peersList = v;
             }
         });
         const ruleBadge = active === '1'
@@ -788,9 +798,12 @@ function loadChinaStatus() {
         const statusBadge = en === '1' ? '<span class="badge badge-green">已启用</span>' + ruleBadge : '<span class="badge badge-gray">已关闭</span>';
         document.getElementById('china_status_cell').innerHTML = statusBadge;
         document.getElementById('china_url').value = url;
+        const aw = document.getElementById('china_allow_wan');
+        if (aw) aw.checked = (peers === '1');
         // 【安全 v1.4.7】lu/cnt/devs 来自后端命令输出（WAN_DEVS 含接口名），写入前必须转义
         document.getElementById('china_update_cell').innerHTML = '上次更新: ' + escapeHtml(lu || '未更新') + ' | CIDR条数: <b>' + escapeHtml(cnt) + '</b>';
-        document.getElementById('china_wan_cell').innerHTML = 'WAN设备: <code>' + escapeHtml(devs || '(未探测到)') + '</code> | 规则: ' + (active === '1' ? '<span class="text-success">生效中</span>' : '<span class="text-muted">未生效</span>');
+        document.getElementById('china_wan_cell').innerHTML = 'WAN设备: <code>' + escapeHtml(devs || '(未探测到)') + '</code> | 规则: ' + (active === '1' ? '<span class="text-success">生效中</span>' : '<span class="text-muted">未生效</span>')
+            + ' | 放行同段: ' + (peers === '1' ? '<code>' + escapeHtml(peersList && peersList !== '-' ? peersList : '无') + '</code>' : '<span class="text-muted">已关闭</span>');
         // cron 预设回填
         const sel = document.getElementById('china_cron_preset');
         const customInput = document.getElementById('china_cron_custom');
@@ -829,6 +842,17 @@ function saveChinaUrl() {
     nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_set_url&url=' + encodeURIComponent(url)})
     .then(r => r.text()).then(data => {
         document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+    });
+}
+
+// v1.8.16：保存"放行 WAN 同网段来源"开关（上级光猫/网关访问）
+function saveChinaAllowWan() {
+    const el = document.getElementById('china_allow_wan');
+    const val = el && el.checked ? '1' : '0';
+    nmFetch({method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=china_filter_set_allow_wan&value=' + val})
+    .then(r => r.text()).then(data => {
+        document.getElementById('action_result').innerHTML = '<pre class="result-pre">' + escapeHtml(data) + '</pre>';
+        loadChinaStatus();
     });
 }
 

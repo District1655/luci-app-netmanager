@@ -1,6 +1,6 @@
 # 网络管理插件 (luci-app-netmanager)
 
-> 版本：v1.8.15
+> 版本：v1.8.16
 >
 > 适配：iStoreOS 25.12+（apk）/ iStoreOS 24.10 及 OpenWrt 23.05+（opkg / ipk），fw4 + nftables，Lua LuCI
 >
@@ -288,6 +288,7 @@ netmanager china_filter disable                # 关闭（清规则 + 移cron，
 netmanager china_filter update                 # 更新IP库并重应用规则
 netmanager china_filter set_url <url>          # 自定义订阅链接
 netmanager china_filter set_cron "0 4 * * *"   # 自定义更新计划cron
+netmanager china_filter allow_wan on|off       # 是否放行 WAN 同网段来源（上级光猫/网关），v1.8.16+
 
 # 中国IPv6访问限制（v1.7.0+）
 netmanager china6_filter status                # 查看状态
@@ -401,14 +402,14 @@ IPv4（每行一个 CIDR）：
 
 ## 更新日志
 
-完整历史版本记录（v1.8.15 → v1.4.0 → 继承 fwmanager v1.3.33）已归档到 **[`docs/CHANGELOG.md`](docs/CHANGELOG.md)**，`build.yml` 从那里提取当前版本段落作为 GitHub Release body。
+完整历史版本记录（v1.8.16 → v1.4.0 → 继承 fwmanager v1.3.33）已归档到 **[`docs/CHANGELOG.md`](docs/CHANGELOG.md)**，`build.yml` 从那里提取当前版本段落作为 GitHub Release body。
 
-**最近一版：v1.8.15（2026-11-26）**
+**最近一版：v1.8.16（2026-11-27）**
 
-- **Release 同时提供 `.apk` 与 `.ipk`**：25.12+ 用 apk，24.10 及更早用 ipk，`tar.gz` 保留兜底
-- **iStore 软件中心上架进行中**：`istore/app-meta/` 元数据 + 官方目录规范出包，发版后自动向 `istoreos/istore-repo`、`istoreos/openwrt-app-meta` 提 PR
-- **发版全自动**：Release 发布即构建 ipk/apk、上传资产、提 PR；忘写更新日志时 CI 自动按提交记录补一节
-- **修复**：install.sh 横幅与各页面页脚版本号统一到 1.8.15
+- **修复上级光猫/网关访问不到路由器**：白名单只认 `china.txt` 里的大陆公网段，光猫在私网段（如 `192.168.1.0/24`）时会被当成境外地址丢弃；现在自动解析 WAN 口自身网段并在 drop 前放行（issue #1）
+- **新增「放行上级网关」开关**：设置页可勾选，`netmanager china_filter allow_wan on|off` 同效；状态里显示实际放行的网段
+- **IPv6 对称修复**：`fd00::/8`（ULA）与 WAN 口自身 `/64` 也在 drop 前放行
+- **真机验证**：veth + netns 复现，老规则全丢、新规则全过；PPPoE `/32`、IPv4/IPv6 链均正常
 
 ## 许可证
 

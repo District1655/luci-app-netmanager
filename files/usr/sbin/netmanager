@@ -12,7 +12,7 @@ LOG_FILE="$LOG_DIR/run.log"
 LOG_ENABLED=0
 
 # 在线更新配置：版本号与 GitHub 仓库（发版时同步修改 PLUGIN_VERSION）
-PLUGIN_VERSION="1.8.15"
+PLUGIN_VERSION="1.8.16"
 REPO_OWNER="District1655"
 REPO_NAME="luci-app-netmanager"
 REPO_BASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
@@ -107,6 +107,12 @@ load_config() {
         uci set netmanager.settings.china_filter_cron='0 3 * * 0'
         uci set netmanager.settings.china_filter_last_update=''
         uci set netmanager.settings.china_filter_count='0'
+        uci commit netmanager 2>/dev/null
+    fi
+    # v1.8.16：放行 WAN 口同网段来源（上级光猫/网关等私网邻居）
+    # 默认开启；选项缺失时补写，不覆盖用户已有设置
+    if [ -z "$(uci get netmanager.settings.china_filter_allow_wan_peers 2>/dev/null)" ]; then
+        uci set netmanager.settings.china_filter_allow_wan_peers='1'
         uci commit netmanager 2>/dev/null
     fi
     # 补齐中国IPv6过滤相关默认值（仅在选项缺失时写入，不覆盖用户已自定义值）
@@ -2805,6 +2811,7 @@ cmd_settings() {
     echo "CHINA_FILTER_CRON=$(uci get netmanager.settings.china_filter_cron 2>/dev/null || echo '0 3 * * 0')"
     echo "CHINA_FILTER_LAST_UPDATE=$(uci get netmanager.settings.china_filter_last_update 2>/dev/null)"
     echo "CHINA_FILTER_COUNT=$(uci get netmanager.settings.china_filter_count 2>/dev/null || echo 0)"
+    echo "CHINA_FILTER_ALLOW_WAN_PEERS=$(uci get netmanager.settings.china_filter_allow_wan_peers 2>/dev/null || echo 1)"
     echo "CHINA6_FILTER_ENABLED=$(uci get netmanager.settings.china6_filter_enable 2>/dev/null || echo 0)"
     echo "CHINA6_FILTER_URL=$(uci get netmanager.settings.china6_filter_url 2>/dev/null || echo 'https://ispip.clang.cn/all_cn_ipv6.txt')"
     echo "CHINA6_FILTER_CRON=$(uci get netmanager.settings.china6_filter_cron 2>/dev/null || echo '0 3 * * 0')"
@@ -2851,6 +2858,11 @@ china_get_enable() {
 # 探测 WAN 设备名（去重、空格分隔），用于 iifname 匹配
 get_wan_devs() {
     local devs="" d nd val zn net
+    # 0) 调试/测试钩子：直接指定设备列表（真机复现与 CI 用，正常运行时为空）
+    if [ -n "${NM_WAN_DEVS_OVERRIDE:-}" ]; then
+        echo "$NM_WAN_DEVS_OVERRIDE" | tr ' ' '\n' | grep -E '^[a-zA-Z0-9._@-]+$' | sort -u | tr '\n' ' '
+        return 0
+    fi
     # 1) 默认路由设备（IPv4/IPv6 双栈都纳入，避免仅 v6 有默认路由时探测失败）
     d=$(ip -4 route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
     [ -n "$d" ] && devs="$d"
@@ -2882,6 +2894,69 @@ get_wan_devs() {
     done
     # 去重 + 仅保留合法接口名
     echo "$devs" | tr ' ' '\n' | grep -E '^[a-zA-Z0-9._@-]+$' | sort -u | grep -v '^$' | tr '\n' ' '
+}
+
+# IPv4 地址 + 前缀长度 → 网段 CIDR（如 192.168.1.5/24 → 192.168.1.0/24）
+# 纯 shell 实现，不依赖 ipcalc（OpenWrt 默认没有）
+cidr_of_addr() {
+    local ip="$1" p="$2" a b c d oct i=0 rem size out=""
+    set -- $(echo "$ip" | tr '.' ' ')
+    a=$1; b=$2; c=$3; d=$4
+    for oct in "$a" "$b" "$c" "$d"; do
+        rem=$(( p - i * 8 ))
+        if [ "$rem" -le 0 ]; then
+            oct=0
+        elif [ "$rem" -ge 8 ]; then
+            oct=$oct
+        else
+            size=$(( 1 << (8 - rem) ))
+            oct=$(( oct - oct % size ))
+        fi
+        out="${out}${out:+.}${oct}"
+        i=$(( i + 1 ))
+    done
+    echo "${out}/${p}"
+}
+
+# 探测 WAN 口自身所在的 IPv4 网段（上级光猫/网关通常就在这段里）
+# 只放行"与自己同段"的来源，比直接放行整个 RFC1918 精确得多
+get_wan_prefixes() {
+    local devs="${1:-}" dev addr out="" parsed a b
+    for dev in $devs; do
+        # 注意 PPP 点对点接口的 `ip -o addr` 输出是 "inet 223.x.x.x peer 223.x.x.1/32"
+        # 只有 /32 掩码信息在 peer 后面，必须单独解析，否则拿不到前缀
+        parsed=$(ip -4 -o addr show dev "$dev" 2>/dev/null | awk '{
+            ip=""; p="32";
+            for (i=1;i<=NF;i++) {
+                if ($i=="inet") { v=$(i+1); if (v ~ /\//) { split(v,z,"/"); ip=z[1]; p=z[2] } else { ip=v } }
+                else if ($i=="peer") { v=$(i+1); if (v ~ /\//) { split(v,z,"/"); p=z[2] } }
+            }
+            if (ip!="") print ip, p
+        }')
+        set -- $parsed
+        while [ $# -gt 0 ]; do
+            a=$1; b=${2:-32}; shift 2
+            [ -n "$a" ] && out="$out $(cidr_of_addr "$a" "$b")"
+        done
+    done
+    echo "$out" | tr ' ' '\n' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$' | sort -u | tr '\n' ' '
+}
+
+# 探测 WAN 口自身所在的 IPv6 网段（按 /64 取前 4 组；链路本地 fe80 已单独放行，不重复加）
+get_wan_prefixes6() {
+    local devs="${1:-}" dev addr out=""
+    for dev in $devs; do
+        for addr in $(ip -6 -o addr show dev "$dev" 2>/dev/null | awk '{print $4}'); do
+            case "$addr" in
+                *fe80*) continue ;;
+            esac
+            # 只处理标准 8 组写法，压缩写法（::）交给集合兜底
+            local groups
+            groups=$(echo "$addr" | cut -d/ -f1 | awk -F: 'NF>=8{print $1":"$2":"$3":"$4"::/64"}')
+            [ -n "$groups" ] && out="$out $groups"
+        done
+    done
+    echo "$out" | tr ' ' '\n' | grep -E '^[0-9a-fA-F:]+::/64$' | sort -u | tr '\n' ' '
 }
 
 # 创建 china_v4 集合（兼容旧版 nft：先尝试 interval,auto-merge；失败则降级仅 interval）
@@ -3074,6 +3149,16 @@ china_apply_rules() {
     local ifname_set
     ifname_set=$(echo "$devs" | awk '{for(i=1;i<=NF;i++){if(i>1)printf ", ";printf "\"%s\"",$i}}')
 
+    # v1.8.16：放行 WAN 口自身所在网段的来源。
+    # 典型场景：光猫拨号/桥接时，光猫管理 IP 与路由器 WAN 同处一个私网段（如 192.168.1.1），
+    # 该 IP 不在 china.txt（公网库）里 → 会被「saddr != @china_v4 drop」误杀，导致上级光猫访问不到路由器。
+    # 只放行"与自己同段"的地址，比放行整个 RFC1918 精确得多。
+    local allow_peers wan_prefixes
+    allow_peers=$(uci get netmanager.settings.china_filter_allow_wan_peers 2>/dev/null)
+    [ -z "$allow_peers" ] && allow_peers=1
+    wan_prefixes=""
+    [ "$allow_peers" = "1" ] && wan_prefixes=$(get_wan_prefixes "$devs")
+
     # 删除旧链（幂等）
     nft delete chain inet netmanager china_input 2>/dev/null
     nft delete chain inet netmanager china_forward 2>/dev/null
@@ -3091,10 +3176,24 @@ china_apply_rules() {
         # 「ip saddr != @china_v4 drop」误判为境外 IPv4 直接丢弃，导致租约续不上。
         printf 'add rule inet netmanager china_forward iifname { %s } udp sport 67 udp dport 68 counter accept\n' "$ifname_set"
         printf 'add rule inet netmanager china_forward iifname { %s } ip saddr 169.254.0.0/16 counter accept\n' "$ifname_set"
+        # v1.8.16：WAN 同网段来源（上级光猫/网关）在两条链上都要放行，且在 drop 之前
+        local pfx
+        for pfx in $wan_prefixes; do
+            printf 'add rule inet netmanager china_input iifname { %s } ip saddr %s counter accept\n' "$ifname_set" "$pfx"
+            printf 'add rule inet netmanager china_forward iifname { %s } ip saddr %s counter accept\n' "$ifname_set" "$pfx"
+        done
         printf 'add rule inet netmanager china_forward iifname { %s } ct state new meta l4proto { tcp, udp } ip saddr != @china_v4 counter drop\n' "$ifname_set"
         printf 'add rule inet netmanager china_input iifname { %s } ct state new meta l4proto { tcp, udp } ip saddr != @china_v4 limit rate 10/minute burst 20 packets log prefix "NM_DROP4: " level warn\n' "$ifname_set"
         printf 'add rule inet netmanager china_input iifname { %s } ct state new meta l4proto { tcp, udp } ip saddr != @china_v4 counter drop\n' "$ifname_set"
     } > "$rf"
+    # 调试钩子：只打印生成的规则不落盘应用（真机排查 / CI 用）
+    if [ -n "${NM_RULES_ONLY:-}" ] || [ "${NM_RULES_ONLY:-0}" = "1" ]; then
+        echo "=== 生成的 nft 规则（NM_RULES_ONLY）==="
+        cat "$rf"
+        echo "=== WAN 设备: $devs | 放行同段: ${wan_prefixes:-无} ==="
+        rm -f "$rf"
+        return 0
+    fi
     if ! nft -f "$rf" 2>/tmp/netmanager_china_rules.err; then
         write_log "ERROR" "china_filter: 规则链安装失败: $(cat /tmp/netmanager_china_rules.err 2>/dev/null | tr '\n' ' ')"
         rm -f "$rf" /tmp/netmanager_china_rules.err 2>/dev/null
@@ -3105,8 +3204,8 @@ china_apply_rules() {
 
     uci set netmanager.settings.china_filter_count="$count"
     uci commit netmanager 2>/dev/null
-    info "中国IPv4过滤规则已应用: 条数=$count WAN设备=[$(echo $devs)]"
-    write_log "INFO" "china_filter apply: count=$count devs=$devs"
+    info "中国IPv4过滤规则已应用: 条数=$count WAN设备=[$(echo $devs)] 放行同段=[${wan_prefixes:-无}]"
+    write_log "INFO" "china_filter apply: count=$count devs=$devs allow_wan_peers=$allow_peers peers=${wan_prefixes:-none}"
     return 0
 }
 
@@ -3212,6 +3311,12 @@ cmd_china_status() {
     echo "COUNT=$cnt"
     echo "WAN_DEVS=$devs"
     echo "RULE_ACTIVE=$active"
+    local awp=$(uci get netmanager.settings.china_filter_allow_wan_peers 2>/dev/null)
+    [ -z "$awp" ] && awp=1
+    local peers="-"
+    [ "$awp" = "1" ] && peers=$(get_wan_prefixes "$devs")
+    echo "ALLOW_WAN_PEERS=$awp"
+    echo "WAN_PEERS=${peers:--}"
     echo "LIST_FILE=$CHINA_LIST_FILE"
     echo "===END==="
 }
@@ -3340,9 +3445,42 @@ cmd_china_filter() {
         update)   cmd_china_update ;;
         set_url)  cmd_china_set_url "$@" ;;
         set_cron) cmd_china_set_cron "$@" ;;
+        allow_wan) cmd_china_allow_wan "$@" ;;
         boot)     cmd_china_boot ;;
-        *) echo "用法: netmanager china_filter status|enable|disable|update|set_url <url>|set_cron <expr>"; exit 1 ;;
+        *) echo "用法: netmanager china_filter status|enable|disable|update|set_url <url>|set_cron <expr>|allow_wan on|off"; exit 1 ;;
     esac
+}
+
+# v1.8.16：是否放行 WAN 口同网段来源（上级光猫/网关等私网邻居）
+# 用法: netmanager china_filter allow_wan on|off|status
+cmd_china_allow_wan() {
+    local v="$1"
+    case "$v" in
+        on|1|enable)
+            uci set netmanager.settings.china_filter_allow_wan_peers='1'
+            uci commit netmanager
+            info "已开启：放行 WAN 同网段来源（上级光猫/网关可访问）"
+            ;;
+        off|0|disable)
+            uci set netmanager.settings.china_filter_allow_wan_peers='0'
+            uci commit netmanager
+            info "已关闭：WAN 同网段来源不再放行（严格白名单模式）"
+            ;;
+        status|'')
+            local awp=$(uci get netmanager.settings.china_filter_allow_wan_peers 2>/dev/null)
+            [ -z "$awp" ] && awp=1
+            echo "ALLOW_WAN_PEERS=$awp"
+            echo "WAN_PEERS=$(get_wan_prefixes "$(get_wan_devs)")"
+            return 0
+            ;;
+        *) echo "用法: netmanager china_filter allow_wan on|off|status"; exit 1 ;;
+    esac
+    # 改完设置后，若规则已启用则立即重应用（要求本地列表存在）
+    if [ "$(china_get_enable)" = "1" ] && [ -f "$CHINA_LIST_FILE" ]; then
+        china_apply_rules || return 1
+        info "规则已重新应用"
+    fi
+    return 0
 }
 
 # ========== 14. 中国IPv6访问限制（v1.7.0 新增） ==========
@@ -3538,6 +3676,14 @@ china6_apply_rules() {
     local ifname_set
     ifname_set=$(echo "$devs" | awk '{for(i=1;i<=NF;i++){if(i>1)printf ", ";printf "\"%s\"",$i}}')
 
+    # v1.8.16：与 IPv4 对称——放行 WAN 口自身网段与 ULA(fd00::/8) 来源，
+    # 避免上级光猫用私网 IPv6（ULA）访问时被当成“境外地址”丢弃
+    local allow_peers wan_prefixes6
+    allow_peers=$(uci get netmanager.settings.china_filter_allow_wan_peers 2>/dev/null)
+    [ -z "$allow_peers" ] && allow_peers=1
+    wan_prefixes6=""
+    [ "$allow_peers" = "1" ] && wan_prefixes6=$(get_wan_prefixes6 "$devs")
+
     nft delete chain inet netmanager6 china6_input 2>/dev/null
     nft delete chain inet netmanager6 china6_forward 2>/dev/null
 
@@ -3558,6 +3704,16 @@ china6_apply_rules() {
         printf 'add rule inet netmanager6 china6_forward iifname { %s } ip6 saddr fe80::/10 counter accept\n' "$ifname_set"
         printf 'add rule inet netmanager6 china6_forward iifname { %s } ip6 saddr ff00::/8 counter accept\n' "$ifname_set"
         printf 'add rule inet netmanager6 china6_forward iifname { %s } udp sport 547 udp dport 546 counter accept\n' "$ifname_set"
+        # v1.8.16：WAN 同网段 / ULA 来源放行（须在 drop 之前）
+        if [ "$allow_peers" = "1" ]; then
+            local pfx6
+            printf 'add rule inet netmanager6 china6_input iifname { %s } ip6 saddr fd00::/8 counter accept\n' "$ifname_set"
+            printf 'add rule inet netmanager6 china6_forward iifname { %s } ip6 saddr fd00::/8 counter accept\n' "$ifname_set"
+            for pfx6 in $wan_prefixes6; do
+                printf 'add rule inet netmanager6 china6_input iifname { %s } ip6 saddr %s counter accept\n' "$ifname_set" "$pfx6"
+                printf 'add rule inet netmanager6 china6_forward iifname { %s } ip6 saddr %s counter accept\n' "$ifname_set" "$pfx6"
+            done
+        fi
         printf 'add rule inet netmanager6 china6_forward iifname { %s } ct state new meta l4proto { tcp, udp } ip6 saddr != @china_v6 counter drop\n' "$ifname_set"
         printf 'add rule inet netmanager6 china6_input iifname { %s } ct state new meta l4proto { tcp, udp } ip6 saddr != @china_v6 limit rate 10/minute burst 20 packets log prefix "NM_DROP6: " level warn\n' "$ifname_set"
         printf 'add rule inet netmanager6 china6_input iifname { %s } ct state new meta l4proto { tcp, udp } ip6 saddr != @china_v6 counter drop\n' "$ifname_set"
@@ -4170,7 +4326,7 @@ usage() {
     echo "备份: backup | backup_list | backup_restore <文件> | backup_delete <文件> | backup_import <文件> | backup_prune [保留数]"
     echo "插件: upload_file <文件名> <b64文件> | plugin_update <文件> | plugin_version <文件> | cleanup_uploads"
     echo "在线更新: update_check | update_apply | set_update_mirror <url|''>"
-    echo "中国IPv4过滤: china_filter status | enable | disable | update | set_url <url> | set_cron <expr>"
+    echo "中国IPv4过滤: china_filter status | enable | disable | update | set_url <url> | set_cron <expr> | allow_wan on|off"
     echo "中国IPv6过滤: china6_filter status | enable | disable | update | set_url <url> | set_cron <expr>"
     echo "手动黑名单: blacklist list | add <ip/cidr> | del <ip/cidr> | clear [v4|v6|all] | apply"
     echo "卸载: uninstall [full|keep]   # full=全删(默认) keep=保留配置与备份"
