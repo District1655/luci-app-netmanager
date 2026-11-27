@@ -4,7 +4,7 @@
 >
 > 适配：iStoreOS 25.12+（apk）/ iStoreOS 24.10 及 OpenWrt 23.05+（opkg / ipk），fw4 + nftables，Lua LuCI
 >
-> 交付：**apk / ipk 双格式** + iStoreOS 软件中心上架 + `tar.gz` 一键脚本兜底
+> 交付：**apk / ipk 双格式** + iStore 收录材料（已向上游提交 PR，**待官方合并**）+ `tar.gz` 一键脚本兜底
 >
 > 由 **luci-app-fwmanager**（防火墙管理）与 **luci-app-dnssettings**（上网设置）合并而成的网络管理一体化 LuCI 插件。
 
@@ -20,7 +20,7 @@
 
 | 系统 | 包格式 | 安装方式 |
 |------|--------|----------|
-| iStoreOS 25.12+（apk-tools，无 opkg） | `.apk` | 软件中心搜「网络管理」安装，或 `apk add --allow-untrusted luci-app-netmanager-<ver>-r<rel>.apk` |
+| iStoreOS 25.12+（apk-tools，无 opkg） | `.apk` | 下载 Release 里的 `.apk` 后 `apk add --allow-untrusted luci-app-netmanager-<ver>-r<rel>.apk`（收录 PR 合并后才可在软件中心直接搜「网络管理」安装） |
 | iStoreOS 24.10 / OpenWrt 23.05–24.10（opkg） | `.ipk` | `opkg install luci-app-netmanager_<ver>-r<rel>_all.ipk` |
 | 任意（含未适配架构 / 开发机） | `.tar.gz` | 解压后 `sh install.sh` 脚本安装 |
 

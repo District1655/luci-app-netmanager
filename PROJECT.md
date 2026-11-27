@@ -37,8 +37,8 @@
 | 形态 | LuCI 插件（Lua 控制器 + CBI 模型 + 自绘视图 + shell 后端） |
 | 目标平台 | iStoreOS 25.12+（apk-tools）/ iStoreOS 24.10 及 OpenWrt 23.05–24.10（opkg），fw4 / nftables |
 | 交付形态 | **apk（25.12+）/ ipk（opkg 系统）/ tar.gz+install.sh 兜底**，三种等价 |
-| 上架渠道 | iStoreOS 软件中心（`istoreos/istore-repo` + `istoreos/openwrt-app-meta`，PR #852 / #743 待合并） |
-| 当前版本 | v1.8.14（2026-11-24） |
+| 上架渠道 | iStore 收录 PR（`istoreos/istore-repo` #862 + `istoreos/openwrt-app-meta` #753，**OPEN 待维护者合并**；合并并同步索引后才算“软件中心已上架”） |
+| 当前版本 | v1.8.21（2026-11-27） |
 | 许可证 | MIT（仓库根目录 LICENSE） |
 | 前身 | luci-app-fwmanager v1.3.33 + luci-app-dnssettings v1.2.1，v1.4.0 合并 |
 
@@ -794,10 +794,10 @@ dnssettings-apply.sh 执行流程：
 | 仓库 | District1655/luci-app-netmanager |
 | 分支 | main |
 | 基线 commit | `ac90559`（v1.8.14 + iStore 发版 CI） |
-| 版本 | v1.8.14（2026-11-24） |
+| 版本 | v1.8.21（2026-11-27） |
 | 受控文件 | 38 个（文本 34 个进源码全录，`.gitattributes`/`LICENSE` 等按需） |
 | 代码量 | 约 830 行文档 + 11,400 行源码全录 + 约 9,000 行受控源码 |
-| 交付 | apk（25.12+）/ ipk（opkg）/ tar.gz 脚本 / iStore 软件中心 |
+| 交付 | apk（25.12+）/ ipk（opkg）/ tar.gz 脚本 / iStore 收录 PR（OPEN，待合并） |
 | CI | `build.yml`（Release）+ `publish-istore.yml`（ipk/apk + 自动提 PR） |
 | 推送方式 | SSH |
 | 文档生成 | `docs/source-full.md`（全录）+ 第 5 章索引 + 第 9 章行号表由 `python3 docs/gen_source_part.py` 生成；其余手写 |
